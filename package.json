@@ -1,0 +1,105 @@
+{
+  "name": "fit-visualizer",
+  "displayName": "FIT Visualizer",
+  "version": "0.0.1",
+  "description": "Visualize .fit activity files with charts and summary stats",
+  "publisher": "AntonPetrusevich",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "fitVisualizer.fitEditor",
+        "displayName": "FIT Visualizer",
+        "selector": [
+          {
+            "filenamePattern": "*.fit"
+          },
+          {
+            "filenamePattern": "*.FIT"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "fitVisualizer.openFit",
+        "title": "FIT: Visualize File"
+      },
+      {
+        "command": "fitVisualizer.browse",
+        "title": "FIT: Browse Loaded Data"
+      },
+      {
+        "command": "fitVisualizer.indexAll",
+        "title": "FIT: Index All Files"
+      },
+      {
+        "command": "fitVisualizer.indexNew",
+        "title": "FIT: Index New Files"
+      },
+      {
+        "command": "fitVisualizer.indexOne",
+        "title": "FIT: Index This File"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "when": "resourceExtname == .fit",
+          "command": "fitVisualizer.openFit",
+          "group": "navigation"
+        },
+        {
+          "when": "resourceExtname == .fit",
+          "command": "fitVisualizer.indexOne",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "FIT Visualizer",
+      "properties": {
+        "fitVisualizer.maxHeartRate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 100,
+          "maximum": 240,
+          "description": "Legacy fallback maximum heart rate. Dated profiles entered in the activity view take precedence."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "node --check extension.js && node --check analysis.js && node --check commands.js && node --check database-schema.js && node --check fit-files.js && node --check heart-rate.js && node --check utils.js && node --test test/core.test.js",
+    "lint": "npm run check",
+    "package": "vsce package"
+  },
+  "keywords": [
+    "fit",
+    "garmin",
+    "cycling",
+    "visualization"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "fit-file-parser": "^4.1.0",
+    "leaflet": "^1.9.4"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.9.2"
+  }
+}
