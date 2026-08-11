@@ -1,23 +1,55 @@
 const { formatHms } = require('./utils');
 
-async function requestCopilotAnalysis(vscode, prompt) {
+async function requestCopilotAnalysis(vscode, prompt, options = {}) {
+  const retryDelayMs = Number.isFinite(options.retryDelayMs) ? Number(options.retryDelayMs) : 1200;
+  const maxRetries = Number.isInteger(options.maxRetries) && options.maxRetries >= 0
+    ? options.maxRetries
+    : 1;
   const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
   if (!models.length) {
     throw new Error('No Copilot language model is available. Check that GitHub Copilot Chat is installed and signed in.');
   }
 
-  const response = await models[0].sendRequest([
-    vscode.LanguageModelChatMessage.User(prompt),
-  ]);
-  let analysis = '';
-  for await (const chunk of response.text) {
-    analysis += chunk;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      const response = await models[0].sendRequest([
+        vscode.LanguageModelChatMessage.User(prompt),
+      ]);
+      let analysis = '';
+      for await (const chunk of response.text) {
+        analysis += chunk;
+      }
+
+      if (!analysis.trim()) {
+        throw new Error('Copilot returned an empty analysis.');
+      }
+      return analysis.trim();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isRetryableRateLimit = isRateLimitError(message) && attempt < maxRetries;
+      if (isRetryableRateLimit) {
+        await delay(retryDelayMs);
+        continue;
+      }
+      if (isRateLimitError(message)) {
+        throw new Error('Copilot rate limit reached. Please wait a bit and try Analyze again.');
+      }
+      throw error;
+    }
   }
 
-  if (!analysis.trim()) {
-    throw new Error('Copilot returned an empty analysis.');
-  }
-  return analysis.trim();
+  throw new Error('Copilot analysis failed unexpectedly.');
+}
+
+function isRateLimitError(message) {
+  const text = String(message || '').toLowerCase();
+  return text.includes('rate limit') || text.includes('too many requests') || text.includes('429');
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig) {
