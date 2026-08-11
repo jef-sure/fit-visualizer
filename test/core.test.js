@@ -163,6 +163,49 @@ test('Copilot analysis reports unavailable and empty models', async () => {
   await assert.rejects(() => requestCopilotAnalysis(emptyResponse, 'test'), /empty analysis/);
 });
 
+test('Copilot analysis retries once when rate limited and then succeeds', async () => {
+  let calls = 0;
+  const retryOnce = {
+    lm: {
+      selectChatModels: async () => [{
+        sendRequest: async () => {
+          calls += 1;
+          if (calls === 1) {
+            throw new Error('Upstream provider rate limit hit');
+          }
+          return { text: asyncChunks(['Recovered analysis']) };
+        },
+      }],
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+
+  const result = await requestCopilotAnalysis(retryOnce, 'test', { retryDelayMs: 0, maxRetries: 1 });
+  assert.equal(result, 'Recovered analysis');
+  assert.equal(calls, 2);
+});
+
+test('Copilot analysis returns a friendly message after rate-limit retries are exhausted', async () => {
+  let calls = 0;
+  const alwaysRateLimited = {
+    lm: {
+      selectChatModels: async () => [{
+        sendRequest: async () => {
+          calls += 1;
+          throw new Error('Upstream provider rate limit hit');
+        },
+      }],
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+
+  await assert.rejects(
+    () => requestCopilotAnalysis(alwaysRateLimited, 'test', { retryDelayMs: 0, maxRetries: 1 }),
+    /Copilot rate limit reached/
+  );
+  assert.equal(calls, 2);
+});
+
 test('analysis prompt treats the first workout as an initial baseline', () => {
   const prompt = generateAnalysisPrompt({ sessions: [{ avg_hr: 131, max_hr: 177 }] }, {
     total_activities: 0,

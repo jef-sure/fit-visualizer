@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Visualize .fit activity files with charts and summary stats",
   "publisher": "AntonPetrusevich",
   "engines": {
