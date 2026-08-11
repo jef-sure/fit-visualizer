@@ -132,7 +132,62 @@ ${heartRateProfileContext}
 Provide a concise, actionable analysis with 2-3 sentences per question. Do not repeat the input data verbatim.`;
 }
 
+function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, baseAnalysis, history, userQuestion) {
+  const session = fitData.sessions?.[0] || {};
+  const priorActivityCount = Number(progressSummary?.total_activities || 0);
+  const hasHeartRateProfile = Number.isFinite(heartRateConfig?.maxHeartRate);
+  const currentStats = {
+    distance: session.total_distance_km?.toFixed(2) || 'N/A',
+    duration: session.total_timer_s ? formatHms(Math.round(session.total_timer_s)) : 'N/A',
+    avgSpeed: session.avg_speed_kmh?.toFixed(2) || 'N/A',
+    maxSpeed: session.max_speed_kmh?.toFixed(2) || 'N/A',
+    avgHr: session.avg_hr?.toFixed(0) || 'N/A',
+    maxHr: session.max_hr?.toFixed(0) || 'N/A',
+    ascent: session.total_ascent_m?.toFixed(0) || 'N/A',
+    descent: session.total_descent_m?.toFixed(0) || 'N/A',
+  };
+  const safeHistory = Array.isArray(history)
+    ? history
+      .filter((entry) => entry && (entry.role === 'user' || entry.role === 'assistant'))
+      .slice(-8)
+      .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${String(entry.content || '').trim()}`)
+      .filter((line) => line.length > 0)
+    : [];
+
+  return `You are continuing a coaching chat about one cycling workout.
+
+Workout facts for this activity:
+- Distance: ${currentStats.distance} km
+- Duration: ${currentStats.duration}
+- Avg speed: ${currentStats.avgSpeed} km/h
+- Max speed: ${currentStats.maxSpeed} km/h
+- Avg heart rate: ${currentStats.avgHr} bpm
+- Max heart rate: ${currentStats.maxHr} bpm
+- Elevation gain: ${currentStats.ascent} m
+- Elevation loss: ${currentStats.descent} m
+- Comparable prior activities: ${priorActivityCount}
+- HR profile: ${hasHeartRateProfile ? `max HR ${heartRateConfig.maxHeartRate} bpm, zones ${Array.isArray(heartRateConfig.thresholds) ? heartRateConfig.thresholds.join(', ') : 'auto-derived'}` : 'not configured'}
+
+Initial analysis:
+${baseAnalysis || 'No initial analysis has been generated yet.'}
+
+Conversation so far:
+${safeHistory.length ? safeHistory.join('\n') : '(no previous messages)'}
+
+Latest user question:
+${String(userQuestion || '').trim()}
+
+Rules:
+- Use only provided workout/history data.
+- If the user says the route was not flat, explicitly use elevation gain/loss context and explain what can and cannot be inferred without full grade distribution.
+- Be specific and concise.
+- If the data is insufficient for a claim, say so and ask one clarifying follow-up.
+
+Respond in 4-8 sentences.`;
+}
+
 module.exports = {
   generateAnalysisPrompt,
+  generateAnalysisChatPrompt,
   requestCopilotAnalysis,
 };

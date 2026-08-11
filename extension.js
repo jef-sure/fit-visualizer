@@ -1,7 +1,7 @@
 const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { generateAnalysisPrompt, requestCopilotAnalysis } = require('./analysis');
+const { generateAnalysisPrompt, generateAnalysisChatPrompt, requestCopilotAnalysis } = require('./analysis');
 const { registerCommands } = require('./commands');
 const { ensureDatabaseSchema } = require('./database-schema');
 const { fileExists, getFitUris, parseFitFile } = require('./fit-files');
@@ -29,6 +29,7 @@ let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
 const ANALYSIS_VERSION = 4;
+const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
 const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
 
@@ -430,18 +431,20 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const data = selId ? await loadFitDataFromDb(dbPath, selId) : null;
     const comp = selCompId ? await loadFitDataFromDb(dbPath, selCompId) : null;
     const athleteProfile = await getAthleteProfile(dbPath);
+    const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
     const hrConfig = data
       ? await getHeartRateConfigForActivity(dbPath, data.sessions?.[0]?.start_time)
       : getHeartRateConfig();
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysisChat
     );
     if (selId) {
       const cached = await getAnalysisFromDb(dbPath, selId);
       panel.webview.postMessage(cached
         ? { type: 'analysisResult', id: Number(selId), analysis: cached }
         : { type: 'noAnalysis', id: Number(selId) });
+      panel.webview.postMessage({ type: 'analysisChatState', id: Number(selId), messages: analysisChat });
     }
   }
 
@@ -456,6 +459,26 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         panel.webview.postMessage({ type: 'analysisError', id: Number(msg.id), error: errorMsg });
+      }
+    } else if (msg.type === 'analysisChatTurn') {
+      try {
+        const requestedActivityId = Number(msg.id);
+        const userText = String(msg.text || '').trim();
+        if (!Number.isInteger(requestedActivityId) || requestedActivityId <= 0) {
+          throw new Error('Invalid activity.');
+        }
+        if (!userText) {
+          throw new Error('Enter a question for AI chat.');
+        }
+        const existing = await getAnalysisChatFromDb(dbPath, requestedActivityId);
+        const withUser = appendChatTurn(existing, 'user', userText);
+        const assistantReply = await generateActivityChatReply(dbPath, requestedActivityId, withUser, userText);
+        const nextChat = appendChatTurn(withUser, 'assistant', assistantReply);
+        await storeAnalysisChatInDb(dbPath, requestedActivityId, nextChat);
+        panel.webview.postMessage({ type: 'analysisChatState', id: requestedActivityId, messages: nextChat });
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        panel.webview.postMessage({ type: 'analysisChatError', id: Number(msg.id), error: errorMsg });
       }
     } else if (msg.type === 'updateActivityHeartRate') {
       try {
@@ -812,7 +835,7 @@ function toDateOnly(value) {
   return match ? match[0] : null;
 }
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysisChat) {
   const hasData = fitData && Array.isArray(fitData.records) && fitData.records.length > 0;
   const hasComp = compData && Array.isArray(compData.records) && compData.records.length > 0;
 
@@ -850,7 +873,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysisChat)
     : `<div style="padding:24px;color:var(--muted)">No data for this activity.</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -1012,7 +1035,7 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysisChat) {
   const records = Array.isArray(fitData.records) ? fitData.records : [];
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? compData.records : [];
@@ -1170,6 +1193,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <p style="margin:0;">Loading analysis...</p>
       </div>
       <button id="analyzeBtn" style="margin-top:10px;padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">Analyze Activity</button>
+      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+        <h3 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--muted);">Follow-up Chat</h3>
+        <div id="analysisChatMessages" style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--vscode-editor-background);"></div>
+        <div style="display:flex;gap:8px;margin-top:8px;align-items:flex-start;">
+          <textarea id="analysisChatInput" rows="3" placeholder="Ask a follow-up, e.g. Route was not flat. Can you re-evaluate pacing with elevation gain?" style="flex:1;min-height:62px;resize:vertical;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--input-bg);color:var(--input-fg);"></textarea>
+          <button id="analysisChatSendBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">Send</button>
+        </div>
+        <div id="analysisChatStatus" style="margin-top:6px;font-size:0.85rem;color:var(--muted);"></div>
+      </div>
     </section>
   </main>
   <script nonce="${nonce}">
@@ -1186,6 +1218,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
       const analysisContent = document.getElementById('analysisContent');
       const analyzeBtn = document.getElementById('analyzeBtn');
+      const analysisChatMessagesEl = document.getElementById('analysisChatMessages');
+      const analysisChatInput = document.getElementById('analysisChatInput');
+      const analysisChatSendBtn = document.getElementById('analysisChatSendBtn');
+      const analysisChatStatus = document.getElementById('analysisChatStatus');
       const manualDataForm = document.getElementById('${mapId}ManualDataForm');
       const manualDataStatus = document.getElementById('${mapId}ManualDataStatus');
       const hrProfileForm = document.getElementById('${mapId}HrProfileForm');
@@ -1193,11 +1229,35 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       const autoCalcZonesBtn = document.getElementById('${mapId}AutoCalcZonesBtn');
       const vscode = window.fitVisualizerApi;
       let hasAnalysis = false;
+      let chatMessages = ${safeJson(Array.isArray(analysisChat) ? analysisChat : [])};
+
+      function renderChatMessages() {
+        if (!analysisChatMessagesEl) return;
+        if (!Array.isArray(chatMessages) || !chatMessages.length) {
+          analysisChatMessagesEl.innerHTML = '<div style="color:var(--muted);font-size:0.9rem;">No messages yet. Ask a follow-up after analysis.</div>';
+          return;
+        }
+        analysisChatMessagesEl.innerHTML = chatMessages.map((entry) => {
+          const role = entry.role === 'assistant' ? 'Coach' : 'You';
+          const bg = entry.role === 'assistant' ? 'var(--vscode-editorWidget-background)' : 'var(--vscode-inputOption-activeBackground)';
+          return '<div style="margin:0 0 8px 0;padding:8px;border:1px solid var(--border);border-radius:6px;background:' + bg + ';">'
+            + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px;">' + role + '</div>'
+            + '<div style="white-space:pre-wrap;line-height:1.45;">' + escapeHtml(entry.content || '') + '</div>'
+            + '</div>';
+        }).join('');
+        analysisChatMessagesEl.scrollTop = analysisChatMessagesEl.scrollHeight;
+      }
+
+      renderChatMessages();
       
       window.addEventListener('message', (event) => {
         const msg = event.data;
         const currentId = Number(window.currentActivityId);
-        if ((msg.type === 'analysisResult' || msg.type === 'analysisError' || msg.type === 'noAnalysis')
+        if ((msg.type === 'analysisResult'
+          || msg.type === 'analysisError'
+          || msg.type === 'noAnalysis'
+          || msg.type === 'analysisChatState'
+          || msg.type === 'analysisChatError')
           && Number.isFinite(currentId)
           && Number(msg.id) !== currentId) {
           return;
@@ -1216,6 +1276,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           analysisContent.innerHTML = '<div style="color:#ff6b6b;">Error: ' + escapeHtml(msg.error) + '</div>';
           analyzeBtn.disabled = false;
           analyzeBtn.textContent = hasAnalysis ? 'Analyze Again' : 'Analyze Activity';
+        } else if (msg.type === 'analysisChatState') {
+          chatMessages = Array.isArray(msg.messages) ? msg.messages : [];
+          renderChatMessages();
+          analysisChatSendBtn.disabled = false;
+          analysisChatStatus.textContent = '';
+        } else if (msg.type === 'analysisChatError') {
+          analysisChatSendBtn.disabled = false;
+          analysisChatStatus.textContent = 'Error: ' + String(msg.error || 'Chat failed.');
+          analysisChatStatus.style.color = '#ff6b6b';
         } else if (msg.type === 'manualDataError') {
           manualDataStatus.textContent = msg.error;
           manualDataStatus.classList.add('error');
@@ -1288,10 +1357,44 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         });
       }
 
+      function sendChatTurn() {
+        if (!window.currentActivityId || window.currentActivityId === 'null') {
+          analysisChatStatus.textContent = 'No activity selected.';
+          analysisChatStatus.style.color = '#ff6b6b';
+          return;
+        }
+        const text = String(analysisChatInput.value || '').trim();
+        if (!text) {
+          analysisChatStatus.textContent = 'Enter a follow-up question.';
+          analysisChatStatus.style.color = '#ff6b6b';
+          return;
+        }
+        analysisChatStatus.textContent = 'Thinking...';
+        analysisChatStatus.style.color = 'var(--muted)';
+        analysisChatSendBtn.disabled = true;
+        chatMessages = [...chatMessages, { role: 'user', content: text }];
+        renderChatMessages();
+        analysisChatInput.value = '';
+        vscode.postMessage({
+          type: 'analysisChatTurn',
+          id: window.currentActivityId,
+          text,
+        });
+      }
+
+      analysisChatSendBtn?.addEventListener('click', sendChatTurn);
+      analysisChatInput?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          sendChatTurn();
+        }
+      });
+
       window.currentActivityId = ${fitData && fitData._activityId ? fitData._activityId : 'null'};
 
       if (!window.currentActivityId) {
         analysisContent.innerHTML = '<p style="margin:0;color:#ff6b6b;">No activity data available for analysis.</p>';
+        analysisChatSendBtn.disabled = true;
       }
     }());
   </script>
@@ -2355,6 +2458,82 @@ async function storeAnalysisInDb(dbPath, activityId, analysis) {
   } finally {
     db.close();
   }
+}
+
+function appendChatTurn(messages, role, content) {
+  const safeRole = role === 'assistant' ? 'assistant' : 'user';
+  const text = String(content || '').trim();
+  if (!text) {
+    return Array.isArray(messages) ? messages : [];
+  }
+  const next = Array.isArray(messages) ? messages.slice() : [];
+  next.push({ role: safeRole, content: text, ts: new Date().toISOString() });
+  return next.slice(-ANALYSIS_CHAT_HISTORY_LIMIT);
+}
+
+async function getAnalysisChatFromDb(dbPath, activityId) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  let stmt;
+  try {
+    stmt = db.prepare('SELECT chat_json FROM activity_analysis_chat WHERE activity_id = ?');
+    stmt.bind([activityId]);
+    if (!stmt.step()) {
+      return [];
+    }
+    const raw = stmt.getAsObject().chat_json;
+    try {
+      const parsed = JSON.parse(String(raw || '[]'));
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      return parsed
+        .filter((entry) => entry && (entry.role === 'user' || entry.role === 'assistant'))
+        .map((entry) => ({
+          role: entry.role,
+          content: String(entry.content || ''),
+          ts: entry.ts ? String(entry.ts) : null,
+        }))
+        .filter((entry) => entry.content.trim().length > 0)
+        .slice(-ANALYSIS_CHAT_HISTORY_LIMIT);
+    } catch {
+      return [];
+    }
+  } finally {
+    stmt?.free();
+    db.close();
+  }
+}
+
+async function storeAnalysisChatInDb(dbPath, activityId, messages) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  try {
+    const now = new Date().toISOString();
+    const trimmed = (Array.isArray(messages) ? messages : []).slice(-ANALYSIS_CHAT_HISTORY_LIMIT);
+    db.run(`
+      INSERT INTO activity_analysis_chat (activity_id, chat_json, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(activity_id) DO UPDATE SET
+        chat_json = excluded.chat_json,
+        updated_at = excluded.updated_at
+    `, [activityId, JSON.stringify(trimmed), now]);
+    await persistDatabase(db, dbPath);
+  } finally {
+    db.close();
+  }
+}
+
+async function generateActivityChatReply(dbPath, activityId, history, userQuestion) {
+  const current = await loadFitDataFromDb(dbPath, activityId);
+  if (!current) {
+    throw new Error(`Activity ${activityId} not found in database`);
+  }
+  const summary = await getProgressSummaryFromDb(dbPath, activityId);
+  const hrConfig = await getHeartRateConfigForActivity(dbPath, current.sessions?.[0]?.start_time);
+  const baseAnalysis = await getAnalysisFromDb(dbPath, activityId);
+  const prompt = generateAnalysisChatPrompt(current, summary, hrConfig, baseAnalysis, history, userQuestion);
+  return requestCopilotAnalysis(vscode, prompt);
 }
 
 function deactivate() {}

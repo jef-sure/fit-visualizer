@@ -69,6 +69,14 @@ function ensureDatabaseSchema(db) {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS activity_analysis_chat (
+      activity_id   INTEGER PRIMARY KEY REFERENCES activities(id),
+      chat_json     TEXT NOT NULL,
+      updated_at    TEXT
+    );
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS heart_rate_profiles (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       effective_date TEXT NOT NULL UNIQUE,
