@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "description": "Visualize .fit activity files with charts and summary stats",
   "publisher": "AntonPetrusevich",
   "engines": {
@@ -93,6 +93,10 @@
   ],
   "author": "",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jef-sure/fit-visualizer.git"
+  },
   "type": "commonjs",
   "dependencies": {
     "fit-file-parser": "^4.1.0",
