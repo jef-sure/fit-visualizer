@@ -437,6 +437,12 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       panel.webview, context.extensionUri,
       activities, selId, data, selCompId, comp, hrConfig, athleteProfile
     );
+    if (selId) {
+      const cached = await getAnalysisFromDb(dbPath, selId);
+      panel.webview.postMessage(cached
+        ? { type: 'analysisResult', id: Number(selId), analysis: cached }
+        : { type: 'noAnalysis', id: Number(selId) });
+    }
   }
 
   panel.webview.onDidReceiveMessage(async (msg) => {
@@ -444,11 +450,12 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       await render(msg.id ? Number(msg.id) : null, msg.compId ? Number(msg.compId) : null);
     } else if (msg.type === 'analyzeActivity') {
       try {
-        const analysis = await generateActivityAnalysis(dbPath, msg.id, msg.force);
-        panel.webview.postMessage({ type: 'analysisResult', analysis });
+        const requestedActivityId = Number(msg.id);
+        const analysis = await generateActivityAnalysis(dbPath, requestedActivityId, msg.force);
+        panel.webview.postMessage({ type: 'analysisResult', id: requestedActivityId, analysis });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        panel.webview.postMessage({ type: 'analysisError', error: errorMsg });
+        panel.webview.postMessage({ type: 'analysisError', id: Number(msg.id), error: errorMsg });
       }
     } else if (msg.type === 'updateActivityHeartRate') {
       try {
@@ -1189,11 +1196,22 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       
       window.addEventListener('message', (event) => {
         const msg = event.data;
+        const currentId = Number(window.currentActivityId);
+        if ((msg.type === 'analysisResult' || msg.type === 'analysisError' || msg.type === 'noAnalysis')
+          && Number.isFinite(currentId)
+          && Number(msg.id) !== currentId) {
+          return;
+        }
         if (msg.type === 'analysisResult') {
           hasAnalysis = true;
           analysisContent.innerHTML = '<div style="color:var(--ink);white-space:pre-wrap;word-break:break-word;">' + escapeHtml(msg.analysis) + '</div>';
           analyzeBtn.disabled = false;
           analyzeBtn.textContent = 'Analyze Again';
+        } else if (msg.type === 'noAnalysis') {
+          hasAnalysis = false;
+          analysisContent.innerHTML = '<p style="margin:0;color:var(--muted);">Click &ldquo;Analyze Activity&rdquo; to analyze this ride with Copilot.</p>';
+          analyzeBtn.disabled = false;
+          analyzeBtn.textContent = 'Analyze Activity';
         } else if (msg.type === 'analysisError') {
           analysisContent.innerHTML = '<div style="color:#ff6b6b;">Error: ' + escapeHtml(msg.error) + '</div>';
           analyzeBtn.disabled = false;
@@ -1272,13 +1290,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
       window.currentActivityId = ${fitData && fitData._activityId ? fitData._activityId : 'null'};
 
-      (async function loadAnalysis() {
-        if (window.currentActivityId) {
-          analysisContent.innerHTML = '<p style="margin:0;color:var(--muted);">Click "Analyze Activity" to analyze this ride with Copilot.</p>';
-        } else {
-          analysisContent.innerHTML = '<p style="margin:0;color:#ff6b6b;">No activity data available for analysis.</p>';
-        }
-      })();
+      if (!window.currentActivityId) {
+        analysisContent.innerHTML = '<p style="margin:0;color:#ff6b6b;">No activity data available for analysis.</p>';
+      }
     }());
   </script>
   <script nonce="${nonce}">
