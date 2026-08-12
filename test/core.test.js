@@ -9,7 +9,22 @@ const {
   computeHeartRateZones,
   getHeartRateZoneIndex,
 } = require('../heart-rate');
-const { asNumber, downsamplePoints, escapeHtml, formatHms, formatNumber } = require('../utils');
+const {
+  asNumber,
+  calculateBanisterTrimp,
+  calculateAutoFtp,
+  calculateBikeStressScore,
+  calculateHrTss,
+  calculateIntensityFactor,
+  calculateIntervalsDecoupling,
+  calculateNormalizedPower,
+  calculateTrainingStressScore,
+  calculateXPower,
+  downsamplePoints,
+  escapeHtml,
+  formatHms,
+  formatNumber,
+} = require('../utils');
 
 test('heart-rate zones use semantic order and stable boundaries', () => {
   const records = [100, 110, 120, 140, 160, 180]
@@ -56,6 +71,130 @@ test('shared formatting utilities preserve display behavior', () => {
   assert.deepEqual(downsamplePoints([0, 1, 2, 3], 2), [0, 2]);
   assert.equal(Number.isNaN(asNumber(null)), true);
   assert.equal(Number.isNaN(asNumber('')), true);
+});
+
+test('normalized power equals constant power for steady efforts', () => {
+  const records = [];
+  for (let elapsed = 0; elapsed < 120; elapsed += 1) {
+    records.push({ elapsed_time: elapsed, power: 250 });
+  }
+
+  const normalizedPower = calculateNormalizedPower(records);
+  assert.ok(Math.abs(normalizedPower - 250) < 0.001);
+});
+
+test('auto FTP estimates a sustained 20-minute power effort', () => {
+  const records = [];
+  for (let elapsed = 0; elapsed < 1200; elapsed += 1) {
+    records.push({ elapsed_time: elapsed, power: 250 });
+  }
+
+  assert.equal(calculateAutoFtp(records), 238);
+});
+
+test('auto FTP ignores rides without a continuous 20-minute effort', () => {
+  const records = [];
+  for (let elapsed = 0; elapsed < 1200; elapsed += 1) {
+    records.push({ elapsed_time: elapsed < 600 ? elapsed : elapsed + 10, power: 250 });
+  }
+
+  assert.equal(calculateAutoFtp(records), 0);
+});
+
+test('normalized power weights variable efforts above arithmetic mean', () => {
+  const records = [];
+  for (let elapsed = 0; elapsed < 60; elapsed += 1) {
+    records.push({ elapsed_time: elapsed, power: elapsed < 30 ? 100 : 200 });
+  }
+
+  const normalizedPower = calculateNormalizedPower(records);
+  assert.ok(normalizedPower > 150);
+  assert.ok(normalizedPower < 200);
+});
+
+test('normalized power includes zero-power samples and ignores missing power values', () => {
+  const records = [
+    { elapsed_time: 0, power: 0 },
+    { elapsed_time: 1, power: 0 },
+    { elapsed_time: 2, power: null },
+    { elapsed_time: 3, power: 100 },
+    { elapsed_time: 4, power: 100 },
+  ];
+
+  const normalizedPower = calculateNormalizedPower(records);
+  assert.ok(normalizedPower > 0);
+  assert.ok(normalizedPower < 100);
+});
+
+test('intensity factor and TSS follow standard power formulas', () => {
+  const intensityFactor = calculateIntensityFactor(250, 300);
+  assert.ok(Math.abs(intensityFactor - (250 / 300)) < 1e-9);
+
+  const tss = calculateTrainingStressScore(3600, 250, intensityFactor, 300);
+  assert.ok(Math.abs(tss - 69.4444) < 0.001);
+});
+
+test('xPower equals steady power and BikeStress follows stress equation', () => {
+  const records = [];
+  for (let elapsed = 0; elapsed < 180; elapsed += 1) {
+    records.push({ elapsed_time: elapsed, power: 240 });
+  }
+
+  const xPower = calculateXPower(records);
+  assert.ok(Math.abs(xPower - 240) < 0.01);
+
+  const ftp = 300;
+  const ri = calculateIntensityFactor(xPower, ftp);
+  const bikeStress = calculateBikeStressScore(3600, xPower, ri, ftp);
+  assert.ok(Math.abs(bikeStress - 64) < 0.2);
+});
+
+test('Intervals-style decoupling is near zero on stable power/HR', () => {
+  const records = [];
+  for (let elapsed = 0; elapsed < 1800; elapsed += 1) {
+    records.push({ elapsed_time: elapsed, power: 200, heart_rate: 140 });
+  }
+
+  const decoupling = calculateIntervalsDecoupling(records, {
+    ftp: 260,
+    restingHeartRate: 50,
+    maxHeartRate: 190,
+  });
+
+  assert.ok(Math.abs(decoupling) < 1);
+});
+
+test('Intervals-style decoupling increases with heart-rate drift at constant power', () => {
+  const records = [];
+  for (let elapsed = 0; elapsed < 1800; elapsed += 1) {
+    const heartRate = elapsed < 900 ? 135 : 150;
+    records.push({ elapsed_time: elapsed, power: 200, heart_rate: heartRate });
+  }
+
+  const decoupling = calculateIntervalsDecoupling(records, {
+    ftp: 260,
+    restingHeartRate: 50,
+    maxHeartRate: 190,
+  });
+
+  assert.ok(decoupling > 0);
+});
+
+test('Banister TRIMP and hrTSS are computed from HR reserve intensity', () => {
+  const input = {
+    durationSec: 3600,
+    avgHeartRate: 150,
+    restingHeartRate: 50,
+    maxHeartRate: 190,
+    sex: 'male',
+  };
+
+  const trimp = calculateBanisterTrimp(input);
+  const hrTss = calculateHrTss(input);
+
+  assert.ok(trimp > 0);
+  assert.ok(hrTss > 0);
+  assert.ok(hrTss < 100);
 });
 
 test('database schema migrates manual HR overrides onto existing activities', async () => {

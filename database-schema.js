@@ -26,6 +26,12 @@ function ensureDatabaseSchema(db) {
       normalized_power          REAL,
       training_stress_score     REAL,
       intensity_factor          REAL,
+      xpower                    REAL,
+      relative_intensity_gc     REAL,
+      bike_stress_score         REAL,
+      decoupling_pct            REAL,
+      hr_tss                    REAL,
+      trimp                     REAL,
       total_training_effect     REAL,
       aerobic_training_effect   REAL,
       anaerobic_training_effect REAL,
@@ -96,12 +102,20 @@ function ensureDatabaseSchema(db) {
       sex         TEXT,
       age         INTEGER,
       resting_hr  REAL,
+      ftp         REAL,
       updated_at  TEXT
     );
   `);
 
   addColumnIfMissing(db, 'activities', 'manual_avg_hr', 'REAL');
   addColumnIfMissing(db, 'activities', 'manual_max_hr', 'REAL');
+  addColumnIfMissing(db, 'activities', 'xpower', 'REAL');
+  addColumnIfMissing(db, 'activities', 'relative_intensity_gc', 'REAL');
+  addColumnIfMissing(db, 'activities', 'bike_stress_score', 'REAL');
+  addColumnIfMissing(db, 'activities', 'decoupling_pct', 'REAL');
+  addColumnIfMissing(db, 'activities', 'hr_tss', 'REAL');
+  addColumnIfMissing(db, 'activities', 'trimp', 'REAL');
+  addColumnIfMissing(db, 'athlete_profile', 'ftp', 'REAL');
   addColumnIfMissing(db, 'activity_analysis', 'analysis_version', 'INTEGER NOT NULL DEFAULT 1');
 }
 

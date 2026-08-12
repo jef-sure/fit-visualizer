@@ -13,6 +13,15 @@ const {
 const {
   asNumber,
   average,
+  calculateBanisterTrimp,
+  calculateAutoFtp,
+  calculateBikeStressScore,
+  calculateHrTss,
+  calculateIntensityFactor,
+  calculateIntervalsDecoupling,
+  calculateNormalizedPower,
+  calculateTrainingStressScore,
+  calculateXPower,
   createNonce,
   downsamplePoints,
   escapeHtml,
@@ -431,19 +440,16 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const data = selId ? await loadFitDataFromDb(dbPath, selId) : null;
     const comp = selCompId ? await loadFitDataFromDb(dbPath, selCompId) : null;
     const athleteProfile = await getAthleteProfile(dbPath);
+    const analysis = selId ? await getAnalysisFromDb(dbPath, selId) : null;
     const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
     const hrConfig = data
       ? await getHeartRateConfigForActivity(dbPath, data.sessions?.[0]?.start_time)
       : getHeartRateConfig();
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysisChat
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat
     );
     if (selId) {
-      const cached = await getAnalysisFromDb(dbPath, selId);
-      panel.webview.postMessage(cached
-        ? { type: 'analysisResult', id: Number(selId), analysis: cached }
-        : { type: 'noAnalysis', id: Number(selId) });
       panel.webview.postMessage({ type: 'analysisChatState', id: Number(selId), messages: analysisChat });
     }
   }
@@ -570,6 +576,12 @@ async function loadFitDataFromDb(dbPath, activityId) {
         normalized_power:      activity.normalized_power,
         training_stress_score: activity.training_stress_score,
         intensity_factor:      activity.intensity_factor,
+        xpower:                activity.xpower,
+        relative_intensity_gc: activity.relative_intensity_gc,
+        bike_stress_score:     activity.bike_stress_score,
+        decoupling_pct:        activity.decoupling_pct,
+        hr_tss:                activity.hr_tss,
+        trimp:                 activity.trimp,
         avg_speed_kmh:         activity.avg_speed_kmh,
         max_speed_kmh:         activity.max_speed_kmh,
         avg_hr:                activity.manual_avg_hr ?? activity.avg_hr,
@@ -644,14 +656,53 @@ async function persistDatabase(db, dbPath) {
   await fs.writeFile(dbPath, Buffer.from(bytes));
 }
 
+function getAthleteProfileFromDbConnection(db) {
+  let stmt;
+  try {
+    stmt = db.prepare('SELECT sex, resting_hr, ftp FROM athlete_profile WHERE id = 1');
+    if (!stmt.step()) {
+      return { sex: '', restingHeartRate: NaN, ftp: NaN };
+    }
+    const row = stmt.getAsObject();
+    return {
+      sex: String(row.sex || '').toLowerCase(),
+      restingHeartRate: asNumber(row.resting_hr),
+      ftp: asNumber(row.ftp),
+    };
+  } finally {
+    stmt?.free();
+  }
+}
+
 function upsertActivity(db, filePath, fitData) {
   const records = Array.isArray(fitData.records) ? fitData.records : [];
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const laps = Array.isArray(fitData.laps) ? fitData.laps : [];
+  const athleteProfile = getAthleteProfileFromDbConnection(db);
 
-  const summary = buildSummary(records, sessions);
+  const summary = buildSummary(records, sessions, {
+    ftp: athleteProfile.ftp,
+    restingHeartRate: athleteProfile.restingHeartRate,
+    sex: athleteProfile.sex,
+    maxHeartRateForHrr: sessions[0]?.max_hr,
+  });
   const session = sessions[0] || {};
   const nowIso = new Date().toISOString();
+  const upsertValues = [
+    filePath, path.basename(filePath), nowIso,
+    toSqlStr(session.start_time) || null,
+    toSqlStr(session.sport) || null,
+    toSqlStr(session.sub_sport) || null,
+    summary.distanceKm, summary.elevationGainM || null, summary.elevationLossM || null,
+    asNumber(session.total_timer_time),
+    asNumber(session.total_elapsed_time),
+    summary.avgHr, summary.maxHr,
+    summary.avgSpeed, summary.maxSpeed,
+    null, null, summary.avgPower, summary.maxPower, summary.normalizedPower,
+    summary.trainingStressScore, summary.intensityFactor, summary.xPower, summary.relativeIntensityGc, summary.bikeStressScore, summary.decouplingPct, summary.hrTss, summary.trimp,
+    null, null, null,
+    null, records.length, laps.length,
+  ];
 
   const upsertStmt = db.prepare(`
     INSERT INTO activities (
@@ -660,10 +711,10 @@ function upsertActivity(db, filePath, fitData) {
       total_timer_s, total_elapsed_s,
       avg_hr, max_hr, avg_speed_kmh, max_speed_kmh,
       avg_cadence, max_cadence, avg_power, max_power, normalized_power,
-      training_stress_score, intensity_factor,
+      training_stress_score, intensity_factor, xpower, relative_intensity_gc, bike_stress_score, decoupling_pct, hr_tss, trimp,
       total_training_effect, aerobic_training_effect, anaerobic_training_effect,
       total_calories, record_count, lap_count
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ) VALUES (${upsertValues.map(() => '?').join(',')})
     ON CONFLICT(file_path) DO UPDATE SET
       file_name=excluded.file_name, imported_at=excluded.imported_at,
       start_time=excluded.start_time, sport=excluded.sport, sub_sport=excluded.sub_sport,
@@ -677,6 +728,12 @@ function upsertActivity(db, filePath, fitData) {
       normalized_power=excluded.normalized_power,
       training_stress_score=excluded.training_stress_score,
       intensity_factor=excluded.intensity_factor,
+      xpower=excluded.xpower,
+      relative_intensity_gc=excluded.relative_intensity_gc,
+      bike_stress_score=excluded.bike_stress_score,
+      decoupling_pct=excluded.decoupling_pct,
+      hr_tss=excluded.hr_tss,
+      trimp=excluded.trimp,
       total_training_effect=excluded.total_training_effect,
       aerobic_training_effect=excluded.aerobic_training_effect,
       anaerobic_training_effect=excluded.anaerobic_training_effect,
@@ -684,20 +741,7 @@ function upsertActivity(db, filePath, fitData) {
       record_count=excluded.record_count, lap_count=excluded.lap_count
   `);
 
-  upsertStmt.run([
-    filePath, path.basename(filePath), nowIso,
-    toSqlStr(session.start_time) || null,
-    toSqlStr(session.sport) || null,
-    toSqlStr(session.sub_sport) || null,
-    summary.distanceKm, summary.elevationGainM || null, summary.elevationLossM || null,
-    asNumber(session.total_timer_time),
-    asNumber(session.total_elapsed_time),
-    summary.avgHr, summary.maxHr,
-    summary.avgSpeed, summary.maxSpeed,
-    null, null, null, null, null,
-    null, null, null, null, null,
-    null, records.length, laps.length,
-  ]);
+  upsertStmt.run(upsertValues);
   upsertStmt.free();
 
   const idStmt = db.prepare('SELECT id FROM activities WHERE file_path = ?');
@@ -736,7 +780,7 @@ function upsertActivity(db, filePath, fitData) {
       Number.isFinite(lat) ? lat : null,
       Number.isFinite(lon) ? lon : null,
       asNumber(r.cadence) || null,
-      asNumber(r.power) || null,
+      Number.isFinite(asNumber(r.power)) ? asNumber(r.power) : null,
       asNumber(r.temperature) || null,
       null, null, null,
     ]);
@@ -814,15 +858,16 @@ async function getAthleteProfile(dbPath) {
   const db = await openDatabase(SQL, dbPath);
   let stmt;
   try {
-    stmt = db.prepare('SELECT sex, age, resting_hr FROM athlete_profile WHERE id = 1');
+    stmt = db.prepare('SELECT sex, age, resting_hr, ftp FROM athlete_profile WHERE id = 1');
     if (!stmt.step()) {
-      return { sex: '', age: '', restingHeartRate: '' };
+      return { sex: '', age: '', restingHeartRate: '', ftp: '' };
     }
     const row = stmt.getAsObject();
     return {
       sex: String(row.sex || ''),
-      age: Number.isFinite(Number(row.age)) ? String(Math.round(Number(row.age))) : '',
-      restingHeartRate: Number.isFinite(Number(row.resting_hr)) ? String(Math.round(Number(row.resting_hr))) : '',
+      age: Number.isFinite(asNumber(row.age)) ? String(Math.round(asNumber(row.age))) : '',
+      restingHeartRate: Number.isFinite(asNumber(row.resting_hr)) ? String(Math.round(asNumber(row.resting_hr))) : '',
+      ftp: Number.isFinite(asNumber(row.ftp)) ? String(Math.round(asNumber(row.ftp))) : '',
     };
   } finally {
     stmt?.free();
@@ -835,7 +880,7 @@ function toDateOnly(value) {
   return match ? match[0] : null;
 }
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysisChat) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat) {
   const hasData = fitData && Array.isArray(fitData.records) && fitData.records.length > 0;
   const hasComp = compData && Array.isArray(compData.records) && compData.records.length > 0;
 
@@ -873,7 +918,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysisChat)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat)
     : `<div style="padding:24px;color:var(--muted)">No data for this activity.</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -1035,14 +1080,29 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysisChat) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat) {
   const records = Array.isArray(fitData.records) ? fitData.records : [];
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? compData.records : [];
   const hasOverlay = compRecords.length > 0;
+  const athleteFtp = asNumber(athleteProfile?.ftp);
+  const athleteRestingHrNumber = asNumber(athleteProfile?.restingHeartRate);
+  const athleteSex = String(athleteProfile?.sex || '').toLowerCase();
 
-  const summary = buildSummary(records, sessions);
-  const compSummary = hasOverlay ? buildSummary(compRecords, Array.isArray(compData.sessions) ? compData.sessions : []) : null;
+  const summary = buildSummary(records, sessions, {
+    ftp: athleteFtp,
+    restingHeartRate: athleteRestingHrNumber,
+    sex: athleteSex,
+    maxHeartRateForHrr: asNumber(hrConfig?.maxHeartRate),
+  });
+  const compSummary = hasOverlay
+    ? buildSummary(compRecords, Array.isArray(compData.sessions) ? compData.sessions : [], {
+      ftp: athleteFtp,
+      restingHeartRate: athleteRestingHrNumber,
+      sex: athleteSex,
+      maxHeartRateForHrr: NaN,
+    })
+    : null;
   const chartPointBudget = Math.min(4000, Math.max(900, Math.floor(records.length / 2)));
   const speedChart = buildLineChart(records, 'distance', 'speed', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
   const hrChart = buildLineChart(records, 'distance', 'heart_rate', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
@@ -1061,9 +1121,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const activityDate = toDateOnly(activitySession.start_time) || '';
   const profileMaxHr = positiveNumberOrBlank(hrConfig?.maxHeartRate);
   const profileThresholds = Array.isArray(hrConfig?.thresholds) ? hrConfig.thresholds : [];
-  const athleteSex = escapeHtml(athleteProfile?.sex || '');
+  const athleteSexValue = escapeHtml(athleteProfile?.sex || '');
   const athleteAge = escapeHtml(athleteProfile?.age || '');
   const athleteRestingHr = escapeHtml(athleteProfile?.restingHeartRate || '');
+  const athleteFtpValue = escapeHtml(athleteProfile?.ftp || '');
 
   const compStatsRow = hasOverlay && compSummary
     ? renderComparisonTable(summary, compSummary, fitData._fileName, compData._fileName)
@@ -1082,6 +1143,17 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       ${metric('Duration (h:m:s)', summary.durationText)}
       ${metric('Avg Speed (km/h)', summary.avgSpeed.toFixed(2))}
       ${metric('Max Speed (km/h)', summary.maxSpeed.toFixed(2))}
+      ${metric('Avg Power (W)', summary.avgPower.toFixed(0))}
+      ${metric('Max Power (W)', summary.maxPower.toFixed(0))}
+      ${metric('Normalized Power (W)', summary.normalizedPower.toFixed(0))}
+      ${metric('Intensity Factor (IF)', summary.intensityFactor > 0 ? summary.intensityFactor.toFixed(2) : 'n/a')}
+      ${metric('TSS', summary.trainingStressScore > 0 ? summary.trainingStressScore.toFixed(1) : 'n/a')}
+      ${metric('xPower (GC) (W)', summary.xPower > 0 ? summary.xPower.toFixed(0) : 'n/a')}
+      ${metric('RI (GC)', summary.relativeIntensityGc > 0 ? summary.relativeIntensityGc.toFixed(2) : 'n/a')}
+      ${metric('BikeStress (GC)', summary.bikeStressScore > 0 ? summary.bikeStressScore.toFixed(1) : 'n/a')}
+      ${metric('Decoupling % (Intervals)', Number.isFinite(summary.decouplingPct) ? summary.decouplingPct.toFixed(1) + '%' : 'n/a')}
+      ${metric('TRIMP', summary.trimp > 0 ? summary.trimp.toFixed(1) : 'n/a')}
+      ${metric('hrTSS', summary.hrTss > 0 ? summary.hrTss.toFixed(1) : 'n/a')}
       ${metric('Avg HR (bpm)', summary.avgHr.toFixed(0))}
       ${metric('Max HR (bpm)', summary.maxHr.toFixed(0))}
       ${metric('Elevation Gain (m)', summary.elevationGainM.toFixed(0))}
@@ -1122,10 +1194,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <label>
           <span>Sex</span>
           <select id="${mapId}AthleteSex">
-            <option value=""${athleteSex ? '' : ' selected'}>Select</option>
-            <option value="male"${athleteSex === 'male' ? ' selected' : ''}>Male</option>
-            <option value="female"${athleteSex === 'female' ? ' selected' : ''}>Female</option>
-            <option value="other"${athleteSex === 'other' ? ' selected' : ''}>Other</option>
+            <option value=""${athleteSexValue ? '' : ' selected'}>Select</option>
+            <option value="male"${athleteSexValue === 'male' ? ' selected' : ''}>Male</option>
+            <option value="female"${athleteSexValue === 'female' ? ' selected' : ''}>Female</option>
+            <option value="other"${athleteSexValue === 'other' ? ' selected' : ''}>Other</option>
           </select>
         </label>
         <label>
@@ -1136,11 +1208,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           <span>Resting HR</span>
           <input id="${mapId}AthleteRestingHr" type="number" min="30" max="120" step="1" value="${athleteRestingHr}" placeholder="bpm">
         </label>
+        <label>
+          <span>FTP</span>
+          <input id="${mapId}AthleteFtp" type="number" min="80" max="500" step="1" value="${athleteFtpValue}" placeholder="watts">
+        </label>
         <button type="button" id="${mapId}AutoCalcZonesBtn">Auto-calc</button>
         <button type="submit">Save Zones</button>
         <span id="${mapId}HrProfileStatus" class="manualDataStatus"></span>
       </form>
-      <div class="mapHint">Auto-calc uses sex, age, resting HR, and your saved activity heart-rate history. Then you can manually override before saving. The latest profile effective on an activity date is used.${hrConfig?.effectiveDate ? ` Currently applied: ${escapeHtml(hrConfig.effectiveDate)}.` : ''}</div>
+      <div class="mapHint">Auto-calc uses sex, age, resting HR, and your saved activity heart-rate history. FTP is used for IF/TSS on activity summaries. The latest profile effective on an activity date is used.${hrConfig?.effectiveDate ? ` Currently applied: ${escapeHtml(hrConfig.effectiveDate)}.` : ''}</div>
     </section>
     <section class="chart resizable" data-resize-target="${mapId}SpeedSvg" data-resize-key="fitviz_speed_height" data-min-height="200" data-max-height="1200">
       <h2>Speed vs Distance${hasOverlay ? ' <span class="compLegend">— primary &nbsp;– – comparison</span>' : ''}</h2>
@@ -1228,7 +1304,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       const hrProfileStatus = document.getElementById('${mapId}HrProfileStatus');
       const autoCalcZonesBtn = document.getElementById('${mapId}AutoCalcZonesBtn');
       const vscode = window.fitVisualizerApi;
-      let hasAnalysis = false;
+      const initialAnalysis = ${safeJson(analysis || '')};
+      let hasAnalysis = Boolean(initialAnalysis);
       let chatMessages = ${safeJson(Array.isArray(analysisChat) ? analysisChat : [])};
 
       function renderChatMessages() {
@@ -1249,6 +1326,12 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       }
 
       renderChatMessages();
+      if (initialAnalysis) {
+        analysisContent.innerHTML = '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(initialAnalysis) + '</div>';
+        analyzeBtn.textContent = 'Analyze Again';
+      } else {
+        analysisContent.innerHTML = '<p style="margin:0;color:var(--muted);">Click &ldquo;Analyze Activity&rdquo; to analyze this ride with Copilot.</p>';
+      }
       
       window.addEventListener('message', (event) => {
         const msg = event.data;
@@ -1264,7 +1347,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
         if (msg.type === 'analysisResult') {
           hasAnalysis = true;
-          analysisContent.innerHTML = '<div style="color:var(--ink);white-space:pre-wrap;word-break:break-word;">' + escapeHtml(msg.analysis) + '</div>';
+          analysisContent.innerHTML = '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(msg.analysis) + '</div>';
           analyzeBtn.disabled = false;
           analyzeBtn.textContent = 'Analyze Again';
         } else if (msg.type === 'noAnalysis') {
@@ -1296,7 +1379,13 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           [2, 3, 4, 5].forEach((zone, index) => {
             document.getElementById('${mapId}Zone' + zone + 'Start').value = msg.suggestion.thresholds[index];
           });
-          hrProfileStatus.textContent = 'Auto values applied. Review and save to keep them.';
+          if (msg.suggestion.ftp > 0) {
+            document.getElementById('${mapId}AthleteFtp').value = msg.suggestion.ftp;
+          }
+          const ftpMessage = msg.suggestion.ftp > 0
+            ? ' FTP estimate applied; review and save.'
+            : ' No valid 20-minute power effort found, so FTP was left unchanged.';
+          hrProfileStatus.textContent = 'Auto values applied. Review and save to keep them.' + ftpMessage;
           hrProfileStatus.classList.remove('error');
         }
       });
@@ -1342,6 +1431,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           sex: document.getElementById('${mapId}AthleteSex').value,
           age: document.getElementById('${mapId}AthleteAge').value,
           restingHr: document.getElementById('${mapId}AthleteRestingHr').value,
+          ftp: document.getElementById('${mapId}AthleteFtp').value,
         });
       });
 
@@ -1581,6 +1671,17 @@ function renderComparisonTable(a, b, aName, bName) {
     ['Duration', a.durationText, b.durationText],
     ['Avg Speed (km/h)', a.avgSpeed.toFixed(2), b.avgSpeed.toFixed(2)],
     ['Max Speed (km/h)', a.maxSpeed.toFixed(2), b.maxSpeed.toFixed(2)],
+    ['Avg Power (W)', a.avgPower.toFixed(0), b.avgPower.toFixed(0)],
+    ['Max Power (W)', a.maxPower.toFixed(0), b.maxPower.toFixed(0)],
+    ['Normalized Power (W)', a.normalizedPower.toFixed(0), b.normalizedPower.toFixed(0)],
+    ['Intensity Factor (IF)', a.intensityFactor > 0 ? a.intensityFactor.toFixed(2) : 'n/a', b.intensityFactor > 0 ? b.intensityFactor.toFixed(2) : 'n/a'],
+    ['TSS', a.trainingStressScore > 0 ? a.trainingStressScore.toFixed(1) : 'n/a', b.trainingStressScore > 0 ? b.trainingStressScore.toFixed(1) : 'n/a'],
+    ['xPower (GC) (W)', a.xPower > 0 ? a.xPower.toFixed(0) : 'n/a', b.xPower > 0 ? b.xPower.toFixed(0) : 'n/a'],
+    ['RI (GC)', a.relativeIntensityGc > 0 ? a.relativeIntensityGc.toFixed(2) : 'n/a', b.relativeIntensityGc > 0 ? b.relativeIntensityGc.toFixed(2) : 'n/a'],
+    ['BikeStress (GC)', a.bikeStressScore > 0 ? a.bikeStressScore.toFixed(1) : 'n/a', b.bikeStressScore > 0 ? b.bikeStressScore.toFixed(1) : 'n/a'],
+    ['Decoupling % (Intervals)', Number.isFinite(a.decouplingPct) ? `${a.decouplingPct.toFixed(1)}%` : 'n/a', Number.isFinite(b.decouplingPct) ? `${b.decouplingPct.toFixed(1)}%` : 'n/a'],
+    ['TRIMP', a.trimp > 0 ? a.trimp.toFixed(1) : 'n/a', b.trimp > 0 ? b.trimp.toFixed(1) : 'n/a'],
+    ['hrTSS', a.hrTss > 0 ? a.hrTss.toFixed(1) : 'n/a', b.hrTss > 0 ? b.hrTss.toFixed(1) : 'n/a'],
     ['Avg HR (bpm)', a.avgHr.toFixed(0), b.avgHr.toFixed(0)],
     ['Max HR (bpm)', a.maxHr.toFixed(0), b.maxHr.toFixed(0)],
     ['Elevation Gain (m)', a.elevationGainM.toFixed(0), b.elevationGainM.toFixed(0)],
@@ -1642,9 +1743,10 @@ function renderHeartRateZones(zoneData) {
   </div>`;
 }
 
-function buildSummary(records, sessions) {
+function buildSummary(records, sessions, options = {}) {
   const speeds = records.map((r) => asNumber(r.speed)).filter((v) => Number.isFinite(v));
   const hrs = records.map((r) => asNumber(r.heart_rate)).filter((v) => Number.isFinite(v));
+  const powers = records.map((r) => asNumber(r.power)).filter((v) => Number.isFinite(v));
   const distances = records.map((r) => asNumber(r.distance)).filter((v) => Number.isFinite(v));
   const altitudeM = records
     .map((r) => asNumber(r.altitude))
@@ -1666,15 +1768,60 @@ function buildSummary(records, sessions) {
     : (Number.isFinite(totalElapsed) ? totalElapsed : estimateDuration(records));
   const sessionAvgHr = asNumber(session.avg_hr);
   const sessionMaxHr = asNumber(session.max_hr);
+  const avgHr = hrs.length ? average(hrs) : (Number.isFinite(sessionAvgHr) ? sessionAvgHr : 0);
+  const maxHr = hrs.length ? maxOrZero(hrs) : (Number.isFinite(sessionMaxHr) ? sessionMaxHr : 0);
+  const normalizedPower = calculateNormalizedPower(records);
+
+  const ftp = asNumber(options.ftp);
+  const intensityFactor = calculateIntensityFactor(normalizedPower, ftp);
+  const trainingStressScore = calculateTrainingStressScore(durationSec, normalizedPower, intensityFactor, ftp);
+  const xPower = calculateXPower(records);
+  const relativeIntensityGc = calculateIntensityFactor(xPower, ftp);
+  const bikeStressScore = calculateBikeStressScore(durationSec, xPower, relativeIntensityGc, ftp);
+
+  const restingHeartRate = asNumber(options.restingHeartRate);
+  const maxHeartRateForHrr = Number.isFinite(asNumber(options.maxHeartRateForHrr))
+    ? asNumber(options.maxHeartRateForHrr)
+    : maxHr;
+  const trimp = calculateBanisterTrimp({
+    durationSec,
+    avgHeartRate: avgHr,
+    restingHeartRate,
+    maxHeartRate: maxHeartRateForHrr,
+    sex: options.sex,
+  });
+  const hrTss = calculateHrTss({
+    durationSec,
+    avgHeartRate: avgHr,
+    restingHeartRate,
+    maxHeartRate: maxHeartRateForHrr,
+  });
+  const decouplingPct = calculateIntervalsDecoupling(records, {
+    ftp,
+    restingHeartRate,
+    maxHeartRate: maxHeartRateForHrr,
+  });
 
   return {
     records: records.length,
     distanceKm: Number.isFinite(distanceKm) ? distanceKm : 0,
     durationText: formatHms(durationSec),
+    durationSec,
     avgSpeed: average(speeds),
     maxSpeed: maxOrZero(speeds),
-    avgHr: hrs.length ? average(hrs) : (Number.isFinite(sessionAvgHr) ? sessionAvgHr : 0),
-    maxHr: hrs.length ? maxOrZero(hrs) : (Number.isFinite(sessionMaxHr) ? sessionMaxHr : 0),
+    avgPower: average(powers),
+    maxPower: maxOrZero(powers),
+    normalizedPower,
+    intensityFactor,
+    trainingStressScore,
+    xPower,
+    relativeIntensityGc,
+    bikeStressScore,
+    decouplingPct,
+    trimp,
+    hrTss,
+    avgHr,
+    maxHr,
     elevationGainM: elevation.gain,
     elevationLossM: elevation.loss,
   };
@@ -2180,7 +2327,9 @@ async function generateActivityAnalysis(dbPath, activityId, force = false) {
 
   const summary = await getProgressSummaryFromDb(dbPath, numId);
   const hrConfig = await getHeartRateConfigForActivity(dbPath, current.sessions?.[0]?.start_time);
-  const prompt = generateAnalysisPrompt(current, summary, hrConfig);
+  const previousAnalysis = await getAnalysisFromDb(dbPath, numId);
+  const followUpHistory = await getAnalysisChatFromDb(dbPath, numId);
+  const prompt = generateAnalysisPrompt(current, summary, hrConfig, previousAnalysis, followUpHistory);
   const analysis = await requestCopilotAnalysis(vscode, prompt);
   await storeAnalysisInDb(dbPath, numId, analysis);
 
@@ -2248,6 +2397,7 @@ async function updateHeartRateProfile(dbPath, message) {
     }
   }
   const athleteProfile = parseOptionalAthleteProfile(message);
+  const ftp = parseOptionalFtp(message.ftp);
 
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
@@ -2265,10 +2415,14 @@ async function updateHeartRateProfile(dbPath, message) {
         zone5_start = excluded.zone5_start,
         updated_at = excluded.updated_at
     `, [effectiveDate, maxHeartRate, ...thresholds, now, now]);
-    if (athleteProfile) {
-      upsertAthleteProfile(db, athleteProfile, now);
+    if (athleteProfile || ftp != null) {
+      upsertAthleteProfile(db, {
+        sex: athleteProfile?.sex,
+        age: athleteProfile?.age,
+        restingHeartRate: athleteProfile?.restingHeartRate,
+        ftp,
+      }, now);
     }
-    db.run('DELETE FROM activity_analysis');
     await persistDatabase(db, dbPath);
   } finally {
     db.close();
@@ -2283,21 +2437,36 @@ async function autoCalculateHeartRateProfileFromDb(dbPath, message) {
   try {
     stmt = db.prepare(`
       SELECT
-        COALESCE(MAX(COALESCE(manual_max_hr, max_hr)), 0) AS max_session_hr,
+        COALESCE(MAX(max_hr), 0) AS max_session_hr,
         COALESCE((SELECT MAX(heart_rate) FROM records), 0) AS max_record_hr
       FROM activities
     `);
     stmt.step();
     const row = stmt.getAsObject();
     const observedMaxHeartRate = Math.max(Number(row.max_session_hr) || 0, Number(row.max_record_hr) || 0);
+    const records = [];
+    const activityId = Number(message?.id);
+    if (Number.isInteger(activityId) && activityId > 0) {
+      stmt.free();
+      stmt = db.prepare('SELECT elapsed_s AS elapsed_time, power FROM records WHERE activity_id = ? ORDER BY elapsed_s');
+      stmt.bind([activityId]);
+      while (stmt.step()) {
+        records.push(stmt.getAsObject());
+      }
+    }
     const suggestion = calculateAutoHeartRateProfile({
       sex: athleteProfile.sex,
       age: athleteProfile.age,
       restingHeartRate: athleteProfile.restingHeartRate,
       observedMaxHeartRate,
     });
+    suggestion.ftp = calculateAutoFtp(records);
     const now = new Date().toISOString();
-    upsertAthleteProfile(db, athleteProfile, now);
+    upsertAthleteProfile(db, {
+      sex: athleteProfile.sex,
+      age: athleteProfile.age,
+      restingHeartRate: athleteProfile.restingHeartRate,
+    }, now);
     await persistDatabase(db, dbPath);
     return suggestion;
   } finally {
@@ -2308,14 +2477,21 @@ async function autoCalculateHeartRateProfileFromDb(dbPath, message) {
 
 function upsertAthleteProfile(db, profile, updatedAt) {
   db.run(`
-    INSERT INTO athlete_profile (id, sex, age, resting_hr, updated_at)
-    VALUES (1, ?, ?, ?, ?)
+    INSERT INTO athlete_profile (id, sex, age, resting_hr, ftp, updated_at)
+    VALUES (1, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
-      sex = excluded.sex,
-      age = excluded.age,
-      resting_hr = excluded.resting_hr,
+      sex = COALESCE(excluded.sex, athlete_profile.sex),
+      age = COALESCE(excluded.age, athlete_profile.age),
+      resting_hr = COALESCE(excluded.resting_hr, athlete_profile.resting_hr),
+      ftp = COALESCE(excluded.ftp, athlete_profile.ftp),
       updated_at = excluded.updated_at
-  `, [profile.sex, profile.age, profile.restingHeartRate, updatedAt]);
+  `, [
+    profile?.sex ?? null,
+    Number.isFinite(asNumber(profile?.age)) ? Math.round(asNumber(profile.age)) : null,
+    Number.isFinite(asNumber(profile?.restingHeartRate)) ? Math.round(asNumber(profile.restingHeartRate)) : null,
+    Number.isFinite(asNumber(profile?.ftp)) ? Math.round(asNumber(profile.ftp)) : null,
+    updatedAt,
+  ]);
 }
 
 function parseRequiredAthleteProfile(message) {
@@ -2354,6 +2530,17 @@ function parseOptionalAthleteProfile(message) {
     age: Math.round(age),
     restingHeartRate: Math.round(restingHeartRate),
   };
+}
+
+function parseOptionalFtp(value) {
+  if (value == null || String(value).trim() === '') {
+    return null;
+  }
+  const ftp = Number(value);
+  if (!Number.isFinite(ftp) || ftp < 80 || ftp > 500) {
+    throw new Error('FTP must be between 80 and 500 watts.');
+  }
+  return Math.round(ftp);
 }
 
 function parseOptionalHeartRate(value, label) {
@@ -2434,11 +2621,59 @@ async function getProgressSummaryFromDb(dbPath, activityId) {
       COMPARABLE_DISTANCE_MAX_RATIO,
     ]);
     stmt.step();
-    return stmt.getAsObject();
+    const summary = stmt.getAsObject();
+    stmt.free();
+    stmt = db.prepare(`
+      WITH selected AS (
+        SELECT start_time, total_distance_km
+        FROM activities
+        WHERE id = ?
+      )
+      SELECT activities.avg_speed_kmh, COALESCE(activities.manual_avg_hr, activities.avg_hr) AS avg_hr, activities.start_time
+      FROM activities, selected
+      WHERE (
+        datetime(activities.start_time) < datetime(selected.start_time)
+        OR (datetime(activities.start_time) = datetime(selected.start_time) AND activities.id < ?)
+      )
+        AND selected.total_distance_km > 0
+        AND activities.total_distance_km BETWEEN selected.total_distance_km * ? AND selected.total_distance_km * ?
+      ORDER BY datetime(activities.start_time) ASC, activities.id ASC
+    `);
+    stmt.bind([
+      activityId,
+      activityId,
+      COMPARABLE_DISTANCE_MIN_RATIO,
+      COMPARABLE_DISTANCE_MAX_RATIO,
+    ]);
+    const prior = [];
+    while (stmt.step()) {
+      prior.push(stmt.getAsObject());
+    }
+    summary.trend_speed = calculateProgressTrend(prior, 'avg_speed_kmh', 'km/h');
+    summary.trend_heart_rate = calculateProgressTrend(prior, 'avg_hr', 'bpm');
+    return summary;
   } finally {
     stmt?.free();
     db.close();
   }
+}
+
+function calculateProgressTrend(activities, field, unit) {
+  const values = activities
+    .map((activity) => Number(activity[field]))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (values.length < 4) {
+    return 'insufficient data';
+  }
+  const midpoint = Math.floor(values.length / 2);
+  const earlier = average(values.slice(0, midpoint));
+  const recent = average(values.slice(midpoint));
+  if (!Number.isFinite(earlier) || earlier <= 0 || !Number.isFinite(recent)) {
+    return 'insufficient data';
+  }
+  const changePct = ((recent - earlier) / earlier) * 100;
+  const direction = changePct > 2 ? 'rising' : changePct < -2 ? 'falling' : 'stable';
+  return `${direction} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%, ${unit})`;
 }
 
 async function storeAnalysisInDb(dbPath, activityId, analysis) {
