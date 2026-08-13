@@ -63,6 +63,8 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
     duration: session.total_timer_s ? formatHms(Math.round(session.total_timer_s)) : 'N/A',
     avgSpeed: session.avg_speed_kmh?.toFixed(2),
     maxSpeed: session.max_speed_kmh?.toFixed(2),
+    avgPower: Number.isFinite(Number(session.avg_power)) ? Number(session.avg_power).toFixed(0) : null,
+    maxPower: Number.isFinite(Number(session.max_power)) ? Number(session.max_power).toFixed(0) : null,
     normalizedPower: session.normalized_power?.toFixed(0),
     intensityFactor: Number.isFinite(Number(session.intensity_factor)) ? Number(session.intensity_factor).toFixed(2) : null,
     trainingStressScore: Number.isFinite(Number(session.training_stress_score)) ? Number(session.training_stress_score).toFixed(1) : null,
@@ -75,6 +77,7 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
     avgHr: session.avg_hr?.toFixed(0),
     maxHr: session.max_hr?.toFixed(0),
     elevation: session.total_ascent_m?.toFixed(0),
+    powerSource: session.power_source === 'estimated' ? 'estimated from motion data' : session.power_source === 'measured' ? 'measured' : 'unavailable',
   };
   const priorActivityCount = Number(progressSummary?.total_activities || 0);
   const hasBaseline = priorActivityCount > 0;
@@ -135,6 +138,8 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
 - Duration: ${currentStats.duration || 'N/A'}
 - Avg Speed: ${currentStats.avgSpeed || 'N/A'} km/h
 - Max Speed: ${currentStats.maxSpeed || 'N/A'} km/h
+- Average Power: ${currentStats.avgPower || 'N/A'} W
+- Max Power: ${currentStats.maxPower || 'N/A'} W
 - Normalized Power: ${currentStats.normalizedPower || 'N/A'} W
 - Intensity Factor: ${currentStats.intensityFactor || 'N/A'}
 - TSS: ${currentStats.trainingStressScore || 'N/A'}
@@ -147,7 +152,8 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
 - Avg Heart Rate: ${currentStats.avgHr || 'N/A'} bpm
 - Max Heart Rate: ${currentStats.maxHr || 'N/A'} bpm
 - Elevation Gain: ${currentStats.elevation || 'N/A'} m
-
+- Power source: ${currentStats.powerSource}
+${currentStats.powerSource === 'estimated from motion data' ? '\n**Data Quality Note:** Power metrics are motion-estimated (from speed, altitude, and mass) and may be physiologically implausible, especially peak values. These figures and derived metrics (NP, IF, TSS, xPower, RI, BikeStress, Decoupling) should be disregarded for training-load decisions. Use heart-rate trends and effort perception instead.\n' : ''}
 ${summaryContext}
 
 ${heartRateProfileContext}
@@ -187,6 +193,8 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
     duration: session.total_timer_s ? formatHms(Math.round(session.total_timer_s)) : 'N/A',
     avgSpeed: session.avg_speed_kmh?.toFixed(2) || 'N/A',
     maxSpeed: session.max_speed_kmh?.toFixed(2) || 'N/A',
+    avgPower: Number.isFinite(Number(session.avg_power)) ? Number(session.avg_power).toFixed(0) : 'N/A',
+    maxPower: Number.isFinite(Number(session.max_power)) ? Number(session.max_power).toFixed(0) : 'N/A',
     normalizedPower: session.normalized_power?.toFixed(0) || 'N/A',
     intensityFactor: Number.isFinite(Number(session.intensity_factor)) ? Number(session.intensity_factor).toFixed(2) : 'N/A',
     trainingStressScore: Number.isFinite(Number(session.training_stress_score)) ? Number(session.training_stress_score).toFixed(1) : 'N/A',
@@ -200,6 +208,7 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
     maxHr: session.max_hr?.toFixed(0) || 'N/A',
     ascent: session.total_ascent_m?.toFixed(0) || 'N/A',
     descent: session.total_descent_m?.toFixed(0) || 'N/A',
+    powerSource: session.power_source === 'estimated' ? 'estimated from motion data' : session.power_source === 'measured' ? 'measured' : 'unavailable',
   };
   const safeHistory = Array.isArray(history)
     ? history
@@ -219,6 +228,8 @@ Workout facts for this activity:
 - Duration: ${currentStats.duration}
 - Avg speed: ${currentStats.avgSpeed} km/h
 - Max speed: ${currentStats.maxSpeed} km/h
+- Average power: ${currentStats.avgPower} W
+- Max power: ${currentStats.maxPower} W
 - Normalized power: ${currentStats.normalizedPower} W
 - Intensity factor: ${currentStats.intensityFactor}
 - TSS: ${currentStats.trainingStressScore}
@@ -232,9 +243,10 @@ Workout facts for this activity:
 - Max heart rate: ${currentStats.maxHr} bpm
 - Elevation gain: ${currentStats.ascent} m
 - Elevation loss: ${currentStats.descent} m
+- Power source: ${currentStats.powerSource}
 - Comparable prior activities: ${priorActivityCount}
 - HR profile: ${hasHeartRateProfile ? `max HR ${heartRateConfig.maxHeartRate} bpm, zones ${Array.isArray(heartRateConfig.thresholds) ? heartRateConfig.thresholds.join(', ') : 'auto-derived'}` : 'not configured'}
-
+${currentStats.powerSource === 'estimated from motion data' ? '\n**Data Quality Note:** Power metrics are motion-estimated (from speed, altitude, and mass) and may be physiologically implausible, especially peak values. These figures and derived metrics (NP, IF, TSS, xPower, RI, BikeStress, Decoupling) should be disregarded for training-load decisions. Use heart-rate trends and effort perception instead.\n' : ''}
 Initial analysis:
 ${baseAnalysis || 'No initial analysis has been generated yet.'}
 

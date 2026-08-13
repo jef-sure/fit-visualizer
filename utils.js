@@ -208,49 +208,84 @@ function estimatePowerFromMotion(records, input = {}) {
   const gravity = 9.80665;
   const airDensity = Number.isFinite(asNumber(input.airDensity)) ? asNumber(input.airDensity) : 1.225;
   const rollingCoefficient = Number.isFinite(asNumber(input.rollingCoefficient))
-    ? asNumber(input.rollingCoefficient) : 0.005;
-  const dragArea = Number.isFinite(asNumber(input.dragArea)) ? asNumber(input.dragArea) : 0.32;
+    ? asNumber(input.rollingCoefficient) : 0.004;
+  const dragArea = Number.isFinite(asNumber(input.dragArea)) ? asNumber(input.dragArea) : 0.25;
   const drivetrainEfficiency = Number.isFinite(asNumber(input.drivetrainEfficiency))
     ? asNumber(input.drivetrainEfficiency) : 0.97;
+  const maxPhysiologicalPower = 1200;
+
+  const samples = [];
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i] || {};
+    const elapsed = asNumber(record.elapsed_time);
+    const speed = asNumber(record.speed);
+    const altitude = asNumber(record.altitude);
+    const distance = asNumber(record.distance);
+    const hasValidGpsFix = Number.isFinite(asNumber(record.position_lat))
+      && Number.isFinite(asNumber(record.position_long))
+      && !(asNumber(record.position_lat) === 0 && asNumber(record.position_long) === 0);
+
+    if (Number.isFinite(elapsed) && Number.isFinite(speed) && Number.isFinite(altitude) && hasValidGpsFix) {
+      samples.push({ elapsed, speed: Math.max(0, speed), altitude, distance: Number.isFinite(distance) ? distance : 0 });
+    }
+  }
+
+  if (samples.length < 2) {
+    return [];
+  }
+
+  const smoothedAltitude = smoothSeries(samples.map((s) => s.altitude), 5);
   const result = [];
 
-  for (let index = 1; index < records.length; index += 1) {
-    const previous = records[index - 1] || {};
-    const current = records[index] || {};
-    const elapsed = asNumber(current.elapsed_time);
-    const previousElapsed = asNumber(previous.elapsed_time);
-    const dt = elapsed - previousElapsed;
-    const speedKmh = asNumber(current.speed);
-    const previousSpeedKmh = asNumber(previous.speed);
-    const altitude = asNumber(current.altitude);
-    const previousAltitude = asNumber(previous.altitude);
-    const distanceKm = asNumber(current.distance);
-    const previousDistanceKm = asNumber(previous.distance);
-    if (!Number.isFinite(dt) || dt <= 0 || dt > 5
-        || !Number.isFinite(speedKmh) || speedKmh < 0
-        || !Number.isFinite(previousSpeedKmh) || previousSpeedKmh < 0
-        || !Number.isFinite(altitude) || !Number.isFinite(previousAltitude)) {
+  for (let index = 1; index < samples.length; index += 1) {
+    const previous = samples[index - 1];
+    const current = samples[index];
+    const dt = current.elapsed - previous.elapsed;
+    const speed = (previous.speed + current.speed) / 2;
+
+    if (dt <= 0 || dt > 5 || speed < 0.5) {
       continue;
     }
 
-    const speed = speedKmh / 3.6;
-    const previousSpeed = previousSpeedKmh / 3.6;
-    const distanceM = Number.isFinite(distanceKm) && Number.isFinite(previousDistanceKm)
-      ? Math.max(0, (distanceKm - previousDistanceKm) * 1000)
+    const altitudeDelta = (smoothedAltitude[index] || current.altitude) - (smoothedAltitude[index - 1] || previous.altitude);
+    const distanceDeltaM = Number.isFinite(current.distance) && Number.isFinite(previous.distance)
+      ? (current.distance - previous.distance) * 1000
+      : NaN;
+    const distanceM = Number.isFinite(distanceDeltaM) && distanceDeltaM > 0
+      ? distanceDeltaM
       : speed * dt;
-    const grade = distanceM > 0 ? (altitude - previousAltitude) / distanceM : 0;
+
+    const rawGrade = altitudeDelta / Math.max(distanceM, 1);
+    if (Math.abs(rawGrade) > 0.18) {
+      continue;
+    }
+
+    const grade = Math.max(-0.18, Math.min(0.18, rawGrade));
     const angle = Math.atan(grade);
-    const acceleration = (speed - previousSpeed) / dt;
+
     const gravityPower = totalMassKg * gravity * Math.sin(angle) * speed;
     const rollingPower = totalMassKg * gravity * rollingCoefficient * Math.cos(angle) * speed;
     const aerodynamicPower = 0.5 * airDensity * dragArea * speed ** 3;
-    const accelerationPower = totalMassKg * acceleration * speed;
-    const wheelPower = gravityPower + rollingPower + aerodynamicPower + accelerationPower;
-    const estimatedPower = Math.max(0, wheelPower / drivetrainEfficiency);
-    result.push({ elapsed_time: elapsed, power: estimatedPower });
+    const wheelPower = Math.max(0, gravityPower + rollingPower + aerodynamicPower);
+    const estimatedPower = Math.min(maxPhysiologicalPower, wheelPower / drivetrainEfficiency);
+
+    result.push({ elapsed_time: current.elapsed, power: estimatedPower });
   }
 
   return result;
+}
+
+function smoothSeries(values, windowSize = 5) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return values;
+  }
+  const half = Math.floor(windowSize / 2);
+  return values.map((_, index) => {
+    const start = Math.max(0, index - half);
+    const end = Math.min(values.length, index + half + 1);
+    const window = values.slice(start, end).filter((v) => Number.isFinite(v));
+    return window.length ? average(window) : values[index];
+  });
 }
 
 function addEstimatedPowerWhenMissing(records, input = {}) {
