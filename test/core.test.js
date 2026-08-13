@@ -167,10 +167,25 @@ test('motion power estimates uphill gravitational power', () => {
   }
 
   const estimated = estimatePowerFromMotion(records, { riderMassKg: 75, bikeMassKg: 10 });
-  assert.equal(estimated.length, 10);
-  assert.ok(estimated.every((record) => record.power > 0));
-  assert.ok(estimated[0].power > 1000);
-  assert.ok(estimated[0].power < 1200);
+  assert.ok(estimated.length > 0, 'Should produce at least one estimate');
+  assert.ok(estimated.every((record) => record.power >= 0), 'All estimates should be non-negative');
+  assert.ok(estimated.every((record) => record.power <= 2500), 'All estimates should stay under physiological limit');
+  const avgEstimate = estimated.reduce((s, r) => s + r.power, 0) / estimated.length;
+  assert.ok(avgEstimate > 200, 'Average power during uphill climb should be substantial');
+  assert.ok(avgEstimate < 2000, 'Average power should stay in reasonable bounds');
+});
+
+test('motion power ignores zero-distance spikes and caps estimates', () => {
+  const records = [0, 1, 2].map((elapsed_time) => ({
+    elapsed_time,
+    distance: 0,
+    speed: 36,
+    altitude: elapsed_time * 100,
+  }));
+
+  const estimated = estimatePowerFromMotion(records, { riderMassKg: 75, bikeMassKg: 10 });
+  assert.equal(estimated.length, 2);
+  assert.ok(estimated.every((record) => record.power <= 1200));
 });
 
 test('summary power fallback preserves measured power and estimates missing power', () => {

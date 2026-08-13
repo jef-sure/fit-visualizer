@@ -42,7 +42,7 @@ const {
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 4;
+const ANALYSIS_VERSION = 6;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
 const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
@@ -541,13 +541,16 @@ async function loadFitDataFromDb(dbPath, activityId) {
     const records = [];
     while (recStmt.step()) {
       const r = recStmt.getAsObject();
+      const latitude = Number.isFinite(asNumber(r.latitude)) ? asNumber(r.latitude) : null;
+      const longitude = Number.isFinite(asNumber(r.longitude)) ? asNumber(r.longitude) : null;
+      const hasGpsFix = !(latitude === 0 && longitude === 0);
       records.push({
         distance:               r.distance_km,
         speed:                  r.speed_kmh,
         heart_rate:             r.heart_rate,
         altitude:               r.altitude_m != null ? r.altitude_m / 1000 : null,
-        position_lat:           r.latitude,
-        position_long:          r.longitude,
+        position_lat:           hasGpsFix ? latitude : null,
+        position_long:          hasGpsFix ? longitude : null,
         elapsed_time:           r.elapsed_s,
         timestamp:              r.timestamp,
         cadence:                r.cadence,
@@ -780,6 +783,7 @@ function upsertActivity(db, filePath, fitData) {
     const r = records[i];
     const lat = normalizeCoordinate(r.position_lat, 90);
     const lon = normalizeCoordinate(r.position_long, 180);
+    const hasGpsFix = Number.isFinite(lat) && Number.isFinite(lon) && !(lat === 0 && lon === 0);
     insertRecord.run([
       activityId, i,
       toSqlStr(r.timestamp) || null,
@@ -788,8 +792,8 @@ function upsertActivity(db, filePath, fitData) {
       asNumber(r.speed),
       asNumber(r.heart_rate),
       Number.isFinite(asNumber(r.altitude)) ? asNumber(r.altitude) * 1000 : null,
-      Number.isFinite(lat) ? lat : null,
-      Number.isFinite(lon) ? lon : null,
+      hasGpsFix ? lat : null,
+      hasGpsFix ? lon : null,
       asNumber(r.cadence) || null,
       Number.isFinite(asNumber(r.power)) ? asNumber(r.power) : null,
       asNumber(r.temperature) || null,
@@ -1195,6 +1199,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       ${metric('Elevation Loss (m)', summary.elevationLossM.toFixed(0))}
       ${metric('GPS Points', gpsRoute.pointCount)}
     </section>
+    ${primaryPower.source === 'estimated' ? `<section style="padding:12px;margin-bottom:16px;background:rgba(255,193,7,0.1);border-left:4px solid #ffc107;color:var(--ink);font-size:0.95rem;line-height:1.5;">
+      <strong>⚠ Data Quality Note:</strong> Power metrics are motion-estimated (from speed, altitude, and mass) and may be physiologically implausible, especially peak values. These figures and derived metrics (NP, IF, TSS, xPower, RI, BikeStress, Decoupling) should be disregarded for training-load decisions. Use heart-rate trends and effort perception instead.
+    </section>` : ''}
     <section class="chart manualData">
       <h2>Manual Activity Data</h2>
       <form id="${mapId}ManualDataForm" class="manualDataForm">
@@ -2398,15 +2405,48 @@ async function generateActivityAnalysis(dbPath, activityId, force = false) {
     throw new Error(`Activity ${numId} not found in database`);
   }
 
+  const analysisData = await prepareAnalysisData(dbPath, current, numId);
   const summary = await getProgressSummaryFromDb(dbPath, numId);
-  const hrConfig = await getHeartRateConfigForActivity(dbPath, current.sessions?.[0]?.start_time);
+  const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time);
   const previousAnalysis = await getAnalysisFromDb(dbPath, numId);
   const followUpHistory = await getAnalysisChatFromDb(dbPath, numId);
-  const prompt = generateAnalysisPrompt(current, summary, hrConfig, previousAnalysis, followUpHistory);
+  const prompt = generateAnalysisPrompt(analysisData, summary, hrConfig, previousAnalysis, followUpHistory);
   const analysis = await requestCopilotAnalysis(vscode, prompt);
   await storeAnalysisInDb(dbPath, numId, analysis);
 
   return analysis;
+}
+
+async function prepareAnalysisData(dbPath, fitData, activityId) {
+  const athleteProfile = await getAthleteProfile(dbPath, activityId);
+  const powerData = addEstimatedPowerWhenMissing(fitData.records, {
+    riderMassKg: athleteProfile.riderMassKg,
+    bikeMassKg: athleteProfile.bikeMassKg,
+  });
+  const session = fitData.sessions?.[0] || {};
+  const summary = buildSummary(powerData.records, fitData.sessions, {
+    ftp: athleteProfile.ftp,
+    restingHeartRate: athleteProfile.restingHeartRate,
+    sex: athleteProfile.sex,
+    maxHeartRateForHrr: session.max_hr,
+  });
+  return {
+    ...fitData,
+    records: powerData.records,
+    sessions: [{
+      ...session,
+      avg_power: summary.avgPower,
+      max_power: summary.maxPower,
+      normalized_power: summary.normalizedPower,
+      training_stress_score: summary.trainingStressScore,
+      intensity_factor: summary.intensityFactor,
+      xpower: summary.xPower,
+      relative_intensity_gc: summary.relativeIntensityGc,
+      bike_stress_score: summary.bikeStressScore,
+      decoupling_pct: summary.decouplingPct,
+      power_source: powerData.source,
+    }, ...fitData.sessions.slice(1)],
+  };
 }
 
 async function updateActivityHeartRate(dbPath, activityId, avgHrInput, maxHrInput) {
@@ -2954,10 +2994,11 @@ async function generateActivityChatReply(dbPath, activityId, history, userQuesti
   if (!current) {
     throw new Error(`Activity ${activityId} not found in database`);
   }
+  const analysisData = await prepareAnalysisData(dbPath, current, activityId);
   const summary = await getProgressSummaryFromDb(dbPath, activityId);
-  const hrConfig = await getHeartRateConfigForActivity(dbPath, current.sessions?.[0]?.start_time);
+  const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time);
   const baseAnalysis = await getAnalysisFromDb(dbPath, activityId);
-  const prompt = generateAnalysisChatPrompt(current, summary, hrConfig, baseAnalysis, history, userQuestion);
+  const prompt = generateAnalysisChatPrompt(analysisData, summary, hrConfig, baseAnalysis, history, userQuestion);
   return requestCopilotAnalysis(vscode, prompt);
 }
 
