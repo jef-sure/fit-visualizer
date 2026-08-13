@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const initSqlJs = require('../vendor/sql-wasm/sql-wasm.js');
@@ -10,13 +11,16 @@ const {
   getHeartRateZoneIndex,
 } = require('../heart-rate');
 const {
+  addEstimatedPowerWhenMissing,
   asNumber,
   calculateBanisterTrimp,
   calculateAutoFtp,
   calculateBikeStressScore,
   calculateHrTss,
+  calculateHistoricalMeanMaximalPower,
   calculateIntensityFactor,
   calculateIntervalsDecoupling,
+  calculateMeanMaximalPower,
   calculateNormalizedPower,
   calculateTrainingStressScore,
   calculateXPower,
@@ -24,7 +28,20 @@ const {
   escapeHtml,
   formatHms,
   formatNumber,
+  estimateFtpCandidates,
+  estimatePowerFromMotion,
+  selectFtpEstimate,
 } = require('../utils');
+
+test('webview selector script keeps a valid selectActivity payload', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.doesNotMatch(
+    source,
+    /type:\s*'selectActivity',\s*Number\.isFinite\(athleteProfile\.riderMassKg\)/s
+  );
+  assert.match(source, /type:\s*'selectActivity',\s*id:\s*document\.getElementById\('actSel'\)\.value/s);
+  assert.match(source, /type:\s*'selectActivity'[\s\S]*?compId:/);
+});
 
 test('heart-rate zones use semantic order and stable boundaries', () => {
   const records = [100, 110, 120, 140, 160, 180]
@@ -99,6 +116,78 @@ test('auto FTP ignores rides without a continuous 20-minute effort', () => {
   }
 
   assert.equal(calculateAutoFtp(records), 0);
+});
+
+test('MMP curve captures a short hard effort at its matching duration', () => {
+  const records = [];
+  for (let elapsed = 0; elapsed <= 300; elapsed += 1) {
+    records.push({ elapsed_time: elapsed, power: elapsed < 240 ? 100 : 300 });
+  }
+
+  const curve = calculateMeanMaximalPower(records, [60, 300]);
+  assert.equal(curve[0].power, 300);
+  assert.ok(curve[1].power > 100);
+  assert.ok(curve[1].power < 300);
+});
+
+test('historical MMP takes the best duration from each ride independently', () => {
+  const firstRide = [];
+  const secondRide = [];
+  for (let elapsed = 0; elapsed <= 300; elapsed += 1) {
+    firstRide.push({ elapsed_time: elapsed, power: 200 });
+    secondRide.push({ elapsed_time: elapsed, power: 250 });
+  }
+
+  const curve = calculateHistoricalMeanMaximalPower([firstRide, secondRide], [300]);
+  assert.equal(curve[0].power, 250);
+});
+
+test('FTP candidates prefer a well-fit critical-power estimate', () => {
+  const curve = [60, 300, 1200, 3000].map((durationSec) => ({
+    durationSec,
+    power: 250 + (10000 / durationSec),
+  }));
+
+  const candidates = estimateFtpCandidates(curve);
+  assert.ok(Math.abs(candidates.cp - 250) < 0.001);
+  assert.ok(Math.abs(candidates.w_prime - 10000) < 0.001);
+  assert.ok(candidates.r_squared > 0.999);
+  assert.equal(selectFtpEstimate(candidates), 242);
+});
+
+test('motion power estimates uphill gravitational power', () => {
+  const records = [];
+  for (let elapsed = 0; elapsed <= 10; elapsed += 1) {
+    records.push({
+      elapsed_time: elapsed,
+      distance: elapsed * 0.01,
+      speed: 36,
+      altitude: elapsed * 1,
+    });
+  }
+
+  const estimated = estimatePowerFromMotion(records, { riderMassKg: 75, bikeMassKg: 10 });
+  assert.equal(estimated.length, 10);
+  assert.ok(estimated.every((record) => record.power > 0));
+  assert.ok(estimated[0].power > 1000);
+  assert.ok(estimated[0].power < 1200);
+});
+
+test('summary power fallback preserves measured power and estimates missing power', () => {
+  const missingPower = [0, 1, 2].map((elapsed_time) => ({
+    elapsed_time,
+    distance: elapsed_time * 0.01,
+    speed: 36,
+    altitude: elapsed_time,
+  }));
+  const estimated = addEstimatedPowerWhenMissing(missingPower, { riderMassKg: 75, bikeMassKg: 10 });
+  assert.equal(estimated.source, 'estimated');
+  assert.equal(estimated.records[0].power, undefined);
+  assert.ok(estimated.records[1].power > 0);
+
+  const measured = addEstimatedPowerWhenMissing([{ elapsed_time: 0, power: 0 }], { riderMassKg: 75, bikeMassKg: 10 });
+  assert.equal(measured.source, 'measured');
+  assert.equal(measured.records[0].power, 0);
 });
 
 test('normalized power weights variable efforts above arithmetic mean', () => {

@@ -69,42 +69,19 @@ function calculateNormalizedPower(records) {
     return 0;
   }
 
-  const samples = [];
+  const validPower = [];
   for (let index = 0; index < records.length; index += 1) {
-    const record = records[index] || {};
-    const power = asNumber(record.power);
-    if (!Number.isFinite(power) || power < 0) {
-      continue;
+    const power = asNumber(records[index]?.power);
+    if (Number.isFinite(power) && power >= 0) {
+      validPower.push(power);
     }
-
-    const elapsed = asNumber(record.elapsed_time);
-    samples.push({
-      t: Number.isFinite(elapsed) ? elapsed : index,
-      p: power,
-    });
   }
 
-  if (!samples.length) {
+  if (!validPower.length) {
     return 0;
   }
 
-  const rollingFourthPowers = [];
-  let start = 0;
-  let rollingSum = 0;
-  for (let end = 0; end < samples.length; end += 1) {
-    rollingSum += samples[end].p;
-    const minTime = samples[end].t - 30;
-    while (start < end && samples[start].t <= minTime) {
-      rollingSum -= samples[start].p;
-      start += 1;
-    }
-
-    const windowSize = end - start + 1;
-    const rollingAverage = rollingSum / windowSize;
-    rollingFourthPowers.push(rollingAverage ** 4);
-  }
-
-  const meanFourthPower = average(rollingFourthPowers);
+  const meanFourthPower = average(validPower.map((power) => power ** 4));
   return meanFourthPower > 0 ? meanFourthPower ** 0.25 : 0;
 }
 
@@ -144,6 +121,221 @@ function calculateAutoFtp(records) {
 
   const estimate = Math.round(bestAverage * 0.95);
   return estimate >= 80 && estimate <= 500 ? estimate : 0;
+}
+
+function calculateMeanMaximalPower(records, durations = [60, 300, 600, 1200, 1800, 3000, 3300, 3600]) {
+  if (!Array.isArray(records) || !records.length) {
+    return durations.map((durationSec) => ({ durationSec, power: 0 }));
+  }
+
+  const samples = records
+    .map((record, index) => ({
+      t: asNumber(record?.elapsed_time),
+      p: asNumber(record?.power),
+      index,
+    }))
+    .filter((sample) => Number.isFinite(sample.t) && Number.isFinite(sample.p) && sample.p >= 0)
+    .sort((left, right) => left.t - right.t || left.index - right.index);
+
+  const segments = [];
+  let segmentStart = 0;
+  for (let index = 1; index <= samples.length; index += 1) {
+    if (index === samples.length || samples[index].t - samples[index - 1].t > 5) {
+      segments.push(samples.slice(segmentStart, index));
+      segmentStart = index;
+    }
+  }
+
+  return durations.map((durationSec) => {
+    if (!Number.isFinite(durationSec) || durationSec <= 0) {
+      return { durationSec, power: 0 };
+    }
+
+    let bestAverage = 0;
+    for (const segment of segments) {
+      const prefix = new Array(segment.length + 1).fill(0);
+      for (let index = 0; index < segment.length; index += 1) {
+        prefix[index + 1] = prefix[index] + segment[index].p;
+      }
+
+      let end = 0;
+      for (let start = 0; start < segment.length; start += 1) {
+        if (end < start) {
+          end = start;
+        }
+        while (end < segment.length && segment[end].t - segment[start].t <= durationSec) {
+          end += 1;
+        }
+
+        const last = end - 1;
+        const span = last >= start ? segment[last].t - segment[start].t : 0;
+        if (span >= durationSec) {
+          const windowAverage = (prefix[end] - prefix[start]) / (end - start);
+          bestAverage = Math.max(bestAverage, windowAverage);
+        }
+      }
+    }
+
+    return { durationSec, power: bestAverage };
+  });
+}
+
+function calculateHistoricalMeanMaximalPower(activityRecords, durations) {
+  if (!Array.isArray(activityRecords) || !activityRecords.length) {
+    return calculateMeanMaximalPower([], durations);
+  }
+
+  const curve = calculateMeanMaximalPower([], durations);
+  for (const records of activityRecords) {
+    const activityCurve = calculateMeanMaximalPower(records, durations);
+    for (let index = 0; index < curve.length; index += 1) {
+      curve[index].power = Math.max(curve[index].power, activityCurve[index].power);
+    }
+  }
+  return curve;
+}
+
+function estimatePowerFromMotion(records, input = {}) {
+  const riderMassKg = asNumber(input.riderMassKg);
+  const bikeMassKg = asNumber(input.bikeMassKg);
+  const totalMassKg = riderMassKg + bikeMassKg;
+  if (!Array.isArray(records) || records.length < 2
+      || !Number.isFinite(riderMassKg) || riderMassKg <= 0
+      || !Number.isFinite(bikeMassKg) || bikeMassKg < 0) {
+    return [];
+  }
+
+  const gravity = 9.80665;
+  const airDensity = Number.isFinite(asNumber(input.airDensity)) ? asNumber(input.airDensity) : 1.225;
+  const rollingCoefficient = Number.isFinite(asNumber(input.rollingCoefficient))
+    ? asNumber(input.rollingCoefficient) : 0.005;
+  const dragArea = Number.isFinite(asNumber(input.dragArea)) ? asNumber(input.dragArea) : 0.32;
+  const drivetrainEfficiency = Number.isFinite(asNumber(input.drivetrainEfficiency))
+    ? asNumber(input.drivetrainEfficiency) : 0.97;
+  const result = [];
+
+  for (let index = 1; index < records.length; index += 1) {
+    const previous = records[index - 1] || {};
+    const current = records[index] || {};
+    const elapsed = asNumber(current.elapsed_time);
+    const previousElapsed = asNumber(previous.elapsed_time);
+    const dt = elapsed - previousElapsed;
+    const speedKmh = asNumber(current.speed);
+    const previousSpeedKmh = asNumber(previous.speed);
+    const altitude = asNumber(current.altitude);
+    const previousAltitude = asNumber(previous.altitude);
+    const distanceKm = asNumber(current.distance);
+    const previousDistanceKm = asNumber(previous.distance);
+    if (!Number.isFinite(dt) || dt <= 0 || dt > 5
+        || !Number.isFinite(speedKmh) || speedKmh < 0
+        || !Number.isFinite(previousSpeedKmh) || previousSpeedKmh < 0
+        || !Number.isFinite(altitude) || !Number.isFinite(previousAltitude)) {
+      continue;
+    }
+
+    const speed = speedKmh / 3.6;
+    const previousSpeed = previousSpeedKmh / 3.6;
+    const distanceM = Number.isFinite(distanceKm) && Number.isFinite(previousDistanceKm)
+      ? Math.max(0, (distanceKm - previousDistanceKm) * 1000)
+      : speed * dt;
+    const grade = distanceM > 0 ? (altitude - previousAltitude) / distanceM : 0;
+    const angle = Math.atan(grade);
+    const acceleration = (speed - previousSpeed) / dt;
+    const gravityPower = totalMassKg * gravity * Math.sin(angle) * speed;
+    const rollingPower = totalMassKg * gravity * rollingCoefficient * Math.cos(angle) * speed;
+    const aerodynamicPower = 0.5 * airDensity * dragArea * speed ** 3;
+    const accelerationPower = totalMassKg * acceleration * speed;
+    const wheelPower = gravityPower + rollingPower + aerodynamicPower + accelerationPower;
+    const estimatedPower = Math.max(0, wheelPower / drivetrainEfficiency);
+    result.push({ elapsed_time: elapsed, power: estimatedPower });
+  }
+
+  return result;
+}
+
+function addEstimatedPowerWhenMissing(records, input = {}) {
+  if (!Array.isArray(records) || records.some((record) => {
+    const power = asNumber(record?.power);
+    return Number.isFinite(power) && power >= 0;
+  })) {
+    return { records, source: 'measured' };
+  }
+
+  const estimates = estimatePowerFromMotion(records, input);
+  if (!estimates.length) {
+    return { records, source: 'unavailable' };
+  }
+
+  const estimatedPowerByElapsed = new Map(estimates.map((estimate) => [estimate.elapsed_time, estimate.power]));
+  return {
+    records: records.map((record) => ({
+      ...record,
+      power: estimatedPowerByElapsed.get(asNumber(record?.elapsed_time)) ?? record?.power,
+    })),
+    source: 'estimated',
+  };
+}
+
+function estimateFtpCandidates(mmpCurve) {
+  const points = (Array.isArray(mmpCurve) ? mmpCurve : Object.entries(mmpCurve || {})
+    .map(([durationSec, power]) => ({ durationSec: Number(durationSec), power })))
+    .map((point) => ({
+      durationSec: asNumber(point.durationSec),
+      power: asNumber(point.power),
+    }))
+    .filter((point) => Number.isFinite(point.durationSec)
+      && point.durationSec > 0
+      && Number.isFinite(point.power)
+      && point.power > 0);
+  const candidates = {};
+
+  if (points.length >= 3) {
+    const xMean = average(points.map((point) => 1 / point.durationSec));
+    const yMean = average(points.map((point) => point.power));
+    const denominator = points.reduce((sum, point) => sum + ((1 / point.durationSec) - xMean) ** 2, 0);
+    if (denominator > 0) {
+      const slope = points.reduce((sum, point) => (
+        sum + ((1 / point.durationSec) - xMean) * (point.power - yMean)
+      ), 0) / denominator;
+      const cp = yMean - slope * xMean;
+      const totalSquares = points.reduce((sum, point) => sum + (point.power - yMean) ** 2, 0);
+      const residualSquares = points.reduce((sum, point) => {
+        const predicted = cp + slope / point.durationSec;
+        return sum + (point.power - predicted) ** 2;
+      }, 0);
+      const rSquared = totalSquares > 0 ? 1 - residualSquares / totalSquares : 0;
+      if (Number.isFinite(cp) && cp > 0 && Number.isFinite(slope) && slope >= 0 && rSquared >= 0.85) {
+        candidates.cp_derived = cp * 0.97;
+        candidates.cp = cp;
+        candidates.w_prime = slope;
+        candidates.r_squared = rSquared;
+      }
+    }
+  }
+
+  const byDuration = new Map(points.map((point) => [point.durationSec, point.power]));
+  if (byDuration.has(3600)) {
+    candidates.mmp_60min = byDuration.get(3600);
+  } else if (byDuration.has(3300) || byDuration.has(3000)) {
+    const durationSec = byDuration.has(3300) ? 3300 : 3000;
+    candidates.mmp_close_to_60min = byDuration.get(durationSec);
+  }
+  if (byDuration.has(1200)) {
+    candidates['20min_proxy'] = byDuration.get(1200) * 0.95;
+  }
+
+  return candidates;
+}
+
+function selectFtpEstimate(candidates) {
+  const keys = ['cp_derived', 'mmp_60min', 'mmp_close_to_60min', '20min_proxy'];
+  for (const key of keys) {
+    const value = asNumber(candidates?.[key]);
+    if (Number.isFinite(value) && value >= 80 && value <= 500) {
+      return Math.round(value);
+    }
+  }
+  return 0;
 }
 
 function calculateXPower(records) {
@@ -405,6 +597,7 @@ function escapeHtml(value) {
 }
 
 module.exports = {
+  addEstimatedPowerWhenMissing,
   asNumber,
   average,
   calculateBanisterTrimp,
@@ -413,7 +606,12 @@ module.exports = {
   calculateHrTss,
   calculateIntensityFactor,
   calculateIntervalsDecoupling,
+  calculateHistoricalMeanMaximalPower,
+  calculateMeanMaximalPower,
   calculateNormalizedPower,
+  estimateFtpCandidates,
+  estimatePowerFromMotion,
+  selectFtpEstimate,
   calculateTrainingStressScore,
   calculateXPower,
   createNonce,
