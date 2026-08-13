@@ -11,11 +11,13 @@ const {
   getHeartRateZoneIndex: getHrZoneIndex,
 } = require('./heart-rate');
 const {
+  addEstimatedPowerWhenMissing,
   asNumber,
   average,
   calculateBanisterTrimp,
-  calculateAutoFtp,
   calculateBikeStressScore,
+  calculateHistoricalMeanMaximalPower,
+  calculateMeanMaximalPower,
   calculateHrTss,
   calculateIntensityFactor,
   calculateIntervalsDecoupling,
@@ -24,6 +26,8 @@ const {
   calculateXPower,
   createNonce,
   downsamplePoints,
+  estimateFtpCandidates,
+  estimatePowerFromMotion,
   escapeHtml,
   estimateDuration,
   formatHms,
@@ -31,6 +35,7 @@ const {
   maxOrZero,
   roundTo,
   safeJson,
+  selectFtpEstimate,
   toSqlStr,
 } = require('./utils');
 
@@ -439,7 +444,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
   async function render(selId, selCompId) {
     const data = selId ? await loadFitDataFromDb(dbPath, selId) : null;
     const comp = selCompId ? await loadFitDataFromDb(dbPath, selCompId) : null;
-    const athleteProfile = await getAthleteProfile(dbPath);
+    const athleteProfile = await getAthleteProfile(dbPath, selId);
     const analysis = selId ? await getAnalysisFromDb(dbPath, selId) : null;
     const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
     const hrConfig = data
@@ -659,7 +664,7 @@ async function persistDatabase(db, dbPath) {
 function getAthleteProfileFromDbConnection(db) {
   let stmt;
   try {
-    stmt = db.prepare('SELECT sex, resting_hr, ftp FROM athlete_profile WHERE id = 1');
+    stmt = db.prepare('SELECT sex, resting_hr, ftp, rider_mass_kg, bike_mass_kg FROM athlete_profile WHERE id = 1');
     if (!stmt.step()) {
       return { sex: '', restingHeartRate: NaN, ftp: NaN };
     }
@@ -668,6 +673,8 @@ function getAthleteProfileFromDbConnection(db) {
       sex: String(row.sex || '').toLowerCase(),
       restingHeartRate: asNumber(row.resting_hr),
       ftp: asNumber(row.ftp),
+      riderMassKg: asNumber(row.rider_mass_kg),
+      bikeMassKg: asNumber(row.bike_mass_kg),
     };
   } finally {
     stmt?.free();
@@ -702,6 +709,8 @@ function upsertActivity(db, filePath, fitData) {
     summary.trainingStressScore, summary.intensityFactor, summary.xPower, summary.relativeIntensityGc, summary.bikeStressScore, summary.decouplingPct, summary.hrTss, summary.trimp,
     null, null, null,
     null, records.length, laps.length,
+    Number.isFinite(athleteProfile.riderMassKg) ? athleteProfile.riderMassKg : null,
+    Number.isFinite(athleteProfile.bikeMassKg) ? athleteProfile.bikeMassKg : null,
   ];
 
   const upsertStmt = db.prepare(`
@@ -713,7 +722,7 @@ function upsertActivity(db, filePath, fitData) {
       avg_cadence, max_cadence, avg_power, max_power, normalized_power,
       training_stress_score, intensity_factor, xpower, relative_intensity_gc, bike_stress_score, decoupling_pct, hr_tss, trimp,
       total_training_effect, aerobic_training_effect, anaerobic_training_effect,
-      total_calories, record_count, lap_count
+      total_calories, record_count, lap_count, rider_mass_kg, bike_mass_kg
     ) VALUES (${upsertValues.map(() => '?').join(',')})
     ON CONFLICT(file_path) DO UPDATE SET
       file_name=excluded.file_name, imported_at=excluded.imported_at,
@@ -738,7 +747,9 @@ function upsertActivity(db, filePath, fitData) {
       aerobic_training_effect=excluded.aerobic_training_effect,
       anaerobic_training_effect=excluded.anaerobic_training_effect,
       total_calories=excluded.total_calories,
-      record_count=excluded.record_count, lap_count=excluded.lap_count
+      record_count=excluded.record_count, lap_count=excluded.lap_count,
+      rider_mass_kg=COALESCE(activities.rider_mass_kg, excluded.rider_mass_kg),
+      bike_mass_kg=COALESCE(activities.bike_mass_kg, excluded.bike_mass_kg)
   `);
 
   upsertStmt.run(upsertValues);
@@ -853,22 +864,37 @@ function profileRowToConfig(profile) {
   };
 }
 
-async function getAthleteProfile(dbPath) {
+async function getAthleteProfile(dbPath, activityId) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   let stmt;
   try {
-    stmt = db.prepare('SELECT sex, age, resting_hr, ftp FROM athlete_profile WHERE id = 1');
-    if (!stmt.step()) {
-      return { sex: '', age: '', restingHeartRate: '', ftp: '' };
-    }
-    const row = stmt.getAsObject();
-    return {
+    stmt = db.prepare('SELECT sex, age, resting_hr, ftp, rider_mass_kg, bike_mass_kg FROM athlete_profile WHERE id = 1');
+    const hasProfile = stmt.step();
+    const row = hasProfile ? stmt.getAsObject() : {};
+    const profile = {
       sex: String(row.sex || ''),
       age: Number.isFinite(asNumber(row.age)) ? String(Math.round(asNumber(row.age))) : '',
       restingHeartRate: Number.isFinite(asNumber(row.resting_hr)) ? String(Math.round(asNumber(row.resting_hr))) : '',
       ftp: Number.isFinite(asNumber(row.ftp)) ? String(Math.round(asNumber(row.ftp))) : '',
+      riderMassKg: Number.isFinite(asNumber(row.rider_mass_kg)) ? String(asNumber(row.rider_mass_kg)) : '',
+      bikeMassKg: Number.isFinite(asNumber(row.bike_mass_kg)) ? String(asNumber(row.bike_mass_kg)) : '',
     };
+    if (Number.isInteger(Number(activityId)) && Number(activityId) > 0) {
+      stmt.free();
+      stmt = db.prepare('SELECT rider_mass_kg, bike_mass_kg FROM activities WHERE id = ?');
+      stmt.bind([Number(activityId)]);
+      if (stmt.step()) {
+        const activity = stmt.getAsObject();
+        if (Number.isFinite(asNumber(activity.rider_mass_kg))) {
+          profile.riderMassKg = String(asNumber(activity.rider_mass_kg));
+        }
+        if (Number.isFinite(asNumber(activity.bike_mass_kg))) {
+          profile.bikeMassKg = String(asNumber(activity.bike_mass_kg));
+        }
+      }
+    }
+    return profile;
   } finally {
     stmt?.free();
     db.close();
@@ -908,7 +934,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
       function send() {
         api.postMessage({
           type: 'selectActivity',
-          id: document.getElementById('actSel').value,
+          id: document.getElementById('actSel').value || null,
           compId: document.getElementById('compSel').value || null,
         });
       }
@@ -1088,15 +1114,21 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const athleteFtp = asNumber(athleteProfile?.ftp);
   const athleteRestingHrNumber = asNumber(athleteProfile?.restingHeartRate);
   const athleteSex = String(athleteProfile?.sex || '').toLowerCase();
+  const powerInput = {
+    riderMassKg: athleteProfile?.riderMassKg,
+    bikeMassKg: athleteProfile?.bikeMassKg,
+  };
+  const primaryPower = addEstimatedPowerWhenMissing(records, powerInput);
+  const comparisonPower = hasOverlay ? addEstimatedPowerWhenMissing(compRecords, powerInput) : null;
 
-  const summary = buildSummary(records, sessions, {
+  const summary = buildSummary(primaryPower.records, sessions, {
     ftp: athleteFtp,
     restingHeartRate: athleteRestingHrNumber,
     sex: athleteSex,
     maxHeartRateForHrr: asNumber(hrConfig?.maxHeartRate),
   });
   const compSummary = hasOverlay
-    ? buildSummary(compRecords, Array.isArray(compData.sessions) ? compData.sessions : [], {
+    ? buildSummary(comparisonPower.records, Array.isArray(compData.sessions) ? compData.sessions : [], {
       ftp: athleteFtp,
       restingHeartRate: athleteRestingHrNumber,
       sex: athleteSex,
@@ -1125,6 +1157,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const athleteAge = escapeHtml(athleteProfile?.age || '');
   const athleteRestingHr = escapeHtml(athleteProfile?.restingHeartRate || '');
   const athleteFtpValue = escapeHtml(athleteProfile?.ftp || '');
+  const riderMassValue = escapeHtml(athleteProfile?.riderMassKg || '');
+  const bikeMassValue = escapeHtml(athleteProfile?.bikeMassKg || '');
+  const powerMetricSuffix = primaryPower.source === 'estimated' ? ' (estimated)' : '';
 
   const compStatsRow = hasOverlay && compSummary
     ? renderComparisonTable(summary, compSummary, fitData._fileName, compData._fileName)
@@ -1143,15 +1178,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       ${metric('Duration (h:m:s)', summary.durationText)}
       ${metric('Avg Speed (km/h)', summary.avgSpeed.toFixed(2))}
       ${metric('Max Speed (km/h)', summary.maxSpeed.toFixed(2))}
-      ${metric('Avg Power (W)', summary.avgPower.toFixed(0))}
-      ${metric('Max Power (W)', summary.maxPower.toFixed(0))}
-      ${metric('Normalized Power (W)', summary.normalizedPower.toFixed(0))}
-      ${metric('Intensity Factor (IF)', summary.intensityFactor > 0 ? summary.intensityFactor.toFixed(2) : 'n/a')}
-      ${metric('TSS', summary.trainingStressScore > 0 ? summary.trainingStressScore.toFixed(1) : 'n/a')}
-      ${metric('xPower (GC) (W)', summary.xPower > 0 ? summary.xPower.toFixed(0) : 'n/a')}
-      ${metric('RI (GC)', summary.relativeIntensityGc > 0 ? summary.relativeIntensityGc.toFixed(2) : 'n/a')}
-      ${metric('BikeStress (GC)', summary.bikeStressScore > 0 ? summary.bikeStressScore.toFixed(1) : 'n/a')}
-      ${metric('Decoupling % (Intervals)', Number.isFinite(summary.decouplingPct) ? summary.decouplingPct.toFixed(1) + '%' : 'n/a')}
+      ${metric('Avg Power (W)' + powerMetricSuffix, summary.avgPower.toFixed(0))}
+      ${metric('Max Power (W)' + powerMetricSuffix, summary.maxPower.toFixed(0))}
+      ${metric('Normalized Power (W)' + powerMetricSuffix, summary.normalizedPower.toFixed(0))}
+      ${metric('Intensity Factor (IF)' + powerMetricSuffix, summary.intensityFactor > 0 ? summary.intensityFactor.toFixed(2) : 'n/a')}
+      ${metric('TSS' + powerMetricSuffix, summary.trainingStressScore > 0 ? summary.trainingStressScore.toFixed(1) : 'n/a')}
+      ${metric('xPower (GC) (W)' + powerMetricSuffix, summary.xPower > 0 ? summary.xPower.toFixed(0) : 'n/a')}
+      ${metric('RI (GC)' + powerMetricSuffix, summary.relativeIntensityGc > 0 ? summary.relativeIntensityGc.toFixed(2) : 'n/a')}
+      ${metric('BikeStress (GC)' + powerMetricSuffix, summary.bikeStressScore > 0 ? summary.bikeStressScore.toFixed(1) : 'n/a')}
+      ${metric('Decoupling % (Intervals)' + powerMetricSuffix, Number.isFinite(summary.decouplingPct) ? summary.decouplingPct.toFixed(1) + '%' : 'n/a')}
       ${metric('TRIMP', summary.trimp > 0 ? summary.trimp.toFixed(1) : 'n/a')}
       ${metric('hrTSS', summary.hrTss > 0 ? summary.hrTss.toFixed(1) : 'n/a')}
       ${metric('Avg HR (bpm)', summary.avgHr.toFixed(0))}
@@ -1212,11 +1247,19 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           <span>FTP</span>
           <input id="${mapId}AthleteFtp" type="number" min="80" max="500" step="1" value="${athleteFtpValue}" placeholder="watts">
         </label>
+        <label>
+          <span>Rider mass (kg)</span>
+          <input id="${mapId}RiderMass" type="number" min="30" max="250" step="0.1" value="${riderMassValue}" placeholder="required for estimated power">
+        </label>
+        <label>
+          <span>Bike mass (kg)</span>
+          <input id="${mapId}BikeMass" type="number" min="3" max="50" step="0.1" value="${bikeMassValue}" placeholder="required for estimated power">
+        </label>
         <button type="button" id="${mapId}AutoCalcZonesBtn">Auto-calc</button>
         <button type="submit">Save Zones</button>
         <span id="${mapId}HrProfileStatus" class="manualDataStatus"></span>
       </form>
-      <div class="mapHint">Auto-calc uses sex, age, resting HR, and your saved activity heart-rate history. FTP is used for IF/TSS on activity summaries. The latest profile effective on an activity date is used.${hrConfig?.effectiveDate ? ` Currently applied: ${escapeHtml(hrConfig.effectiveDate)}.` : ''}</div>
+      <div class="mapHint">Auto-calc estimates power from the saved rider and bike mass, speed, GPS altitude, and distance when power-meter data is unavailable. The last saved masses are reused for the next ride. FTP is used for IF/TSS on activity summaries. The latest profile effective on an activity date is used.${hrConfig?.effectiveDate ? ` Currently applied: ${escapeHtml(hrConfig.effectiveDate)}.` : ''}</div>
     </section>
     <section class="chart resizable" data-resize-target="${mapId}SpeedSvg" data-resize-key="fitviz_speed_height" data-min-height="200" data-max-height="1200">
       <h2>Speed vs Distance${hasOverlay ? ' <span class="compLegend">— primary &nbsp;– – comparison</span>' : ''}</h2>
@@ -1385,7 +1428,33 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           const ftpMessage = msg.suggestion.ftp > 0
             ? ' FTP estimate applied; review and save.'
             : ' No valid 20-minute power effort found, so FTP was left unchanged.';
-          hrProfileStatus.textContent = 'Auto values applied. Review and save to keep them.' + ftpMessage;
+          const mmpMessage = Array.isArray(msg.suggestion.mmp)
+            ? (() => {
+              const points = msg.suggestion.mmp
+                .filter((point) => point.power > 0)
+                .map((point) => Math.round(point.durationSec / 60) + 'm ' + Math.round(point.power) + 'W');
+              return points.length ? ' MMP: ' + points.join(', ') + '.' : ' MMP: unavailable.';
+            })()
+            : '';
+          const candidateMessage = msg.suggestion.ftpCandidates
+            ? ' Candidates: ' + Object.entries(msg.suggestion.ftpCandidates)
+              .filter(([key]) => !['cp', 'w_prime', 'r_squared'].includes(key))
+              .map(([key, value]) => key + ' ' + Math.round(value) + 'W')
+              .join(', ') + '.'
+            : '';
+          const mmpStatus = msg.suggestion.mmpStatus || {};
+          const diagnosticMessage = mmpStatus.validTimedPowerCount === 0
+            ? (mmpStatus.powerSource === 'estimated'
+              ? ' MMP source: estimated from mass, speed, GPS altitude, and distance.'
+              : ' MMP unavailable: ' + mmpStatus.activityCount + ' rides and '
+                + mmpStatus.totalRecordCount + ' records loaded, but no measured or estimable motion data was found.')
+            : ' MMP source: measured power from ' + mmpStatus.validTimedPowerCount
+              + ' timed power records across ' + mmpStatus.activityCount + ' rides.';
+          const candidateStatus = Object.keys(msg.suggestion.ftpCandidates || {}).length
+            ? candidateMessage
+            : ' Candidates: unavailable.';
+          hrProfileStatus.textContent = 'Auto values applied. Review and save to keep them.'
+            + ftpMessage + mmpMessage + candidateStatus + diagnosticMessage;
           hrProfileStatus.classList.remove('error');
         }
       });
@@ -1401,6 +1470,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           sex: document.getElementById('${mapId}AthleteSex').value,
           age: document.getElementById('${mapId}AthleteAge').value,
           restingHr: document.getElementById('${mapId}AthleteRestingHr').value,
+          riderMassKg: document.getElementById('${mapId}RiderMass').value,
+          bikeMassKg: document.getElementById('${mapId}BikeMass').value,
         });
       });
 
@@ -1432,6 +1503,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           age: document.getElementById('${mapId}AthleteAge').value,
           restingHr: document.getElementById('${mapId}AthleteRestingHr').value,
           ftp: document.getElementById('${mapId}AthleteFtp').value,
+          riderMassKg: document.getElementById('${mapId}RiderMass').value,
+          bikeMassKg: document.getElementById('${mapId}BikeMass').value,
         });
       });
 
@@ -2420,8 +2493,20 @@ async function updateHeartRateProfile(dbPath, message) {
         sex: athleteProfile?.sex,
         age: athleteProfile?.age,
         restingHeartRate: athleteProfile?.restingHeartRate,
+        riderMassKg: athleteProfile?.riderMassKg,
+        bikeMassKg: athleteProfile?.bikeMassKg,
         ftp,
       }, now);
+    }
+    if (athleteProfile) {
+      db.run(
+        'UPDATE activities SET rider_mass_kg = ?, bike_mass_kg = ? WHERE id = ?',
+        [
+          Number.isFinite(athleteProfile.riderMassKg) ? athleteProfile.riderMassKg : null,
+          Number.isFinite(athleteProfile.bikeMassKg) ? athleteProfile.bikeMassKg : null,
+          activityId,
+        ]
+      );
     }
     await persistDatabase(db, dbPath);
   } finally {
@@ -2444,29 +2529,118 @@ async function autoCalculateHeartRateProfileFromDb(dbPath, message) {
     stmt.step();
     const row = stmt.getAsObject();
     const observedMaxHeartRate = Math.max(Number(row.max_session_hr) || 0, Number(row.max_record_hr) || 0);
-    const records = [];
-    const activityId = Number(message?.id);
-    if (Number.isInteger(activityId) && activityId > 0) {
-      stmt.free();
-      stmt = db.prepare('SELECT elapsed_s AS elapsed_time, power FROM records WHERE activity_id = ? ORDER BY elapsed_s');
-      stmt.bind([activityId]);
-      while (stmt.step()) {
-        records.push(stmt.getAsObject());
-      }
+    stmt.free();
+    stmt = db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM activities) AS activity_count,
+        (SELECT COUNT(*) FROM records) AS record_count,
+        (SELECT COUNT(*) FROM records WHERE power IS NOT NULL AND elapsed_s IS NOT NULL AND power >= 0) AS timed_power_count,
+        (SELECT COUNT(*) FROM records WHERE power IS NOT NULL AND power >= 0) AS power_count
+    `);
+    stmt.step();
+    const counts = stmt.getAsObject();
+    const activityCount = Number(counts.activity_count) || 0;
+    const totalRecordCount = Number(counts.record_count) || 0;
+    const validTimedPowerCount = Number(counts.timed_power_count) || 0;
+    const validPowerCount = Number(counts.power_count) || 0;
+    const useMeasuredPower = validTimedPowerCount > 0;
+    stmt.free();
+    stmt = db.prepare('SELECT id, rider_mass_kg, bike_mass_kg FROM activities');
+    const activityMassById = new Map();
+    while (stmt.step()) {
+      const activity = stmt.getAsObject();
+      activityMassById.set(activity.id, {
+        riderMassKg: activity.rider_mass_kg,
+        bikeMassKg: activity.bike_mass_kg,
+      });
     }
+    stmt.free();
+    const recordStride = useMeasuredPower ? 1 : 5;
+    stmt = db.prepare(`
+      SELECT activity_id, record_index, elapsed_s AS elapsed_time, distance_km AS distance,
+        speed_kmh AS speed, altitude_m AS altitude, power
+      FROM records
+      WHERE record_index % ${recordStride} = 0
+      ORDER BY activity_id, record_index
+    `);
+    let currentActivityId = null;
+    let currentRecords = [];
+    let mmp = calculateMeanMaximalPower([]);
+    let estimatedRideCount = 0;
+    const mergeMmp = (records) => {
+      const rideCurve = calculateMeanMaximalPower(records);
+      for (let index = 0; index < mmp.length; index += 1) {
+        mmp[index].power = Math.max(mmp[index].power, rideCurve[index].power);
+      }
+    };
+    const finishRide = () => {
+      if (!currentRecords.length) {
+        return;
+      }
+      let recordsForMmp = currentRecords;
+      if (!useMeasuredPower) {
+        const masses = activityMassById.get(currentActivityId) || {};
+        recordsForMmp = estimatePowerFromMotion(currentRecords, {
+          riderMassKg: masses.riderMassKg != null && Number.isFinite(Number(masses.riderMassKg))
+            ? Number(masses.riderMassKg) : athleteProfile.riderMassKg,
+          bikeMassKg: masses.bikeMassKg != null && Number.isFinite(Number(masses.bikeMassKg))
+            ? Number(masses.bikeMassKg) : athleteProfile.bikeMassKg,
+        });
+        if (recordsForMmp.length) {
+          estimatedRideCount += 1;
+        }
+      }
+      mergeMmp(recordsForMmp);
+      currentRecords = [];
+    };
+    while (stmt.step()) {
+      const record = stmt.getAsObject();
+      if (currentActivityId !== null && record.activity_id !== currentActivityId) {
+        finishRide();
+      }
+      currentActivityId = record.activity_id;
+      currentRecords.push(record);
+    }
+    finishRide();
+    const powerSource = useMeasuredPower ? 'measured' : estimatedRideCount > 0 ? 'estimated' : 'unavailable';
+    const ftpCandidates = estimateFtpCandidates(mmp);
     const suggestion = calculateAutoHeartRateProfile({
       sex: athleteProfile.sex,
       age: athleteProfile.age,
       restingHeartRate: athleteProfile.restingHeartRate,
       observedMaxHeartRate,
     });
-    suggestion.ftp = calculateAutoFtp(records);
+    suggestion.ftp = selectFtpEstimate(ftpCandidates);
+    suggestion.mmp = mmp;
+    suggestion.ftpCandidates = ftpCandidates;
+    suggestion.mmpStatus = {
+      activityCount,
+      totalRecordCount,
+      validPowerCount,
+      validTimedPowerCount,
+      powerSource,
+      riderMassKg: athleteProfile.riderMassKg,
+      bikeMassKg: athleteProfile.bikeMassKg,
+    };
     const now = new Date().toISOString();
     upsertAthleteProfile(db, {
       sex: athleteProfile.sex,
       age: athleteProfile.age,
       restingHeartRate: athleteProfile.restingHeartRate,
+      riderMassKg: athleteProfile.riderMassKg,
+      bikeMassKg: athleteProfile.bikeMassKg,
     }, now);
+    const requestedActivityId = Number(message?.id);
+    if (Number.isInteger(requestedActivityId) && requestedActivityId > 0) {
+      db.run(
+        'UPDATE activities SET rider_mass_kg = ?, bike_mass_kg = ? WHERE id = ?',
+        [
+          Number.isFinite(athleteProfile.riderMassKg) ? athleteProfile.riderMassKg : null,
+          Number.isFinite(athleteProfile.bikeMassKg) ? athleteProfile.bikeMassKg : null,
+          requestedActivityId,
+        ]
+      );
+    }
     await persistDatabase(db, dbPath);
     return suggestion;
   } finally {
@@ -2477,19 +2651,23 @@ async function autoCalculateHeartRateProfileFromDb(dbPath, message) {
 
 function upsertAthleteProfile(db, profile, updatedAt) {
   db.run(`
-    INSERT INTO athlete_profile (id, sex, age, resting_hr, ftp, updated_at)
-    VALUES (1, ?, ?, ?, ?, ?)
+    INSERT INTO athlete_profile (id, sex, age, resting_hr, ftp, rider_mass_kg, bike_mass_kg, updated_at)
+    VALUES (1, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       sex = COALESCE(excluded.sex, athlete_profile.sex),
       age = COALESCE(excluded.age, athlete_profile.age),
       resting_hr = COALESCE(excluded.resting_hr, athlete_profile.resting_hr),
       ftp = COALESCE(excluded.ftp, athlete_profile.ftp),
+      rider_mass_kg = COALESCE(excluded.rider_mass_kg, athlete_profile.rider_mass_kg),
+      bike_mass_kg = COALESCE(excluded.bike_mass_kg, athlete_profile.bike_mass_kg),
       updated_at = excluded.updated_at
   `, [
     profile?.sex ?? null,
     Number.isFinite(asNumber(profile?.age)) ? Math.round(asNumber(profile.age)) : null,
     Number.isFinite(asNumber(profile?.restingHeartRate)) ? Math.round(asNumber(profile.restingHeartRate)) : null,
     Number.isFinite(asNumber(profile?.ftp)) ? Math.round(asNumber(profile.ftp)) : null,
+    Number.isFinite(asNumber(profile?.riderMassKg)) ? asNumber(profile.riderMassKg) : null,
+    Number.isFinite(asNumber(profile?.bikeMassKg)) ? asNumber(profile.bikeMassKg) : null,
     updatedAt,
   ]);
 }
@@ -2506,6 +2684,8 @@ function parseOptionalAthleteProfile(message) {
   const sex = String(message.sex || '').trim().toLowerCase();
   const ageRaw = String(message.age ?? '').trim();
   const restingRaw = String(message.restingHr ?? '').trim();
+  const riderMassRaw = String(message.riderMassKg ?? '').trim();
+  const bikeMassRaw = String(message.bikeMassKg ?? '').trim();
   const blankCount = [sex, ageRaw, restingRaw].filter((value) => value === '').length;
   if (blankCount === 3) {
     return null;
@@ -2525,10 +2705,20 @@ function parseOptionalAthleteProfile(message) {
   if (!Number.isFinite(restingHeartRate) || restingHeartRate < 30 || restingHeartRate > 120) {
     throw new Error('Resting HR must be between 30 and 120 bpm.');
   }
+  const riderMassKg = riderMassRaw === '' ? NaN : Number(riderMassRaw);
+  const bikeMassKg = bikeMassRaw === '' ? NaN : Number(bikeMassRaw);
+  if (riderMassRaw !== '' && (!Number.isFinite(riderMassKg) || riderMassKg < 30 || riderMassKg > 250)) {
+    throw new Error('Rider mass must be between 30 and 250 kg.');
+  }
+  if (bikeMassRaw !== '' && (!Number.isFinite(bikeMassKg) || bikeMassKg < 3 || bikeMassKg > 50)) {
+    throw new Error('Bike mass must be between 3 and 50 kg.');
+  }
   return {
     sex,
     age: Math.round(age),
     restingHeartRate: Math.round(restingHeartRate),
+    riderMassKg,
+    bikeMassKg,
   };
 }
 
