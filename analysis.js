@@ -1,4 +1,29 @@
 const { formatHms } = require('./utils');
+const { computeHeartRateZones } = require('./heart-rate');
+
+function formatPositive(value, digits) {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? num.toFixed(digits) : null;
+}
+
+function formatNonZero(value, digits) {
+  const num = Number(value);
+  return Number.isFinite(num) && num !== 0 ? num.toFixed(digits) : null;
+}
+
+function buildZoneContext(records, heartRateConfig) {
+  const hasProfile = Number.isFinite(heartRateConfig?.maxHeartRate);
+  const zoneData = hasProfile
+    ? computeHeartRateZones(Array.isArray(records) ? records : [], heartRateConfig.maxHeartRate, heartRateConfig.thresholds)
+    : { enabled: false };
+  if (!zoneData.enabled || !(zoneData.totalSeconds > 0)) {
+    return '**Time in Heart-Rate Zones:** Not available.';
+  }
+  const lines = zoneData.zones
+    .map((zone) => `- ${zone.name} (${zone.range}): ${formatHms(zone.seconds)} (${zone.percent.toFixed(0)}%)`)
+    .join('\n');
+  return `**Time in Heart-Rate Zones (percentages cover time at/above 50% of max HR; time below is excluded):**\n${lines}`;
+}
 
 async function requestCopilotAnalysis(vscode, prompt, options = {}) {
   const retryDelayMs = Number.isFinite(options.retryDelayMs) ? Number(options.retryDelayMs) : 1200;
@@ -61,22 +86,27 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
     temperature: averageTemperature(fitData.records),
     distance: session.total_distance_km?.toFixed(2),
     duration: session.total_timer_s ? formatHms(Math.round(session.total_timer_s)) : 'N/A',
-    avgSpeed: session.avg_speed_kmh?.toFixed(2),
-    maxSpeed: session.max_speed_kmh?.toFixed(2),
-    avgPower: Number.isFinite(Number(session.avg_power)) ? Number(session.avg_power).toFixed(0) : null,
-    maxPower: Number.isFinite(Number(session.max_power)) ? Number(session.max_power).toFixed(0) : null,
-    normalizedPower: session.normalized_power?.toFixed(0),
-    intensityFactor: Number.isFinite(Number(session.intensity_factor)) ? Number(session.intensity_factor).toFixed(2) : null,
-    trainingStressScore: Number.isFinite(Number(session.training_stress_score)) ? Number(session.training_stress_score).toFixed(1) : null,
-    xPower: Number.isFinite(Number(session.xpower)) ? Number(session.xpower).toFixed(0) : null,
-    relativeIntensityGc: Number.isFinite(Number(session.relative_intensity_gc)) ? Number(session.relative_intensity_gc).toFixed(2) : null,
-    bikeStressScore: Number.isFinite(Number(session.bike_stress_score)) ? Number(session.bike_stress_score).toFixed(1) : null,
-    decouplingPct: Number.isFinite(Number(session.decoupling_pct)) ? Number(session.decoupling_pct).toFixed(1) : null,
-    trimp: Number.isFinite(Number(session.trimp)) ? Number(session.trimp).toFixed(1) : null,
-    hrTss: Number.isFinite(Number(session.hr_tss)) ? Number(session.hr_tss).toFixed(1) : null,
-    avgHr: session.avg_hr?.toFixed(0),
-    maxHr: session.max_hr?.toFixed(0),
-    elevation: session.total_ascent_m?.toFixed(0),
+    elapsed: session.total_elapsed_s ? formatHms(Math.round(session.total_elapsed_s)) : null,
+    avgSpeed: formatPositive(session.avg_speed_kmh, 2),
+    maxSpeed: formatPositive(session.max_speed_kmh, 2),
+    avgCadence: formatPositive(session.avg_cadence, 0),
+    calories: formatPositive(session.total_calories, 0),
+    avgPower: formatPositive(session.avg_power, 0),
+    maxPower: formatPositive(session.max_power, 0),
+    normalizedPower: formatPositive(session.normalized_power, 0),
+    intensityFactor: formatPositive(session.intensity_factor, 2),
+    trainingStressScore: formatPositive(session.training_stress_score, 1),
+    xPower: formatPositive(session.xpower, 0),
+    relativeIntensityGc: formatPositive(session.relative_intensity_gc, 2),
+    bikeStressScore: formatPositive(session.bike_stress_score, 1),
+    decouplingPct: formatNonZero(session.decoupling_pct, 1),
+    trimp: formatPositive(session.trimp, 1),
+    hrTss: formatPositive(session.hr_tss, 1),
+    avgHr: formatPositive(session.avg_hr, 0),
+    maxHr: formatPositive(session.max_hr, 0),
+    elevation: Number.isFinite(Number(session.total_ascent_m)) ? Number(session.total_ascent_m).toFixed(0) : null,
+    elevationLoss: Number.isFinite(Number(session.total_descent_m)) ? Number(session.total_descent_m).toFixed(0) : null,
+    ftp: formatPositive(session.ftp, 0),
     powerSource: session.power_source === 'estimated' ? 'estimated from motion data' : session.power_source === 'measured' ? 'measured' : 'unavailable',
   };
   const priorActivityCount = Number(progressSummary?.total_activities || 0);
@@ -100,16 +130,16 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
 - Average Heart Rate: ${progressSummary.avg_heart_rate?.toFixed(0) || 0} bpm
 - Max Heart Rate Recorded: ${progressSummary.max_recorded_heart_rate?.toFixed(0) || 0} bpm
 
-**Recent Prior Workouts (7 days before this workout):**
+**Recent Prior Training Load (7 days before this workout, all ride distances):**
 - Activities: ${progressSummary.recent_activity_count || 0}
-- Weekly Avg Distance: ${progressSummary.weekly_avg_distance_km?.toFixed(1) || 0} km
-- Weekly Avg Speed: ${progressSummary.weekly_avg_speed_kmh?.toFixed(1) || 0} km/h
-- Speed Trend: ${progressSummary.trend_speed || 'N/A'}
-- HR Trend: ${progressSummary.trend_heart_rate || 'N/A'}
-- 28-day Target Progress: ${progressSummary.consistency_pct?.toFixed(0) || 0}% of a 16-ride target
-- Last Activity: ${progressSummary.last_activity_date ? new Date(progressSummary.last_activity_date).toLocaleDateString() : 'N/A'}
+- Total Distance (7 days): ${progressSummary.weekly_distance_km?.toFixed(1) || 0} km
+- Avg Speed of Those Rides: ${progressSummary.weekly_avg_speed_kmh?.toFixed(1) || 0} km/h
+- Speed Trend (comparable rides): ${progressSummary.trend_speed || 'N/A'}
+- HR Trend (comparable rides): ${progressSummary.trend_heart_rate || 'N/A'}
+- 28-day Ride Count (all distances): ${progressSummary.consistency_pct?.toFixed(0) || 0}% of a 16-ride benchmark
+- Last Comparable Activity: ${progressSummary.last_activity_date ? new Date(progressSummary.last_activity_date).toLocaleDateString() : 'N/A'}
 
-**Personal Records Before This Workout:**
+**Personal Records Among Comparable Rides Before This Workout:**
 - Best Speed: ${progressSummary.best_speed_kmh?.toFixed(1) || 0} km/h
 - Best Elevation Gain: ${progressSummary.best_elevation_m?.toFixed(0) || 0} m
 `
@@ -127,6 +157,7 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
   const followUpContext = safeFollowUpHistory.length
     ? `**Follow-up Conversation About This Analysis:**\n${safeFollowUpHistory.join('\n')}`
     : '**Follow-up Conversation About This Analysis:** None.';
+  const zoneContext = buildZoneContext(fitData.records, heartRateConfig);
 
   return `Analyze this cycling workout in context of my training progress.
 
@@ -135,12 +166,16 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
 - Start Time: ${currentStats.time}
 - Average Temperature: ${currentStats.temperature} C
 - Distance: ${currentStats.distance || 'N/A'} km
-- Duration: ${currentStats.duration || 'N/A'}
+- Duration (timer): ${currentStats.duration || 'N/A'}
+- Elapsed Time (incl. stops): ${currentStats.elapsed || 'N/A'}
 - Avg Speed: ${currentStats.avgSpeed || 'N/A'} km/h
 - Max Speed: ${currentStats.maxSpeed || 'N/A'} km/h
+- Avg Cadence: ${currentStats.avgCadence || 'N/A'} rpm
+- Calories: ${currentStats.calories || 'N/A'} kcal
 - Average Power: ${currentStats.avgPower || 'N/A'} W
 - Max Power: ${currentStats.maxPower || 'N/A'} W
 - Normalized Power: ${currentStats.normalizedPower || 'N/A'} W
+- FTP Used for Power Metrics: ${currentStats.ftp || 'N/A'} W
 - Intensity Factor: ${currentStats.intensityFactor || 'N/A'}
 - TSS: ${currentStats.trainingStressScore || 'N/A'}
 - xPower (GC): ${currentStats.xPower || 'N/A'} W
@@ -152,11 +187,14 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
 - Avg Heart Rate: ${currentStats.avgHr || 'N/A'} bpm
 - Max Heart Rate: ${currentStats.maxHr || 'N/A'} bpm
 - Elevation Gain: ${currentStats.elevation || 'N/A'} m
+- Elevation Loss: ${currentStats.elevationLoss || 'N/A'} m
 - Power source: ${currentStats.powerSource}
 ${currentStats.powerSource === 'estimated from motion data' ? '\n**Data Quality Note:** Power metrics are motion-estimated (from speed, altitude, and mass) and may be physiologically implausible, especially peak values. These figures and derived metrics (NP, IF, TSS, xPower, RI, BikeStress, Decoupling) should be disregarded for training-load decisions. Use heart-rate trends and effort perception instead.\n' : ''}
 ${summaryContext}
 
 ${heartRateProfileContext}
+
+${zoneContext}
 
 ${priorAnalysisContext}
 
@@ -167,7 +205,7 @@ ${followUpContext}
 - There are ${priorActivityCount} earlier activities within 75%-125% of this workout's distance. Rides outside that range are excluded from all comparisons. ${hasBaseline ? 'A comparison against these distance-compatible rides is possible.' : 'Do not compare this workout to a baseline; describe it as the initial baseline for rides of this distance.'}
 - ${hasTrendEvidence ? 'There are enough prior activities for cautious trend observations, but only when the supplied trend fields support them.' : 'There is not enough history to claim improvement, decline, stability, consistency, or a plateau.'}
 - Do not infer recovery status, aerobic control, fatigue, overreaching, or heart-rate recovery from average and maximum HR alone.
-- ${hasHeartRateProfile ? 'Use the supplied dated heart-rate profile for zone classification; do not substitute generic thresholds.' : 'Do not assign HR zones because no athlete-specific thresholds or maximum HR are supplied.'}
+- ${hasHeartRateProfile ? 'Use the supplied dated heart-rate profile and the supplied time-in-zone distribution for zone statements; do not substitute generic thresholds.' : 'Do not assign HR zones because no athlete-specific thresholds or maximum HR are supplied.'}
 - Do not prescribe bpm targets from an observed peak HR. Prefer effort/RPE guidance and label it as general guidance.
 - State data limitations directly instead of filling gaps with plausible claims.
 
@@ -191,21 +229,22 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
     temperature: averageTemperature(fitData.records),
     distance: session.total_distance_km?.toFixed(2) || 'N/A',
     duration: session.total_timer_s ? formatHms(Math.round(session.total_timer_s)) : 'N/A',
-    avgSpeed: session.avg_speed_kmh?.toFixed(2) || 'N/A',
-    maxSpeed: session.max_speed_kmh?.toFixed(2) || 'N/A',
-    avgPower: Number.isFinite(Number(session.avg_power)) ? Number(session.avg_power).toFixed(0) : 'N/A',
-    maxPower: Number.isFinite(Number(session.max_power)) ? Number(session.max_power).toFixed(0) : 'N/A',
-    normalizedPower: session.normalized_power?.toFixed(0) || 'N/A',
-    intensityFactor: Number.isFinite(Number(session.intensity_factor)) ? Number(session.intensity_factor).toFixed(2) : 'N/A',
-    trainingStressScore: Number.isFinite(Number(session.training_stress_score)) ? Number(session.training_stress_score).toFixed(1) : 'N/A',
-    xPower: Number.isFinite(Number(session.xpower)) ? Number(session.xpower).toFixed(0) : 'N/A',
-    relativeIntensityGc: Number.isFinite(Number(session.relative_intensity_gc)) ? Number(session.relative_intensity_gc).toFixed(2) : 'N/A',
-    bikeStressScore: Number.isFinite(Number(session.bike_stress_score)) ? Number(session.bike_stress_score).toFixed(1) : 'N/A',
-    decouplingPct: Number.isFinite(Number(session.decoupling_pct)) ? Number(session.decoupling_pct).toFixed(1) : 'N/A',
-    trimp: Number.isFinite(Number(session.trimp)) ? Number(session.trimp).toFixed(1) : 'N/A',
-    hrTss: Number.isFinite(Number(session.hr_tss)) ? Number(session.hr_tss).toFixed(1) : 'N/A',
-    avgHr: session.avg_hr?.toFixed(0) || 'N/A',
-    maxHr: session.max_hr?.toFixed(0) || 'N/A',
+    avgSpeed: formatPositive(session.avg_speed_kmh, 2) || 'N/A',
+    maxSpeed: formatPositive(session.max_speed_kmh, 2) || 'N/A',
+    avgPower: formatPositive(session.avg_power, 0) || 'N/A',
+    maxPower: formatPositive(session.max_power, 0) || 'N/A',
+    normalizedPower: formatPositive(session.normalized_power, 0) || 'N/A',
+    ftp: formatPositive(session.ftp, 0) || 'N/A',
+    intensityFactor: formatPositive(session.intensity_factor, 2) || 'N/A',
+    trainingStressScore: formatPositive(session.training_stress_score, 1) || 'N/A',
+    xPower: formatPositive(session.xpower, 0) || 'N/A',
+    relativeIntensityGc: formatPositive(session.relative_intensity_gc, 2) || 'N/A',
+    bikeStressScore: formatPositive(session.bike_stress_score, 1) || 'N/A',
+    decouplingPct: formatNonZero(session.decoupling_pct, 1) || 'N/A',
+    trimp: formatPositive(session.trimp, 1) || 'N/A',
+    hrTss: formatPositive(session.hr_tss, 1) || 'N/A',
+    avgHr: formatPositive(session.avg_hr, 0) || 'N/A',
+    maxHr: formatPositive(session.max_hr, 0) || 'N/A',
     ascent: session.total_ascent_m?.toFixed(0) || 'N/A',
     descent: session.total_descent_m?.toFixed(0) || 'N/A',
     powerSource: session.power_source === 'estimated' ? 'estimated from motion data' : session.power_source === 'measured' ? 'measured' : 'unavailable',
@@ -231,6 +270,7 @@ Workout facts for this activity:
 - Average power: ${currentStats.avgPower} W
 - Max power: ${currentStats.maxPower} W
 - Normalized power: ${currentStats.normalizedPower} W
+- FTP used for power metrics: ${currentStats.ftp} W
 - Intensity factor: ${currentStats.intensityFactor}
 - TSS: ${currentStats.trainingStressScore}
 - xPower (GC): ${currentStats.xPower} W
@@ -246,6 +286,8 @@ Workout facts for this activity:
 - Power source: ${currentStats.powerSource}
 - Comparable prior activities: ${priorActivityCount}
 - HR profile: ${hasHeartRateProfile ? `max HR ${heartRateConfig.maxHeartRate} bpm, zones ${Array.isArray(heartRateConfig.thresholds) ? heartRateConfig.thresholds.join(', ') : 'auto-derived'}` : 'not configured'}
+
+${buildZoneContext(fitData.records, heartRateConfig)}
 ${currentStats.powerSource === 'estimated from motion data' ? '\n**Data Quality Note:** Power metrics are motion-estimated (from speed, altitude, and mass) and may be physiologically implausible, especially peak values. These figures and derived metrics (NP, IF, TSS, xPower, RI, BikeStress, Decoupling) should be disregarded for training-load decisions. Use heart-rate trends and effort perception instead.\n' : ''}
 Initial analysis:
 ${baseAnalysis || 'No initial analysis has been generated yet.'}

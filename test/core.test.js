@@ -24,12 +24,14 @@ const {
   calculateNormalizedPower,
   calculateTrainingStressScore,
   calculateXPower,
+  deriveSpeedsFromDistance,
   downsamplePoints,
   escapeHtml,
   formatHms,
   formatNumber,
   estimateFtpCandidates,
   estimatePowerFromMotion,
+  normalizeRecordSpeeds,
   selectFtpEstimate,
 } = require('../utils');
 
@@ -156,13 +158,16 @@ test('FTP candidates prefer a well-fit critical-power estimate', () => {
 });
 
 test('motion power estimates uphill gravitational power', () => {
+  // Parser units: speed km/h, altitude and distance km. 10 m/s at 10% grade.
   const records = [];
   for (let elapsed = 0; elapsed <= 10; elapsed += 1) {
     records.push({
       elapsed_time: elapsed,
       distance: elapsed * 0.01,
       speed: 36,
-      altitude: elapsed * 1,
+      altitude: elapsed * 0.001,
+      position_lat: 50,
+      position_long: 6,
     });
   }
 
@@ -181,6 +186,8 @@ test('motion power ignores zero-distance spikes and caps estimates', () => {
     distance: 0,
     speed: 36,
     altitude: elapsed_time * 100,
+    position_lat: 50,
+    position_long: 6,
   }));
 
   const estimated = estimatePowerFromMotion(records, { riderMassKg: 75, bikeMassKg: 10 });
@@ -193,7 +200,9 @@ test('summary power fallback preserves measured power and estimates missing powe
     elapsed_time,
     distance: elapsed_time * 0.01,
     speed: 36,
-    altitude: elapsed_time,
+    altitude: elapsed_time * 0.001,
+    position_lat: 50,
+    position_long: 6,
   }));
   const estimated = addEstimatedPowerWhenMissing(missingPower, { riderMassKg: 75, bikeMassKg: 10 });
   assert.equal(estimated.source, 'estimated');
@@ -206,9 +215,11 @@ test('summary power fallback preserves measured power and estimates missing powe
 });
 
 test('normalized power weights variable efforts above arithmetic mean', () => {
+  // 20 min of alternating 2-min blocks at 100/200 W.
   const records = [];
-  for (let elapsed = 0; elapsed < 60; elapsed += 1) {
-    records.push({ elapsed_time: elapsed, power: elapsed < 30 ? 100 : 200 });
+  for (let elapsed = 0; elapsed < 1200; elapsed += 1) {
+    const power = Math.floor(elapsed / 120) % 2 === 0 ? 100 : 200;
+    records.push({ elapsed_time: elapsed, power });
   }
 
   const normalizedPower = calculateNormalizedPower(records);
@@ -236,6 +247,45 @@ test('intensity factor and TSS follow standard power formulas', () => {
 
   const tss = calculateTrainingStressScore(3600, 250, intensityFactor, 300);
   assert.ok(Math.abs(tss - 69.4444) < 0.001);
+});
+
+test('record speeds are derived from distance when the speed channel is zero', () => {
+  const records = [];
+  for (let elapsed = 0; elapsed <= 60; elapsed += 1) {
+    records.push({ elapsed_time: elapsed, distance: elapsed * 0.005, speed: 0 }); // 18 km/h
+  }
+
+  const normalized = normalizeRecordSpeeds(records);
+  assert.ok(normalized.slice(1).every((record) => record.speed > 15 && record.speed < 21));
+});
+
+test('record speed normalization keeps genuine stops and measured speeds', () => {
+  const stopped = normalizeRecordSpeeds([
+    { elapsed_time: 0, distance: 1, speed: 0 },
+    { elapsed_time: 1, distance: 1, speed: 0 },
+    { elapsed_time: 2, distance: 1, speed: 0 },
+  ]);
+  assert.ok(stopped.every((record) => record.speed === 0));
+
+  const measured = normalizeRecordSpeeds([
+    { elapsed_time: 0, distance: 0, speed: 20 },
+    { elapsed_time: 1, distance: 0.01, speed: 22 },
+  ]);
+  assert.deepEqual(measured.map((record) => record.speed), [20, 22]);
+});
+
+test('record speed normalization falls back to enhanced_speed', () => {
+  const normalized = normalizeRecordSpeeds([{ elapsed_time: 0, enhanced_speed: 25 }]);
+  assert.equal(normalized[0].speed, 25);
+});
+
+test('derived speeds convert km distance and seconds to km/h', () => {
+  const derived = deriveSpeedsFromDistance([
+    { elapsed_time: 0, distance: 0 },
+    { elapsed_time: 10, distance: 0.05 },
+    { elapsed_time: 20, distance: 0.1 },
+  ]);
+  assert.ok(derived.slice(1).every((speed) => Math.abs(speed - 18) < 0.001));
 });
 
 test('xPower equals steady power and BikeStress follows stress equation', () => {

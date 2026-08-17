@@ -69,19 +69,23 @@ function calculateNormalizedPower(records) {
     return 0;
   }
 
-  const validPower = [];
+  const samples = [];
   for (let index = 0; index < records.length; index += 1) {
     const power = asNumber(records[index]?.power);
-    if (Number.isFinite(power) && power >= 0) {
-      validPower.push(power);
+    if (!Number.isFinite(power) || power < 0) {
+      continue;
     }
+    const elapsed = asNumber(records[index]?.elapsed_time);
+    samples.push({ t: Number.isFinite(elapsed) ? elapsed : index, v: power });
   }
 
-  if (!validPower.length) {
+  if (!samples.length) {
     return 0;
   }
 
-  const meanFourthPower = average(validPower.map((power) => power ** 4));
+  // Coggan NP: 30s rolling average first, then 4th-power mean and 4th root.
+  const rolling = trailingTimeMovingAverage(samples, 30);
+  const meanFourthPower = average(rolling.map((value) => value ** 4));
   return meanFourthPower > 0 ? meanFourthPower ** 0.25 : 0;
 }
 
@@ -215,6 +219,7 @@ function estimatePowerFromMotion(records, input = {}) {
   const maxPhysiologicalPower = 1200;
 
   const samples = [];
+  // Records use parser units: speed in km/h, altitude and distance in km.
   for (let i = 0; i < records.length; i += 1) {
     const record = records[i] || {};
     const elapsed = asNumber(record.elapsed_time);
@@ -226,7 +231,12 @@ function estimatePowerFromMotion(records, input = {}) {
       && !(asNumber(record.position_lat) === 0 && asNumber(record.position_long) === 0);
 
     if (Number.isFinite(elapsed) && Number.isFinite(speed) && Number.isFinite(altitude) && hasValidGpsFix) {
-      samples.push({ elapsed, speed: Math.max(0, speed), altitude, distance: Number.isFinite(distance) ? distance : 0 });
+      samples.push({
+        elapsed,
+        speed: Math.max(0, speed) / 3.6,
+        altitude: altitude * 1000,
+        distance: Number.isFinite(distance) ? distance : 0,
+      });
     }
   }
 
@@ -285,6 +295,77 @@ function smoothSeries(values, windowSize = 5) {
     const end = Math.min(values.length, index + half + 1);
     const window = values.slice(start, end).filter((v) => Number.isFinite(v));
     return window.length ? average(window) : values[index];
+  });
+}
+
+function deriveSpeedsFromDistance(records) {
+  if (!Array.isArray(records) || !records.length) {
+    return [];
+  }
+
+  // Distance in km, elapsed in s -> speed in km/h.
+  const raw = new Array(records.length).fill(Number.NaN);
+  let previous = null;
+  for (let index = 0; index < records.length; index += 1) {
+    const t = asNumber(records[index]?.elapsed_time);
+    const d = asNumber(records[index]?.distance);
+    if (!Number.isFinite(t) || !Number.isFinite(d)) {
+      continue;
+    }
+    if (previous) {
+      const dt = t - previous.t;
+      const dd = d - previous.d;
+      if (dt > 0 && dt <= 30 && dd >= 0) {
+        raw[index] = (dd / dt) * 3600;
+      }
+    }
+    previous = { t, d };
+  }
+
+  return smoothSeries(raw, 5);
+}
+
+function normalizeRecordSpeeds(records) {
+  if (!Array.isArray(records) || !records.length) {
+    return [];
+  }
+
+  const withEnhanced = records.map((record) => {
+    if (!record || typeof record !== 'object') {
+      return record;
+    }
+    const speed = asNumber(record.speed);
+    const enhancedSpeed = asNumber(record.enhanced_speed);
+    const altitude = asNumber(record.altitude);
+    const enhancedAltitude = asNumber(record.enhanced_altitude);
+    const useEnhancedSpeed = !(Number.isFinite(speed) && speed > 0)
+      && Number.isFinite(enhancedSpeed) && enhancedSpeed > 0;
+    const useEnhancedAltitude = !Number.isFinite(altitude) && Number.isFinite(enhancedAltitude);
+    if (!useEnhancedSpeed && !useEnhancedAltitude) {
+      return record;
+    }
+    return {
+      ...record,
+      ...(useEnhancedSpeed ? { speed: enhancedSpeed } : {}),
+      ...(useEnhancedAltitude ? { altitude: enhancedAltitude } : {}),
+    };
+  });
+
+  const derived = deriveSpeedsFromDistance(withEnhanced);
+  return withEnhanced.map((record, index) => {
+    const speed = asNumber(record?.speed);
+    const derivedSpeed = derived[index];
+    if (Number.isFinite(speed) && speed > 0) {
+      return record;
+    }
+    if (!Number.isFinite(derivedSpeed)) {
+      return record;
+    }
+    if (!Number.isFinite(speed)) {
+      return { ...record, speed: derivedSpeed };
+    }
+    // Recorded 0 is trusted unless distance clearly advances (broken speed channel).
+    return derivedSpeed > 1 ? { ...record, speed: derivedSpeed } : record;
   });
 }
 
@@ -637,6 +718,10 @@ module.exports = {
   average,
   calculateBanisterTrimp,
   calculateAutoFtp,
+  deriveSpeedsFromDistance,
+  despikeSeries,
+  normalizeRecordSpeeds,
+  smoothSeries,
   calculateBikeStressScore,
   calculateHrTss,
   calculateIntensityFactor,

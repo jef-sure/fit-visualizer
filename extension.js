@@ -25,6 +25,8 @@ const {
   calculateTrainingStressScore,
   calculateXPower,
   createNonce,
+  deriveSpeedsFromDistance,
+  despikeSeries,
   downsamplePoints,
   estimateFtpCandidates,
   estimatePowerFromMotion,
@@ -33,16 +35,18 @@ const {
   formatHms,
   formatNumber,
   maxOrZero,
+  normalizeRecordSpeeds,
   roundTo,
   safeJson,
   selectFtpEstimate,
+  smoothSeries,
   toSqlStr,
 } = require('./utils');
 
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 6;
+const ANALYSIS_VERSION = 7;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
 const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
@@ -685,18 +689,20 @@ function getAthleteProfileFromDbConnection(db) {
 }
 
 function upsertActivity(db, filePath, fitData) {
-  const records = Array.isArray(fitData.records) ? fitData.records : [];
+  const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const laps = Array.isArray(fitData.laps) ? fitData.laps : [];
   const athleteProfile = getAthleteProfileFromDbConnection(db);
 
+  const profileMaxHr = getProfileMaxHeartRate(db, sessions[0]?.start_time);
   const summary = buildSummary(records, sessions, {
     ftp: athleteProfile.ftp,
     restingHeartRate: athleteProfile.restingHeartRate,
     sex: athleteProfile.sex,
-    maxHeartRateForHrr: sessions[0]?.max_hr,
+    maxHeartRateForHrr: profileMaxHr ?? sessions[0]?.max_hr,
   });
   const session = sessions[0] || {};
+  const sessionCalories = asNumber(session.total_calories);
   const nowIso = new Date().toISOString();
   const upsertValues = [
     filePath, path.basename(filePath), nowIso,
@@ -708,10 +714,13 @@ function upsertActivity(db, filePath, fitData) {
     asNumber(session.total_elapsed_time),
     summary.avgHr, summary.maxHr,
     summary.avgSpeed, summary.maxSpeed,
-    null, null, summary.avgPower, summary.maxPower, summary.normalizedPower,
+    summary.avgCadence > 0 ? summary.avgCadence : null,
+    summary.maxCadence > 0 ? summary.maxCadence : null,
+    summary.avgPower, summary.maxPower, summary.normalizedPower,
     summary.trainingStressScore, summary.intensityFactor, summary.xPower, summary.relativeIntensityGc, summary.bikeStressScore, summary.decouplingPct, summary.hrTss, summary.trimp,
     null, null, null,
-    null, records.length, laps.length,
+    Number.isFinite(sessionCalories) && sessionCalories > 0 ? sessionCalories : null,
+    records.length, laps.length,
     Number.isFinite(athleteProfile.riderMassKg) ? athleteProfile.riderMassKg : null,
     Number.isFinite(athleteProfile.bikeMassKg) ? athleteProfile.bikeMassKg : null,
   ];
@@ -866,6 +875,28 @@ function profileRowToConfig(profile) {
     effectiveDate: String(profile.effective_date),
     source: 'dated profile',
   };
+}
+
+function getProfileMaxHeartRate(db, startTime) {
+  const activityDate = toDateOnly(startTime);
+  let stmt;
+  try {
+    stmt = db.prepare(activityDate
+      ? 'SELECT max_hr FROM heart_rate_profiles WHERE effective_date <= ? ORDER BY effective_date DESC LIMIT 1'
+      : 'SELECT max_hr FROM heart_rate_profiles ORDER BY effective_date DESC LIMIT 1');
+    if (activityDate) {
+      stmt.bind([activityDate]);
+    }
+    if (stmt.step()) {
+      const maxHr = asNumber(stmt.getAsObject().max_hr);
+      if (Number.isFinite(maxHr) && maxHr > 0) {
+        return maxHr;
+      }
+    }
+    return null;
+  } finally {
+    stmt?.free();
+  }
 }
 
 async function getAthleteProfile(dbPath, activityId) {
@@ -1111,9 +1142,9 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
 }
 
 function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat) {
-  const records = Array.isArray(fitData.records) ? fitData.records : [];
+  const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
-  const compRecords = compData && Array.isArray(compData.records) ? compData.records : [];
+  const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
   const hasOverlay = compRecords.length > 0;
   const athleteFtp = asNumber(athleteProfile?.ftp);
   const athleteRestingHrNumber = asNumber(athleteProfile?.restingHeartRate);
@@ -1825,9 +1856,10 @@ function renderHeartRateZones(zoneData) {
 
 function buildSummary(records, sessions, options = {}) {
   const speeds = records.map((r) => asNumber(r.speed)).filter((v) => Number.isFinite(v));
-  const hrs = records.map((r) => asNumber(r.heart_rate)).filter((v) => Number.isFinite(v));
+  const hrs = records.map((r) => asNumber(r.heart_rate)).filter((v) => Number.isFinite(v) && v > 0);
   const powers = records.map((r) => asNumber(r.power)).filter((v) => Number.isFinite(v));
   const distances = records.map((r) => asNumber(r.distance)).filter((v) => Number.isFinite(v));
+  const cadences = records.map((r) => asNumber(r.cadence)).filter((v) => Number.isFinite(v) && v > 0);
   const altitudeM = records
     .map((r) => asNumber(r.altitude))
     .filter((v) => Number.isFinite(v))
@@ -1851,6 +1883,22 @@ function buildSummary(records, sessions, options = {}) {
   const avgHr = hrs.length ? average(hrs) : (Number.isFinite(sessionAvgHr) ? sessionAvgHr : 0);
   const maxHr = hrs.length ? maxOrZero(hrs) : (Number.isFinite(sessionMaxHr) ? sessionMaxHr : 0);
   const normalizedPower = calculateNormalizedPower(records);
+
+  // Prefer device session values; fall back to distance/time, then record samples.
+  const sessionAvgSpeed = [session.avg_speed, session.avg_speed_kmh]
+    .map(asNumber).find((v) => Number.isFinite(v) && v > 0) || 0;
+  const sessionMaxSpeed = [session.max_speed, session.max_speed_kmh]
+    .map(asNumber).find((v) => Number.isFinite(v) && v > 0) || 0;
+  const distanceBasedAvgSpeed = distanceKm > 0 && durationSec > 0
+    ? distanceKm / (durationSec / 3600)
+    : 0;
+  const movingSpeeds = speeds.filter((v) => v > 0);
+  const avgSpeed = sessionAvgSpeed > 0
+    ? sessionAvgSpeed
+    : (distanceBasedAvgSpeed > 0 ? distanceBasedAvgSpeed : average(movingSpeeds));
+  const maxSpeed = sessionMaxSpeed > 0
+    ? sessionMaxSpeed
+    : maxOrZero(despikeSeries(speeds, { absThreshold: 12, ratioThreshold: 0.5 }));
 
   const ftp = asNumber(options.ftp);
   const intensityFactor = calculateIntensityFactor(normalizedPower, ftp);
@@ -1887,10 +1935,12 @@ function buildSummary(records, sessions, options = {}) {
     distanceKm: Number.isFinite(distanceKm) ? distanceKm : 0,
     durationText: formatHms(durationSec),
     durationSec,
-    avgSpeed: average(speeds),
-    maxSpeed: maxOrZero(speeds),
+    avgSpeed,
+    maxSpeed,
     avgPower: average(powers),
     maxPower: maxOrZero(powers),
+    avgCadence: average(cadences),
+    maxCadence: maxOrZero(cadences),
     normalizedPower,
     intensityFactor,
     trainingStressScore,
@@ -2303,17 +2353,20 @@ function computeElevationGainLoss(altitudesM) {
     return { gain: 0, loss: 0 };
   }
 
+  // Smooth barometric/GPS noise, then accumulate with a 3 m hysteresis.
+  const smoothed = smoothSeries(altitudesM, 5);
+  const hysteresisM = 3;
   let gain = 0;
   let loss = 0;
-  for (let i = 1; i < altitudesM.length; i += 1) {
-    const delta = altitudesM[i] - altitudesM[i - 1];
-    if (Math.abs(delta) < 0.5) {
-      continue;
-    }
-    if (delta > 0) {
+  let reference = smoothed[0];
+  for (let i = 1; i < smoothed.length; i += 1) {
+    const delta = smoothed[i] - reference;
+    if (delta >= hysteresisM) {
       gain += delta;
-    } else {
-      loss += Math.abs(delta);
+      reference = smoothed[i];
+    } else if (delta <= -hysteresisM) {
+      loss -= delta;
+      reference = smoothed[i];
     }
   }
 
@@ -2419,22 +2472,30 @@ async function generateActivityAnalysis(dbPath, activityId, force = false) {
 
 async function prepareAnalysisData(dbPath, fitData, activityId) {
   const athleteProfile = await getAthleteProfile(dbPath, activityId);
-  const powerData = addEstimatedPowerWhenMissing(fitData.records, {
+  const session = fitData.sessions?.[0] || {};
+  const hrConfig = await getHeartRateConfigForActivity(dbPath, session.start_time);
+  const normalizedRecords = normalizeRecordSpeeds(fitData.records);
+  const powerData = addEstimatedPowerWhenMissing(normalizedRecords, {
     riderMassKg: athleteProfile.riderMassKg,
     bikeMassKg: athleteProfile.bikeMassKg,
   });
-  const session = fitData.sessions?.[0] || {};
   const summary = buildSummary(powerData.records, fitData.sessions, {
     ftp: athleteProfile.ftp,
     restingHeartRate: athleteProfile.restingHeartRate,
     sex: athleteProfile.sex,
-    maxHeartRateForHrr: session.max_hr,
+    maxHeartRateForHrr: Number.isFinite(asNumber(hrConfig?.maxHeartRate))
+      ? asNumber(hrConfig.maxHeartRate)
+      : session.max_hr,
   });
+  const athleteFtp = asNumber(athleteProfile.ftp);
   return {
     ...fitData,
     records: powerData.records,
     sessions: [{
       ...session,
+      avg_speed_kmh: summary.avgSpeed > 0 ? summary.avgSpeed : session.avg_speed_kmh,
+      max_speed_kmh: summary.maxSpeed > 0 ? summary.maxSpeed : session.max_speed_kmh,
+      avg_cadence: session.avg_cadence ?? (summary.avgCadence > 0 ? summary.avgCadence : null),
       avg_power: summary.avgPower,
       max_power: summary.maxPower,
       normalized_power: summary.normalizedPower,
@@ -2444,6 +2505,9 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
       relative_intensity_gc: summary.relativeIntensityGc,
       bike_stress_score: summary.bikeStressScore,
       decoupling_pct: summary.decouplingPct,
+      trimp: summary.trimp > 0 ? summary.trimp : session.trimp,
+      hr_tss: summary.hrTss > 0 ? summary.hrTss : session.hr_tss,
+      ftp: Number.isFinite(athleteFtp) && athleteFtp > 0 ? athleteFtp : null,
       power_source: powerData.source,
     }, ...fitData.sessions.slice(1)],
   };
@@ -2812,36 +2876,45 @@ async function getProgressSummaryFromDb(dbPath, activityId) {
         FROM activities
         WHERE id = ?
       ),
-      prior AS (
+      all_prior AS (
         SELECT activities.*
         FROM activities, selected
         WHERE (
           datetime(activities.start_time) < datetime(selected.start_time)
           OR (datetime(activities.start_time) = datetime(selected.start_time) AND activities.id < selected.id)
         )
-          AND selected.total_distance_km > 0
-          AND activities.total_distance_km BETWEEN
+      ),
+      prior AS (
+        SELECT all_prior.*
+        FROM all_prior, selected
+        WHERE selected.total_distance_km > 0
+          AND all_prior.total_distance_km BETWEEN
             selected.total_distance_km * ? AND selected.total_distance_km * ?
       )
       SELECT
-        COUNT(*) AS total_activities,
+        (SELECT COUNT(*) FROM prior) AS total_activities,
         (SELECT total_distance_km * ? FROM selected) AS comparison_min_distance_km,
         (SELECT total_distance_km * ? FROM selected) AS comparison_max_distance_km,
-        COALESCE(SUM(total_distance_km), 0) AS total_distance_km,
-        COALESCE(SUM(total_timer_s) / 3600.0, 0) AS total_hours,
-        COALESCE(AVG(avg_speed_kmh), 0) AS avg_speed_kmh,
-        COALESCE(AVG(COALESCE(manual_avg_hr, avg_hr)), 0) AS avg_heart_rate,
-        COALESCE(MAX(COALESCE(manual_max_hr, max_hr)), 0) AS max_recorded_heart_rate,
-        COUNT(CASE WHEN datetime(start_time) >= datetime((SELECT start_time FROM selected), '-7 days') THEN 1 END) AS recent_activity_count,
-        COALESCE(AVG(CASE WHEN datetime(start_time) >= datetime((SELECT start_time FROM selected), '-7 days') THEN total_distance_km END), 0) AS weekly_avg_distance_km,
-        COALESCE(AVG(CASE WHEN datetime(start_time) >= datetime((SELECT start_time FROM selected), '-7 days') THEN avg_speed_kmh END), 0) AS weekly_avg_speed_kmh,
+        (SELECT COALESCE(SUM(total_distance_km), 0) FROM prior) AS total_distance_km,
+        (SELECT COALESCE(SUM(total_timer_s) / 3600.0, 0) FROM prior) AS total_hours,
+        (SELECT COALESCE(AVG(avg_speed_kmh), 0) FROM prior WHERE avg_speed_kmh > 0) AS avg_speed_kmh,
+        (SELECT COALESCE(AVG(COALESCE(manual_avg_hr, avg_hr)), 0) FROM prior
+          WHERE COALESCE(manual_avg_hr, avg_hr) > 0) AS avg_heart_rate,
+        (SELECT COALESCE(MAX(COALESCE(manual_max_hr, max_hr)), 0) FROM prior) AS max_recorded_heart_rate,
+        (SELECT COUNT(*) FROM all_prior
+          WHERE datetime(start_time) >= datetime((SELECT start_time FROM selected), '-7 days')) AS recent_activity_count,
+        (SELECT COALESCE(SUM(total_distance_km), 0) FROM all_prior
+          WHERE datetime(start_time) >= datetime((SELECT start_time FROM selected), '-7 days')) AS weekly_distance_km,
+        (SELECT COALESCE(AVG(avg_speed_kmh), 0) FROM all_prior
+          WHERE datetime(start_time) >= datetime((SELECT start_time FROM selected), '-7 days')
+            AND avg_speed_kmh > 0) AS weekly_avg_speed_kmh,
         'N/A' AS trend_speed,
         'N/A' AS trend_heart_rate,
         (SELECT start_time FROM prior ORDER BY datetime(start_time) DESC, id DESC LIMIT 1) AS last_activity_date,
-        COALESCE(MAX(max_speed_kmh), 0) AS best_speed_kmh,
-        COALESCE(MAX(total_ascent_m), 0) AS best_elevation_m,
-        MIN(100.0, COUNT(CASE WHEN datetime(start_time) >= datetime((SELECT start_time FROM selected), '-28 days') THEN 1 END) * 100.0 / 16.0) AS consistency_pct
-      FROM prior
+        (SELECT COALESCE(MAX(max_speed_kmh), 0) FROM prior) AS best_speed_kmh,
+        (SELECT COALESCE(MAX(total_ascent_m), 0) FROM prior) AS best_elevation_m,
+        (SELECT MIN(100.0, COUNT(*) * 100.0 / 16.0) FROM all_prior
+          WHERE datetime(start_time) >= datetime((SELECT start_time FROM selected), '-28 days')) AS consistency_pct
     `);
     stmt.bind([
       activityId,
