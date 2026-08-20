@@ -45,6 +45,19 @@ test('webview selector script keeps a valid selectActivity payload', () => {
   assert.match(source, /type:\s*'selectActivity'[\s\S]*?compId:/);
 });
 
+test('map card isolates leaflet stacking layers below the sticky toolbar', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /\.chart\[data-target-type="map"\] \{[^}]*isolation:isolate/);
+  assert.match(source, /\.toolbar \{[\s\S]*?z-index: 1100;/);
+});
+
+test('map zooms only with ctrl or cmd held', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /L\.map\('\$\{mapId\}', \{[^}]*scrollWheelZoom: false/);
+  assert.match(source, /if \(!event\.ctrlKey && !event\.metaKey\)/);
+  assert.match(source, /setZoomAround\(targetMap\.mouseEventToContainerPoint\(event\), next\)/);
+});
+
 test('heart-rate zones use semantic order and stable boundaries', () => {
   const records = [100, 110, 120, 140, 160, 180]
     .map((heart_rate, elapsed_time) => ({ heart_rate, elapsed_time }));
