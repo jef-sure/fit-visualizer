@@ -10,6 +10,7 @@ function registerCommands(context, services) {
     openActivityBrowser,
     pickSingleFitFile,
     prepareFitForVisualization,
+    reanalyzeOutdatedActivities,
     rememberDatabasePath,
     resolveActiveDbPath,
     resolveFitUri,
@@ -43,6 +44,12 @@ function registerCommands(context, services) {
   const indexAll = register('fitVisualizer.indexAll', 'FIT DB index failed', () => indexFitFolder(false));
   const indexNew = register('fitVisualizer.indexNew', 'FIT DB index failed', () => indexFitFolder(true));
 
+  const reanalyzeOutdated = register(
+    'fitVisualizer.reanalyzeOutdated',
+    'FIT re-analysis failed',
+    () => reanalyzeOutdatedActivities()
+  );
+
   const indexOne = register('fitVisualizer.indexOne', 'FIT DB index failed', async (resource) => {
     const targetUri = resource?.fsPath?.toLowerCase().endsWith('.fit')
       ? resource
@@ -74,7 +81,7 @@ function registerCommands(context, services) {
     }
   );
 
-  return [openFit, browse, indexAll, indexNew, indexOne, customEditor];
+  return [openFit, browse, indexAll, indexNew, indexOne, reanalyzeOutdated, customEditor];
 }
 
 function createFitEditorProvider(context, services) {

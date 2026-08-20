@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.0.34",
+  "version": "0.0.35",
   "description": "Visualize .fit activity files with charts and summary stats",
   "publisher": "AntonPetrusevich",
   "engines": {
@@ -48,6 +48,10 @@
       {
         "command": "fitVisualizer.indexOne",
         "title": "FIT: Index This File"
+      },
+      {
+        "command": "fitVisualizer.reanalyzeOutdated",
+        "title": "FIT: Re-analyze Outdated Analyses"
       }
     ],
     "menus": {
