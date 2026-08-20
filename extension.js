@@ -997,7 +997,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
     .toolbar {
       position: sticky;
       top: 0;
-      z-index: 50;
+      z-index: 1100;
       background: var(--vscode-editor-background);
       border-bottom: 1px solid var(--border);
       padding: 8px clamp(12px, 2vw, 24px);
@@ -1613,6 +1613,34 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
       let map = null;
       const hasRoute = Array.isArray(routePoints) && routePoints.length >= 2;
+
+      function setupCooperativeZoom(targetMap) {
+        const container = targetMap.getContainer();
+        const isMac = /mac/i.test(navigator.platform || navigator.userAgent || '');
+        const hint = document.createElement('div');
+        hint.className = 'mapZoomHint';
+        hint.textContent = (isMac ? 'Cmd' : 'Ctrl') + ' + scroll to zoom';
+        container.appendChild(hint);
+
+        let hintTimer = null;
+        container.addEventListener('wheel', (event) => {
+          if (!event.ctrlKey && !event.metaKey) {
+            hint.classList.add('visible');
+            clearTimeout(hintTimer);
+            hintTimer = setTimeout(() => hint.classList.remove('visible'), 1400);
+            return;
+          }
+          // Zoom is applied manually so the very first wheel tick is not swallowed.
+          event.preventDefault();
+          clearTimeout(hintTimer);
+          hint.classList.remove('visible');
+          const current = targetMap.getZoom();
+          const next = Math.max(targetMap.getMinZoom(), Math.min(targetMap.getMaxZoom(), current + (event.deltaY < 0 ? 1 : -1)));
+          if (next !== current) {
+            targetMap.setZoomAround(targetMap.mouseEventToContainerPoint(event), next);
+          }
+        }, { passive: false });
+      }
       if (!window.L || !hasRoute) {
         if (mapEl) {
           let reason = !window.L
@@ -1622,10 +1650,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
       } else {
         if (gpsRouteSection) gpsRouteSection.style.display = 'none';
-        map = L.map('${mapId}', { preferCanvas: true, zoomControl: true });
+        map = L.map('${mapId}', { preferCanvas: true, zoomControl: true, scrollWheelZoom: false });
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
         }).addTo(map);
+        setupCooperativeZoom(map);
         const latLngs = routePoints.map((p) => [p.lat, p.lon]);
         map.fitBounds(L.latLngBounds(latLngs).pad(0.08));
         L.circleMarker(latLngs[0], { radius: 5, color: '#149c5a', fillColor: '#149c5a', fillOpacity: 1 }).addTo(map);
@@ -1707,6 +1736,8 @@ function sharedCss() {
     .metric .k { color:var(--muted); font-size:0.82rem; text-transform:uppercase; letter-spacing:0.08em; }
     .metric .v { font-size:1.3rem; margin-top:3px; font-weight:bold; color:var(--accent); }
     .chart { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:12px; position:relative; }
+    /* Traps Leaflet's internal z-index layers (up to 1000) inside the map card. */
+    .chart[data-target-type="map"] { z-index:0; isolation:isolate; }
     .resizable { padding-bottom:26px; }
     .resizable.resizing { user-select:none; cursor:nwse-resize; }
     .resizeHandle { position:absolute; width:18px; height:18px; border-radius:4px; border:1px solid var(--border); background:linear-gradient(135deg,transparent 42%,color-mix(in srgb,var(--muted) 70%,transparent) 43%,color-mix(in srgb,var(--muted) 70%,transparent) 48%,transparent 49%),linear-gradient(135deg,transparent 56%,color-mix(in srgb,var(--muted) 70%,transparent) 57%,color-mix(in srgb,var(--muted) 70%,transparent) 62%,transparent 63%),color-mix(in srgb,var(--card) 86%,var(--bg)); }
@@ -1745,6 +1776,8 @@ function sharedCss() {
     .mapControls select { border:1px solid var(--border); border-radius:6px; padding:4px 8px; background:var(--input-bg); color:var(--input-fg); font-size:0.9rem; }
     #fitMap, #fitMapComp { height:var(--map-height,clamp(320px,52vh,760px)); border:1px solid var(--border); border-radius:10px; overflow:hidden; background:color-mix(in srgb,var(--card) 65%,var(--bg)); }
     .mapHint { color:var(--muted); font-size:0.85rem; }
+    .mapZoomHint { position:absolute; inset:0; z-index:1200; display:flex; align-items:center; justify-content:center; pointer-events:none; opacity:0; transition:opacity 140ms ease; background:color-mix(in srgb,var(--bg) 55%,transparent); color:var(--ink); font-size:1.05rem; font-weight:700; letter-spacing:0.03em; }
+    .mapZoomHint.visible { opacity:1; }
     .manualDataForm { display:flex; align-items:end; gap:12px; flex-wrap:wrap; }
     .manualDataForm label { display:grid; gap:4px; color:var(--muted); font-size:0.82rem; }
     .manualDataForm input { width:150px; border:1px solid var(--border); border-radius:6px; padding:6px 8px; background:var(--input-bg); color:var(--input-fg); }
