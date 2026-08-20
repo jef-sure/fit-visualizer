@@ -61,6 +61,7 @@ function activate(context) {
     openActivityBrowser,
     pickSingleFitFile,
     prepareFitForVisualization,
+    reanalyzeOutdatedActivities,
     rememberDatabasePath,
     resolveActiveDbPath,
     resolveFitUri,
@@ -449,7 +450,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const data = selId ? await loadFitDataFromDb(dbPath, selId) : null;
     const comp = selCompId ? await loadFitDataFromDb(dbPath, selCompId) : null;
     const athleteProfile = await getAthleteProfile(dbPath, selId);
-    const analysis = selId ? await getAnalysisFromDb(dbPath, selId) : null;
+    const analysis = selId ? await getLatestAnalysisAnyVersion(dbPath, selId) : null;
     const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
     const hrConfig = data
       ? await getHeartRateConfigForActivity(dbPath, data.sessions?.[0]?.start_time)
@@ -1385,9 +1386,22 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       const hrProfileStatus = document.getElementById('${mapId}HrProfileStatus');
       const autoCalcZonesBtn = document.getElementById('${mapId}AutoCalcZonesBtn');
       const vscode = window.fitVisualizerApi;
-      const initialAnalysis = ${safeJson(analysis || '')};
+      const initialAnalysis = ${safeJson(analysis?.text || '')};
       let hasAnalysis = Boolean(initialAnalysis);
+      let analysisOutdated = ${analysis && asNumber(analysis.version) < ANALYSIS_VERSION ? 'true' : 'false'};
       let chatMessages = ${safeJson(Array.isArray(analysisChat) ? analysisChat : [])};
+
+      function analyzeButtonLabel() {
+        if (!hasAnalysis) return 'Analyze Activity';
+        return analysisOutdated ? 'Re-analyze' : 'Analyze Again';
+      }
+
+      function showAnalysisText(text) {
+        const note = analysisOutdated
+          ? '<div style="margin:0 0 10px 0;padding:8px 10px;border-left:4px solid #ffc107;background:rgba(255,193,7,0.1);font-size:0.92rem;">Analyzed with an older version — re-analyze for updated insights.</div>'
+          : '';
+        analysisContent.innerHTML = note + '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(text) + '</div>';
+      }
 
       function renderChatMessages() {
         if (!analysisChatMessagesEl) return;
@@ -1408,8 +1422,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
       renderChatMessages();
       if (initialAnalysis) {
-        analysisContent.innerHTML = '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(initialAnalysis) + '</div>';
-        analyzeBtn.textContent = 'Analyze Again';
+        showAnalysisText(initialAnalysis);
+        analyzeBtn.textContent = analyzeButtonLabel();
       } else {
         analysisContent.innerHTML = '<p style="margin:0;color:var(--muted);">Click &ldquo;Analyze Activity&rdquo; to analyze this ride with Copilot.</p>';
       }
@@ -1428,18 +1442,20 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
         if (msg.type === 'analysisResult') {
           hasAnalysis = true;
-          analysisContent.innerHTML = '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(msg.analysis) + '</div>';
+          analysisOutdated = false;
+          showAnalysisText(msg.analysis);
           analyzeBtn.disabled = false;
-          analyzeBtn.textContent = 'Analyze Again';
+          analyzeBtn.textContent = analyzeButtonLabel();
         } else if (msg.type === 'noAnalysis') {
           hasAnalysis = false;
+          analysisOutdated = false;
           analysisContent.innerHTML = '<p style="margin:0;color:var(--muted);">Click &ldquo;Analyze Activity&rdquo; to analyze this ride with Copilot.</p>';
           analyzeBtn.disabled = false;
-          analyzeBtn.textContent = 'Analyze Activity';
+          analyzeBtn.textContent = analyzeButtonLabel();
         } else if (msg.type === 'analysisError') {
           analysisContent.innerHTML = '<div style="color:#ff6b6b;">Error: ' + escapeHtml(msg.error) + '</div>';
           analyzeBtn.disabled = false;
-          analyzeBtn.textContent = hasAnalysis ? 'Analyze Again' : 'Analyze Activity';
+          analyzeBtn.textContent = analyzeButtonLabel();
         } else if (msg.type === 'analysisChatState') {
           chatMessages = Array.isArray(msg.messages) ? msg.messages : [];
           renderChatMessages();
@@ -2480,7 +2496,7 @@ async function generateActivityAnalysis(dbPath, activityId, force = false) {
   }
 
   if (!force) {
-    const existing = await getAnalysisFromDb(dbPath, numId);
+    const existing = await getCachedAnalysisForCurrentVersion(dbPath, numId);
     if (existing) {
       return existing;
     }
@@ -2494,13 +2510,100 @@ async function generateActivityAnalysis(dbPath, activityId, force = false) {
   const analysisData = await prepareAnalysisData(dbPath, current, numId);
   const summary = await getProgressSummaryFromDb(dbPath, numId);
   const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time);
-  const previousAnalysis = await getAnalysisFromDb(dbPath, numId);
+  const previousAnalysis = (await getLatestAnalysisAnyVersion(dbPath, numId))?.text || null;
   const followUpHistory = await getAnalysisChatFromDb(dbPath, numId);
   const prompt = generateAnalysisPrompt(analysisData, summary, hrConfig, previousAnalysis, followUpHistory);
   const analysis = await requestCopilotAnalysis(vscode, prompt);
   await storeAnalysisInDb(dbPath, numId, analysis);
 
   return analysis;
+}
+
+async function reanalyzeOutdatedActivities() {
+  const dbPath = await resolveActiveDbPath() || await selectDatabaseFolder();
+  if (!dbPath) {
+    return;
+  }
+
+  const rows = await getOutdatedAnalysisActivities(dbPath);
+  const outdated = rows.filter((row) => row.analysisVersion != null);
+  const missing = rows.filter((row) => row.analysisVersion == null);
+  if (!rows.length) {
+    vscode.window.showInformationMessage(`All analyses already use version ${ANALYSIS_VERSION}.`);
+    return;
+  }
+
+  const choices = [];
+  if (outdated.length) {
+    choices.push({
+      label: `Outdated analyses only (${outdated.length})`,
+      detail: `Re-run Copilot for activities analyzed before version ${ANALYSIS_VERSION}.`,
+      targets: outdated,
+    });
+  }
+  choices.push({
+    label: `Outdated and never analyzed (${rows.length})`,
+    detail: `${outdated.length} outdated, ${missing.length} never analyzed.`,
+    targets: rows,
+  });
+
+  const picked = await vscode.window.showQuickPick(choices, {
+    placeHolder: 'Each activity costs one Copilot request; they run one at a time.',
+  });
+  if (!picked) {
+    return;
+  }
+
+  const targets = picked.targets;
+  const result = await vscode.window.withProgress({
+    location: vscode.ProgressLocation.Notification,
+    title: 'Re-analyzing FIT activities',
+    cancellable: true,
+  }, async (progress, token) => {
+    let done = 0;
+    let failed = 0;
+    let stoppedReason = null;
+    let lastError = '';
+
+    for (let index = 0; index < targets.length; index += 1) {
+      if (token.isCancellationRequested) {
+        stoppedReason = 'cancelled';
+        break;
+      }
+
+      const target = targets[index];
+      progress.report({
+        message: `${index + 1}/${targets.length}: ${target.fileName}`,
+        increment: index === 0 ? 0 : 100 / targets.length,
+      });
+
+      try {
+        await generateActivityAnalysis(dbPath, target.id, true);
+        done += 1;
+      } catch (error) {
+        failed += 1;
+        lastError = error instanceof Error ? error.message : String(error);
+        // Further requests would fail the same way until the quota window resets.
+        if (/rate limit/i.test(lastError)) {
+          stoppedReason = 'rateLimited';
+          break;
+        }
+      }
+    }
+
+    return { done, failed, stoppedReason, lastError, total: targets.length };
+  });
+
+  const suffix = result.stoppedReason === 'cancelled'
+    ? ' Cancelled before finishing.'
+    : result.stoppedReason === 'rateLimited'
+      ? ' Stopped early: Copilot rate limit reached.'
+      : result.failed
+        ? ` Last error: ${result.lastError}`
+        : '';
+  vscode.window.showInformationMessage(
+    `Re-analysis finished: ${result.done} of ${result.total} updated, ${result.failed} failed.${suffix}`
+  );
 }
 
 async function prepareAnalysisData(dbPath, fitData, activityId) {
@@ -2881,7 +2984,7 @@ function parseOptionalHeartRate(value, label) {
   return Math.round(heartRate);
 }
 
-async function getAnalysisFromDb(dbPath, activityId) {
+async function getCachedAnalysisForCurrentVersion(dbPath, activityId) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   let stmt;
@@ -2892,6 +2995,59 @@ async function getAnalysisFromDb(dbPath, activityId) {
       return stmt.getAsObject().analysis_text;
     }
     return null;
+  } finally {
+    stmt?.free();
+    db.close();
+  }
+}
+
+// Any stored analysis stays useful for display and as prompt context, even after a version bump.
+async function getLatestAnalysisAnyVersion(dbPath, activityId) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  let stmt;
+  try {
+    stmt = db.prepare('SELECT analysis_text, analysis_version FROM activity_analysis WHERE activity_id = ? ORDER BY analysis_version DESC LIMIT 1');
+    stmt.bind([activityId]);
+    if (stmt.step()) {
+      const row = stmt.getAsObject();
+      const version = asNumber(row.analysis_version);
+      return {
+        text: row.analysis_text,
+        version: Number.isFinite(version) ? version : 0,
+      };
+    }
+    return null;
+  } finally {
+    stmt?.free();
+    db.close();
+  }
+}
+
+async function getOutdatedAnalysisActivities(dbPath) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  let stmt;
+  try {
+    stmt = db.prepare(`
+      SELECT a.id AS id, a.file_name AS file_name, aa.analysis_version AS analysis_version
+      FROM activities a
+      LEFT JOIN activity_analysis aa ON aa.activity_id = a.id
+      WHERE aa.activity_id IS NULL OR aa.analysis_version < ?
+      ORDER BY a.start_time
+    `);
+    stmt.bind([ANALYSIS_VERSION]);
+    const rows = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      const version = asNumber(row.analysis_version);
+      rows.push({
+        id: Number(row.id),
+        fileName: row.file_name || `Activity ${row.id}`,
+        analysisVersion: Number.isFinite(version) ? version : null,
+      });
+    }
+    return rows;
   } finally {
     stmt?.free();
     db.close();
@@ -3103,7 +3259,7 @@ async function generateActivityChatReply(dbPath, activityId, history, userQuesti
   const analysisData = await prepareAnalysisData(dbPath, current, activityId);
   const summary = await getProgressSummaryFromDb(dbPath, activityId);
   const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time);
-  const baseAnalysis = await getAnalysisFromDb(dbPath, activityId);
+  const baseAnalysis = (await getLatestAnalysisAnyVersion(dbPath, activityId))?.text || null;
   const prompt = generateAnalysisChatPrompt(analysisData, summary, hrConfig, baseAnalysis, history, userQuestion);
   return requestCopilotAnalysis(vscode, prompt);
 }

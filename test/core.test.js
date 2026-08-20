@@ -58,6 +58,67 @@ test('map zooms only with ctrl or cmd held', () => {
   assert.match(source, /setZoomAround\(targetMap\.mouseEventToContainerPoint\(event\), next\)/);
 });
 
+test('stored analyses stay visible and reusable after a version bump', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.doesNotMatch(source, /getAnalysisFromDb/);
+  // Strict version equality may only gate the "skip a new Copilot request" cache check.
+  assert.match(source, /if \(!force\) \{\s*const existing = await getCachedAnalysisForCurrentVersion\(dbPath, numId\);/);
+  assert.equal(source.match(/analysis_version = \?/g).length, 1);
+  assert.match(source, /const analysis = selId \? await getLatestAnalysisAnyVersion\(dbPath, selId\) : null;/);
+  assert.match(source, /const previousAnalysis = \(await getLatestAnalysisAnyVersion\(dbPath, numId\)\)\?\.text/);
+  assert.match(source, /const baseAnalysis = \(await getLatestAnalysisAnyVersion\(dbPath, activityId\)\)\?\.text/);
+  assert.match(source, /Analyzed with an older version/);
+});
+
+test('bulk re-analysis command is registered end to end', () => {
+  const commandsSource = fs.readFileSync(path.join(__dirname, '..', 'commands.js'), 'utf8');
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+
+  assert.match(commandsSource, /register\(\s*'fitVisualizer\.reanalyzeOutdated'/);
+  assert.match(commandsSource, /return \[[^\]]*reanalyzeOutdated[^\]]*\]/);
+  assert.equal(
+    manifest.contributes.commands.some((entry) => entry.command === 'fitVisualizer.reanalyzeOutdated'),
+    true
+  );
+});
+
+test('outdated analysis lookup covers older versions and never-analyzed activities', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const currentVersion = Number(/const ANALYSIS_VERSION = (\d+)/.exec(source)[1]);
+  const SQL = await initSqlJs({
+    locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm'),
+  });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    db.run(`INSERT INTO activities (id, file_path, file_name, start_time) VALUES
+      (1, 'a.fit', 'a.fit', '2026-08-01'),
+      (2, 'b.fit', 'b.fit', '2026-08-02'),
+      (3, 'c.fit', 'c.fit', '2026-08-03')`);
+    db.run(`INSERT INTO activity_analysis (activity_id, analysis_text, analysis_version) VALUES
+      (1, 'current', ${currentVersion}),
+      (2, 'stale', ${currentVersion - 1})`);
+
+    const outdated = db.exec(`
+      SELECT a.id, aa.analysis_version
+      FROM activities a
+      LEFT JOIN activity_analysis aa ON aa.activity_id = a.id
+      WHERE aa.activity_id IS NULL OR aa.analysis_version < ${currentVersion}
+      ORDER BY a.start_time
+    `)[0].values;
+
+    assert.deepEqual(outdated, [[2, currentVersion - 1], [3, null]]);
+
+    const latestForStale = db.exec(`
+      SELECT analysis_text, analysis_version FROM activity_analysis
+      WHERE activity_id = 2 ORDER BY analysis_version DESC LIMIT 1
+    `)[0].values[0];
+    assert.deepEqual(latestForStale, ['stale', currentVersion - 1]);
+  } finally {
+    db.close();
+  }
+});
+
 test('heart-rate zones use semantic order and stable boundaries', () => {
   const records = [100, 110, 120, 140, 160, 180]
     .map((heart_rate, elapsed_time) => ({ heart_rate, elapsed_time }));
