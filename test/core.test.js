@@ -47,6 +47,7 @@ const {
   estimatePowerFromMotion,
   haversineKm,
   normalizeRecordSpeeds,
+  roundTo,
   segmentByGrade,
   segmentLineBudget,
   selectEffortSignal,
@@ -146,6 +147,75 @@ test('map zooms only with ctrl or cmd held', () => {
   assert.match(source, /L\.map\('\$\{mapId\}', \{[^}]*scrollWheelZoom: false/);
   assert.match(source, /if \(!event\.ctrlKey && !event\.metaKey\)/);
   assert.match(source, /setZoomAround\(targetMap\.mouseEventToContainerPoint\(event\), next\)/);
+});
+
+test('chart client payload carries geometry and a trimmed point series', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /function buildChartClientPayload\(chart, xUnit, yUnit, overlays\)/);
+
+  // Load buildChartClientPayload without executing the whole extension module (it requires 'vscode').
+  const fn = new Function(
+    'roundTo',
+    `${source.slice(source.indexOf('function buildChartClientPayload'), source.indexOf('function buildZoneSegmentPolylines'))}
+     return buildChartClientPayload;`
+  )(roundTo);
+
+  const chart = {
+    points: [{ x: 0, y: 10 }, { x: 1, y: 12.3456 }],
+    plotLeft: 60, plotRight: 1380, plotTop: 12, plotBottom: 340,
+    xMin: 0, xMax: 1, yMin: 10, yMax: 12.3456, width: 1400, height: 380,
+  };
+  const payload = fn(chart, 'km', 'bpm');
+  assert.deepEqual(payload.points, [[0, 10], [1, 12.346]]);
+  assert.equal(payload.width, 1400);
+  assert.equal(payload.yUnit, 'bpm');
+  assert.equal(payload.overlays, undefined);
+  assert.equal(fn({ points: [{ x: 0, y: 1 }] }, 'km', 'bpm'), null);
+});
+
+test('chart svg exposes tick groups and a crosshair capture rect for the client script', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /<g class="xTicksGroup">/);
+  assert.match(source, /<g class="yTicksGroup">/);
+  assert.match(source, /class="crosshairCapture"/);
+  assert.match(source, /options\.svgId \? `[\s\S]*?crosshairCapture/);
+});
+
+test('chart interactions script ports buildTicks, syncs a shared crosshair and adapts tick density', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /function buildTicksClient\(min, max, targetCount\)/);
+  assert.match(source, /var payloads = \$\{chartClientPayloads\};/);
+  assert.match(source, /new ResizeObserver\(function \(entries\) \{/);
+  assert.match(source, /svgIds\.forEach\(function \(id\) \{\s*var target = instances\[id\];/);
+  assert.match(source, /getScreenCTM\(\)/);
+});
+
+test('metric overlays reuse computeGrade once, exclude the chart\'s own metric and cap at two active', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /function buildOverlayMetrics\(records, maxPoints\)/);
+  assert.match(source, /const grades = computeGrade\(records\);/);
+  assert.match(source, /var OVERLAY_PALETTE = \['#e67e22', '#00acc1'\];/);
+  assert.match(source, /if \(Object\.keys\(active\)\.length >= 2\) \{/);
+
+  const fnSource = source.slice(
+    source.indexOf('const OVERLAY_METRIC_LABELS'),
+    source.indexOf('function renderOverlayControls')
+  );
+  const buildOverlayOptions = new Function('roundTo', `${fnSource}\nreturn buildOverlayOptions;`)(roundTo);
+
+  const metrics = {
+    grade: { points: [{ x: 0, y: 1 }, { x: 1, y: 5 }], yValues: [1, 5] },
+    altitude: { points: [{ x: 0, y: 100 }, { x: 1, y: 100 }], yValues: [100, 100] },
+    speed: { points: [{ x: 0, y: 10 }, { x: 1, y: 20 }], yValues: [10, 20] },
+    heart_rate: { points: [{ x: 0, y: 120 }, { x: 1, y: 140 }], yValues: [120, 140] },
+  };
+
+  const options = buildOverlayOptions(metrics, 'speed');
+  assert.deepEqual(Object.keys(options).sort(), ['grade', 'heart_rate']);
+  // A flat (zero-range) altitude series is not offered as an overlay: there is nothing to see.
+  assert.equal(options.grade.min, 1);
+  assert.equal(options.grade.max, 5);
+  assert.equal(options.grade.unit, '%');
 });
 
 test('stored analyses stay visible and reusable after a version bump', () => {
