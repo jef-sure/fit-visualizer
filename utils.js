@@ -435,6 +435,22 @@ function estimateSpeedConfidence(records, options = {}) {
     return verdicts;
   }
 
+  for (const window of findTrustedSpeedWindows(records, options)) {
+    for (let index = window.startIndex; index <= window.endIndex; index += 1) {
+      verdicts[index] = 'high';
+    }
+  }
+
+  return verdicts;
+}
+
+// Shared by estimateSpeedConfidence (which only needs the index ranges) and
+// estimateWheelCalibrationRatio (which also needs each window's GPS path length).
+function findTrustedSpeedWindows(records, options = {}) {
+  if (!Array.isArray(records) || records.length < 2) {
+    return [];
+  }
+
   const windowSeconds = Number.isFinite(asNumber(options.windowSeconds)) ? asNumber(options.windowSeconds) : 180;
   const minWindowKm = Number.isFinite(asNumber(options.minWindowKm)) ? asNumber(options.minWindowKm) : 1;
   const tolerancePct = Number.isFinite(asNumber(options.tolerancePct)) ? asNumber(options.tolerancePct) : 5;
@@ -444,6 +460,7 @@ function estimateSpeedConfidence(records, options = {}) {
     ? asNumber(options.maxAccelerationMs2) : 4;
 
   const gpsSpeeds = computeGpsDerivedSpeed(records);
+  const windows = [];
 
   let windowStart = 0;
   while (windowStart < records.length) {
@@ -462,18 +479,17 @@ function estimateSpeedConfidence(records, options = {}) {
       windowEnd += 1;
     }
 
-    if (evaluateSpeedWindow(records, gpsSpeeds, windowStart, windowEnd, {
+    const evaluation = evaluateSpeedWindow(records, gpsSpeeds, windowStart, windowEnd, {
       minWindowKm, tolerancePct, minStraightness, minCoverage, maxAccelerationMs2,
-    })) {
-      for (let index = windowStart; index <= windowEnd; index += 1) {
-        verdicts[index] = 'high';
-      }
+    });
+    if (evaluation) {
+      windows.push({ startIndex: windowStart, endIndex: windowEnd, pathKm: evaluation.pathKm });
     }
 
     windowStart = windowEnd + 1;
   }
 
-  return verdicts;
+  return windows;
 }
 
 function evaluateSpeedWindow(records, gpsSpeeds, startIndex, endIndex, limits) {
@@ -524,7 +540,31 @@ function evaluateSpeedWindow(records, gpsSpeeds, startIndex, endIndex, limits) {
     return false;
   }
 
-  return median(deviations) * 100 <= limits.tolerancePct;
+  return median(deviations) * 100 <= limits.tolerancePct ? { pathKm } : false;
+}
+
+// Compares the wheel sensor's own distance channel against the GPS path on trusted windows only,
+// weighted by each window's GPS distance so longer, cleaner stretches count for more.
+function estimateWheelCalibrationRatio(records, options = {}) {
+  if (!Array.isArray(records) || records.length < 2) {
+    return null;
+  }
+
+  let weightedRatioSum = 0;
+  let trustedDistanceKm = 0;
+
+  for (const window of findTrustedSpeedWindows(records, options)) {
+    const wheelDistanceKm = asNumber(records[window.endIndex]?.distance) - asNumber(records[window.startIndex]?.distance);
+    if (!Number.isFinite(wheelDistanceKm) || wheelDistanceKm <= 0 || !(window.pathKm > 0)) {
+      continue;
+    }
+    weightedRatioSum += (wheelDistanceKm / window.pathKm) * window.pathKm;
+    trustedDistanceKm += window.pathKm;
+  }
+
+  return trustedDistanceKm > 0
+    ? { ratio: weightedRatioSum / trustedDistanceKm, trustedDistanceKm }
+    : null;
 }
 
 // Stops and recording gaps, so pauses stop blurring segment averages.
@@ -1527,6 +1567,7 @@ module.exports = {
   estimateFtpCandidates,
   estimatePowerFromMotion,
   estimateSpeedConfidence,
+  estimateWheelCalibrationRatio,
   groupSimilarSegments,
   haversineKm,
   normalizeCoordinate,

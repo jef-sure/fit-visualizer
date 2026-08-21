@@ -111,6 +111,17 @@ function ensureDatabaseSchema(db) {
     );
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS wheel_calibration_samples (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      activity_id         INTEGER NOT NULL REFERENCES activities(id),
+      computed_at         TEXT,
+      ratio               REAL NOT NULL,
+      trusted_distance_km REAL NOT NULL,
+      UNIQUE(activity_id)
+    );
+  `);
+
   addColumnIfMissing(db, 'activities', 'manual_avg_hr', 'REAL');
   addColumnIfMissing(db, 'activities', 'manual_max_hr', 'REAL');
   addColumnIfMissing(db, 'activities', 'rider_mass_kg', 'REAL');
@@ -124,6 +135,7 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'athlete_profile', 'ftp', 'REAL');
   addColumnIfMissing(db, 'athlete_profile', 'rider_mass_kg', 'REAL');
   addColumnIfMissing(db, 'athlete_profile', 'bike_mass_kg', 'REAL');
+  addColumnIfMissing(db, 'athlete_profile', 'wheel_circumference_mm', 'REAL');
   addColumnIfMissing(db, 'activity_analysis', 'analysis_version', 'INTEGER NOT NULL DEFAULT 1');
 }
 

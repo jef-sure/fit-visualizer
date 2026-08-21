@@ -41,6 +41,7 @@ const {
   downsamplePoints,
   escapeHtml,
   estimateSpeedConfidence,
+  estimateWheelCalibrationRatio,
   formatHms,
   formatNumber,
   estimateFtpCandidates,
@@ -414,6 +415,39 @@ test('stops cover both zero-speed runs and recording gaps', () => {
 test('haversine distance matches a known one-degree separation', () => {
   assert.ok(Math.abs(haversineKm(52, 21, 53, 21) - 111.19) < 0.1);
   assert.equal(haversineKm(52, 21, 52, 21), 0);
+});
+
+test('wheel calibration ratio compares the wheel distance channel against GPS distance on trusted windows', () => {
+  const base = straightGpsRecords(400, 30);
+  // A miscalibrated wheel circumference scales the recorded distance channel; GPS positions stay honest.
+  const miscalibrated = base.map((record) => ({ ...record, distance: record.distance * 1.05 }));
+
+  const result = estimateWheelCalibrationRatio(miscalibrated);
+  assert.ok(result, 'a long straight trusted stretch should produce a calibration sample');
+  assert.ok(Math.abs(result.ratio - 1.05) < 0.01, `expected ratio near 1.05, got ${result.ratio}`);
+  assert.ok(result.trustedDistanceKm > 1);
+
+  assert.equal(estimateWheelCalibrationRatio(straightGpsRecords(20, 30)), null, 'a 150 m stretch is too short to trust');
+  assert.equal(estimateWheelCalibrationRatio([]), null);
+});
+
+test('wheel calibration integration: sample storage, recommendation gating and profile wiring', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+
+  assert.match(source, /DELETE FROM wheel_calibration_samples WHERE activity_id = \?/);
+  assert.match(source, /INSERT INTO wheel_calibration_samples[\s\S]*?ON CONFLICT\(activity_id\) DO UPDATE SET/);
+  assert.match(source, /Only stored when a calibration ratio was actually computable/);
+
+  assert.match(source, /if \(rows\.length >= 15 \|\| cumulativeKm >= 20\)/);
+  assert.match(source, /if \(totalKm < 15\) \{\s*return null;/);
+  assert.match(source, /if \(Math\.abs\(deviationPct\) <= 1\) \{\s*return null;/);
+  assert.match(source, /recommendedCircumferenceMm: currentMm != null \? roundTo\(currentMm \/ ratio, 1\) : null/);
+
+  assert.match(source, /function parseOptionalWheelCircumference\(value\)/);
+  assert.match(source, /mm < 1000 \|\| mm > 2500/);
+
+  assert.match(source, /wheelCircumferenceMm: document\.getElementById\('\$\{mapId\}WheelCircumference'\)\.value,/);
+  assert.match(source, /const wheelCalibration = await getWheelCalibrationRecommendation\(dbPath\);/);
 });
 
 test('grade segmentation labels terrain and absorbs short wobbles', () => {
@@ -856,6 +890,10 @@ test('database schema migrates manual HR overrides onto existing activities', as
     assert.equal(columns.includes('manual_max_hr'), true);
     const analysisColumns = db.exec('PRAGMA table_info(activity_analysis)')[0].values.map((row) => row[1]);
     assert.equal(analysisColumns.includes('analysis_version'), true);
+    const profileColumns = db.exec('PRAGMA table_info(athlete_profile)')[0].values.map((row) => row[1]);
+    assert.equal(profileColumns.includes('wheel_circumference_mm'), true);
+    const calibrationColumns = db.exec('PRAGMA table_info(wheel_calibration_samples)')[0].values.map((row) => row[1]);
+    assert.deepEqual(calibrationColumns, ['id', 'activity_id', 'computed_at', 'ratio', 'trusted_distance_km']);
   } finally {
     db.close();
   }
@@ -871,7 +909,7 @@ test('database schema creates only extension-owned tables', async () => {
     const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")[0]
       .values
       .flat();
-    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'athlete_profile', 'heart_rate_profiles', 'records', 'sqlite_sequence']);
+    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'athlete_profile', 'heart_rate_profiles', 'records', 'sqlite_sequence', 'wheel_calibration_samples']);
   } finally {
     db.close();
   }
