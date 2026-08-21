@@ -199,6 +199,67 @@ function calculateHistoricalMeanMaximalPower(activityRecords, durations) {
   return curve;
 }
 
+// Grade per record (fraction, e.g. 0.06 = 6%), aligned with the input array; null where unknown.
+function computeGrade(records) {
+  const grades = Array.isArray(records) ? records.map(() => null) : [];
+  if (!Array.isArray(records) || records.length < 2) {
+    return grades;
+  }
+
+  // Records use parser units: speed in km/h, altitude and distance in km.
+  const samples = [];
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i] || {};
+    const elapsed = asNumber(record.elapsed_time);
+    const speed = asNumber(record.speed);
+    const altitude = asNumber(record.altitude);
+    const distance = asNumber(record.distance);
+    const hasValidGpsFix = Number.isFinite(asNumber(record.position_lat))
+      && Number.isFinite(asNumber(record.position_long))
+      && !(asNumber(record.position_lat) === 0 && asNumber(record.position_long) === 0);
+
+    if (Number.isFinite(elapsed) && Number.isFinite(speed) && Number.isFinite(altitude) && hasValidGpsFix) {
+      samples.push({
+        index: i,
+        elapsed,
+        speed: Math.max(0, speed) / 3.6,
+        altitude: altitude * 1000,
+        distance: Number.isFinite(distance) ? distance : 0,
+      });
+    }
+  }
+
+  if (samples.length < 2) {
+    return grades;
+  }
+
+  const smoothedAltitude = smoothSeries(samples.map((s) => s.altitude), 5);
+
+  for (let index = 1; index < samples.length; index += 1) {
+    const previous = samples[index - 1];
+    const current = samples[index];
+    const dt = current.elapsed - previous.elapsed;
+    const speed = (previous.speed + current.speed) / 2;
+    const altitudeDelta = (smoothedAltitude[index] || current.altitude) - (smoothedAltitude[index - 1] || previous.altitude);
+    const distanceDeltaM = Number.isFinite(current.distance) && Number.isFinite(previous.distance)
+      ? (current.distance - previous.distance) * 1000
+      : NaN;
+    const distanceM = Number.isFinite(distanceDeltaM) && distanceDeltaM > 0
+      ? distanceDeltaM
+      : speed * dt;
+
+    grades[current.index] = {
+      elapsed_time: current.elapsed,
+      grade: altitudeDelta / Math.max(distanceM, 1),
+      dt,
+      speed,
+      distanceM,
+    };
+  }
+
+  return grades;
+}
+
 function estimatePowerFromMotion(records, input = {}) {
   const riderMassKg = asNumber(input.riderMassKg);
   const bikeMassKg = asNumber(input.bikeMassKg);
@@ -218,68 +279,27 @@ function estimatePowerFromMotion(records, input = {}) {
     ? asNumber(input.drivetrainEfficiency) : 0.97;
   const maxPhysiologicalPower = 1200;
 
-  const samples = [];
-  // Records use parser units: speed in km/h, altitude and distance in km.
-  for (let i = 0; i < records.length; i += 1) {
-    const record = records[i] || {};
-    const elapsed = asNumber(record.elapsed_time);
-    const speed = asNumber(record.speed);
-    const altitude = asNumber(record.altitude);
-    const distance = asNumber(record.distance);
-    const hasValidGpsFix = Number.isFinite(asNumber(record.position_lat))
-      && Number.isFinite(asNumber(record.position_long))
-      && !(asNumber(record.position_lat) === 0 && asNumber(record.position_long) === 0);
-
-    if (Number.isFinite(elapsed) && Number.isFinite(speed) && Number.isFinite(altitude) && hasValidGpsFix) {
-      samples.push({
-        elapsed,
-        speed: Math.max(0, speed) / 3.6,
-        altitude: altitude * 1000,
-        distance: Number.isFinite(distance) ? distance : 0,
-      });
-    }
-  }
-
-  if (samples.length < 2) {
-    return [];
-  }
-
-  const smoothedAltitude = smoothSeries(samples.map((s) => s.altitude), 5);
   const result = [];
 
-  for (let index = 1; index < samples.length; index += 1) {
-    const previous = samples[index - 1];
-    const current = samples[index];
-    const dt = current.elapsed - previous.elapsed;
-    const speed = (previous.speed + current.speed) / 2;
-
-    if (dt <= 0 || dt > 5 || speed < 0.5) {
+  for (const sample of computeGrade(records)) {
+    if (!sample) {
       continue;
     }
 
-    const altitudeDelta = (smoothedAltitude[index] || current.altitude) - (smoothedAltitude[index - 1] || previous.altitude);
-    const distanceDeltaM = Number.isFinite(current.distance) && Number.isFinite(previous.distance)
-      ? (current.distance - previous.distance) * 1000
-      : NaN;
-    const distanceM = Number.isFinite(distanceDeltaM) && distanceDeltaM > 0
-      ? distanceDeltaM
-      : speed * dt;
-
-    const rawGrade = altitudeDelta / Math.max(distanceM, 1);
-    if (Math.abs(rawGrade) > 0.18) {
+    const { dt, speed, grade } = sample;
+    // Beyond +-18% the motion model is dominated by altitude noise rather than real slope.
+    if (dt <= 0 || dt > 5 || speed < 0.5 || Math.abs(grade) > 0.18) {
       continue;
     }
 
-    const grade = Math.max(-0.18, Math.min(0.18, rawGrade));
     const angle = Math.atan(grade);
-
     const gravityPower = totalMassKg * gravity * Math.sin(angle) * speed;
     const rollingPower = totalMassKg * gravity * rollingCoefficient * Math.cos(angle) * speed;
     const aerodynamicPower = 0.5 * airDensity * dragArea * speed ** 3;
     const wheelPower = Math.max(0, gravityPower + rollingPower + aerodynamicPower);
     const estimatedPower = Math.min(maxPhysiologicalPower, wheelPower / drivetrainEfficiency);
 
-    result.push({ elapsed_time: current.elapsed, power: estimatedPower });
+    result.push({ elapsed_time: sample.elapsed_time, power: estimatedPower });
   }
 
   return result;
@@ -729,6 +749,7 @@ module.exports = {
   calculateHistoricalMeanMaximalPower,
   calculateMeanMaximalPower,
   calculateNormalizedPower,
+  computeGrade,
   estimateFtpCandidates,
   estimatePowerFromMotion,
   selectFtpEstimate,

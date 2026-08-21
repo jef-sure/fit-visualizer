@@ -24,6 +24,7 @@ const {
   calculateNormalizedPower,
   calculateTrainingStressScore,
   calculateXPower,
+  computeGrade,
   deriveSpeedsFromDistance,
   downsamplePoints,
   escapeHtml,
@@ -34,6 +35,25 @@ const {
   normalizeRecordSpeeds,
   selectFtpEstimate,
 } = require('../utils');
+
+function gradeFixtureRecords() {
+  const altitudes = [100, 101, 102.5, 104, 105, 105.2, 105.1, 104, 102, 100.5, 100.4, 100.4];
+  const speeds = [18, 17, 16, 15, 14, 22, 30, 34, 36, 20, 0.9, 12];
+  const records = [];
+  let distance = 0;
+  for (let i = 0; i < altitudes.length; i += 1) {
+    distance += speeds[i] / 3600;
+    records.push({
+      elapsed_time: i,
+      speed: speeds[i],
+      altitude: altitudes[i] / 1000,
+      distance,
+      position_lat: 52.1 + i * 0.0001,
+      position_long: 21.0 + i * 0.0001,
+    });
+  }
+  return records;
+}
 
 test('webview selector script keeps a valid selectActivity payload', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
@@ -94,7 +114,9 @@ test('outdated analysis lookup covers older versions and never-analyzed activiti
     db.run(`INSERT INTO activities (id, file_path, file_name, start_time) VALUES
       (1, 'a.fit', 'a.fit', '2026-08-01'),
       (2, 'b.fit', 'b.fit', '2026-08-02'),
-      (3, 'c.fit', 'c.fit', '2026-08-03')`);
+      (3, 'c.fit', 'c.fit', '2026-08-03'),
+      (4, 'd.fit', 'd.fit', NULL),
+      (5, 'e.fit', 'e.fit', '2026-08-02')`);
     db.run(`INSERT INTO activity_analysis (activity_id, analysis_text, analysis_version) VALUES
       (1, 'current', ${currentVersion}),
       (2, 'stale', ${currentVersion - 1})`);
@@ -104,10 +126,11 @@ test('outdated analysis lookup covers older versions and never-analyzed activiti
       FROM activities a
       LEFT JOIN activity_analysis aa ON aa.activity_id = a.id
       WHERE aa.activity_id IS NULL OR aa.analysis_version < ${currentVersion}
-      ORDER BY a.start_time
+      ORDER BY a.start_time IS NULL, a.start_time, a.id
     `)[0].values;
 
-    assert.deepEqual(outdated, [[2, currentVersion - 1], [3, null]]);
+    // Oldest first, so each re-analysis can cite already-refreshed earlier activities.
+    assert.deepEqual(outdated, [[2, currentVersion - 1], [5, null], [3, null], [4, null]]);
 
     const latestForStale = db.exec(`
       SELECT analysis_text, analysis_version FROM activity_analysis
@@ -117,6 +140,61 @@ test('outdated analysis lookup covers older versions and never-analyzed activiti
   } finally {
     db.close();
   }
+});
+
+test('bulk re-analysis runs one Copilot request at a time', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const loop = /for \(let index = 0; index < targets\.length; index \+= 1\) \{[\s\S]*?\n    \}/.exec(source)[0];
+
+  assert.match(loop, /await generateActivityAnalysis\(dbPath, target\.id, true\);/);
+  assert.doesNotMatch(loop, /Promise\.(all|allSettled|race)/);
+  // Analyses started from the webview must not interleave with a bulk run: sql.js rewrites the whole file.
+  assert.match(source, /return enqueueLlmTask\(\(\) => runActivityAnalysis\(dbPath, activityId, force\)\)/);
+  assert.match(source, /async function appendActivityChatTurn[\s\S]*?return enqueueLlmTask\(async \(\) => \{/);
+});
+
+test('extracting computeGrade keeps estimatePowerFromMotion output identical', () => {
+  // Snapshot captured from the pre-refactor implementation.
+  const expected = [
+    [1, 654.331735], [2, 579.278761], [5, 247.575428], [6, 0],
+    [7, 0], [8, 0], [9, 0], [11, 0],
+  ];
+  const actual = estimatePowerFromMotion(gradeFixtureRecords(), { riderMassKg: 75, bikeMassKg: 10 })
+    .map((entry) => [entry.elapsed_time, Number(entry.power.toFixed(6))]);
+
+  assert.deepEqual(actual, expected);
+});
+
+test('computeGrade aligns with input records and reports slope as a fraction', () => {
+  const records = gradeFixtureRecords();
+  const grades = computeGrade(records);
+
+  assert.equal(grades.length, records.length);
+  assert.equal(grades[0], null);
+  assert.equal(grades[1].elapsed_time, 1);
+  assert.equal(grades[1].dt, 1);
+  assert.ok(grades[1].grade > 0, 'climbing section has positive grade');
+  assert.ok(grades[8].grade < 0, 'descending section has negative grade');
+  assert.ok(Math.abs(grades[1].grade) < 1, 'grade is a fraction, not a percentage');
+});
+
+test('computeGrade skips records without a usable position or altitude', () => {
+  const grades = computeGrade([
+    { elapsed_time: 0, speed: 20, altitude: 0.1, distance: 0, position_lat: 52, position_long: 21 },
+    { elapsed_time: 1, speed: 20, altitude: 0.101, distance: 0.005, position_lat: 0, position_long: 0 },
+    { elapsed_time: 2, speed: 20, altitude: 0.102, distance: 0.01, position_lat: 52, position_long: 21 },
+    { elapsed_time: 3, speed: 20, distance: 0.015, position_lat: 52, position_long: 21 },
+  ]);
+
+  assert.deepEqual(grades.map((entry) => entry === null), [true, true, false, true]);
+  assert.equal(grades[2].dt, 2);
+});
+
+test('record insert stores grade only for meaningful movement', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /const grades = computeGrade\(records\);/);
+  assert.match(source, /grade\.dt > 0 && grade\.dt <= 5 && grade\.distanceM >= 1\s*\?\s*roundTo\(grade\.grade \* 100, 2\)/);
+  assert.match(source, /gradePct, null, null,/);
 });
 
 test('heart-rate zones use semantic order and stable boundaries', () => {
