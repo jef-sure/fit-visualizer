@@ -24,18 +24,23 @@ const {
   calculateNormalizedPower,
   calculateTrainingStressScore,
   calculateXPower,
+  computeGpsDerivedSpeed,
   computeGrade,
   createNonce,
   deriveSpeedsFromDistance,
   despikeSeries,
+  detectStops,
   downsamplePoints,
   estimateFtpCandidates,
   estimatePowerFromMotion,
   escapeHtml,
   estimateDuration,
+  estimateSpeedConfidence,
   formatHms,
   formatNumber,
+  haversineKm,
   maxOrZero,
+  normalizeCoordinate,
   normalizeRecordSpeeds,
   roundTo,
   safeJson,
@@ -2237,24 +2242,6 @@ function extractGpsPoints(records) {
   return points;
 }
 
-function normalizeCoordinate(raw, degreesLimit) {
-  const value = asNumber(raw);
-  if (!Number.isFinite(value)) {
-    return NaN;
-  }
-
-  if (Math.abs(value) <= degreesLimit) {
-    return value;
-  }
-
-  const fromSemicircles = (value * 180) / 2147483648;
-  if (Math.abs(fromSemicircles) <= degreesLimit) {
-    return fromSemicircles;
-  }
-
-  return NaN;
-}
-
 function buildCartesianGeometry(points, width, height, margin) {
   if (points.length < 2) {
     return {
@@ -2485,21 +2472,6 @@ function computeRouteDistanceKm(points) {
     totalKm += haversineKm(points[i - 1].y, points[i - 1].x, points[i].y, points[i].x);
   }
   return totalKm;
-}
-
-function haversineKm(lat1, lon1, lat2, lon2) {
-  const r = 6371;
-  const dLat = toRadians(lat2 - lat1);
-  const dLon = toRadians(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLon / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return r * c;
-}
-
-function toRadians(value) {
-  return (value * Math.PI) / 180;
 }
 
 async function generateActivityAnalysis(dbPath, activityId, force = false) {
