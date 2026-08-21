@@ -1218,6 +1218,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const speedChart = buildLineChart(records, 'distance', 'speed', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
   const hrChart = buildLineChart(records, 'distance', 'heart_rate', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
   const altitudeChart = buildLineChart(records, 'distance', 'altitude', 1400, 380, chartPointBudget, { yTransform: (v) => v * 1000, compRecords: hasOverlay ? compRecords : [] });
+  const overlayMetrics = buildOverlayMetrics(records, chartPointBudget);
+  const speedOverlays = buildOverlayOptions(overlayMetrics, 'speed');
+  const hrOverlays = buildOverlayOptions(overlayMetrics, 'heart_rate');
+  const altitudeOverlays = buildOverlayOptions(overlayMetrics, 'altitude');
+  const chartClientPayloads = safeJson({
+    [mapId + 'SpeedSvg']: buildChartClientPayload(speedChart, 'km', 'km/h', speedOverlays),
+    [mapId + 'HrSvg']: buildChartClientPayload(hrChart, 'km', 'bpm', hrOverlays),
+    [mapId + 'AltSvg']: buildChartClientPayload(altitudeChart, 'km', 'm', altitudeOverlays),
+  });
   const hrZones = computeHeartRateZones(records, hrConfig?.maxHeartRate, hrConfig?.thresholds);
   const gpsRoutePointBudget = Math.min(6000, Math.max(1200, records.length));
   const gpsRoute = buildGpsRoute(records, 1400, 420, gpsRoutePointBudget);
@@ -1346,6 +1355,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     <section class="chart resizable" data-resize-target="${mapId}SpeedSvg" data-resize-key="fitviz_speed_height" data-min-height="200" data-max-height="1200">
       <h2>Speed vs Distance${hasOverlay ? ' <span class="compLegend">— primary &nbsp;– – comparison</span>' : ''}</h2>
       ${renderStatsRow(speedChart.stats, 'km/h')}${hasOverlay && speedChart.compStats ? renderStatsRow(speedChart.compStats, 'km/h', true) : ''}
+      ${renderOverlayControls(mapId + 'SpeedSvg', speedOverlays)}
       ${renderScaledLineChartSvg(speedChart, 'lineA', 'Distance (km)', 'Speed (km/h)', true, { svgId: mapId + 'SpeedSvg' })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -1354,6 +1364,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <h2>Heart Rate vs Distance</h2>
       ${renderStatsRow(hrChart.stats, 'bpm')}
       ${renderHeartRateZones(hrZones)}
+      ${renderOverlayControls(mapId + 'HrSvg', hrOverlays)}
       ${renderScaledLineChartSvg(hrChart, 'lineB', 'Distance (km)', 'Heart rate (bpm)', true, { svgId: mapId + 'HrSvg', zoneThresholds: hrZones.enabled ? hrZones.thresholds : null })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -1361,6 +1372,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     <section class="chart resizable" data-resize-target="${mapId}AltSvg" data-resize-key="fitviz_alt_height" data-min-height="200" data-max-height="1200">
       <h2>Altitude vs Distance${hasOverlay ? ' <span class="compLegend">— primary &nbsp;– – comparison</span>' : ''}</h2>
       ${renderStatsRow(altitudeChart.stats, 'm')}${hasOverlay && altitudeChart.compStats ? renderStatsRow(altitudeChart.compStats, 'm', true) : ''}
+      ${renderOverlayControls(mapId + 'AltSvg', altitudeOverlays)}
       ${renderScaledLineChartSvg(altitudeChart, 'lineC', 'Distance (km)', 'Altitude (m)', true, { svgId: mapId + 'AltSvg' })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -1758,6 +1770,240 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         map.whenReady(() => setTimeout(() => { map.invalidateSize(false); }, 0));
       }
     }());
+  </script>
+  <script nonce="${nonce}">
+    (function () {
+      var payloads = ${chartClientPayloads};
+      var svgIds = Object.keys(payloads).filter(function (id) { return payloads[id]; });
+      var instances = {};
+
+      // Ported from buildTicks/formatTick in extension.js: same "round numbers" step so the
+      // client never picks a different step than the server's first render.
+      function buildTicksClient(min, max, targetCount) {
+        var span = Math.abs(max - min);
+        if (!isFinite(span) || span === 0) return { values: [min], step: 1 };
+        var rough = span / Math.max(2, targetCount - 1);
+        var magnitude = Math.pow(10, Math.floor(Math.log(rough) / Math.LN10));
+        var residual = rough / magnitude;
+        var nice = 1;
+        if (residual > 5) nice = 10; else if (residual > 2) nice = 5; else if (residual > 1) nice = 2;
+        var step = nice * magnitude;
+        var first = Math.ceil(min / step) * step;
+        var values = [];
+        for (var v = first; v <= max + step * 0.5; v += step) {
+          values.push(Math.round(v * 1e12) / 1e12);
+        }
+        if (!values.length) { values.push(min); values.push(max); }
+        return { values: values, step: step };
+      }
+
+      function formatTickClient(value, step) {
+        var absStep = Math.abs(step);
+        if (absStep >= 10) return value.toFixed(0);
+        if (absStep >= 1) return value.toFixed(1);
+        if (absStep >= 0.1) return value.toFixed(2);
+        return value.toFixed(4);
+      }
+
+      function escapeHtmlClient(text) {
+        return String(text)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      }
+
+      function clampCount(value, min, max) {
+        return Math.max(min, Math.min(max, Math.round(value)));
+      }
+
+      function scaleX(payload, x) {
+        var range = (payload.xMax - payload.xMin) || 1;
+        return payload.plotLeft + ((x - payload.xMin) / range) * (payload.plotRight - payload.plotLeft);
+      }
+
+      function scaleY(payload, y) {
+        var range = (payload.yMax - payload.yMin) || 1;
+        return payload.plotBottom - ((y - payload.yMin) / range) * (payload.plotBottom - payload.plotTop);
+      }
+
+      function redrawTicks(svg, payload, targetXCount, targetYCount) {
+        var xTicks = buildTicksClient(payload.xMin, payload.xMax, targetXCount);
+        var yTicks = buildTicksClient(payload.yMin, payload.yMax, targetYCount);
+
+        var xHtml = xTicks.values.map(function (v) {
+          var px = scaleX(payload, v).toFixed(1);
+          return '<g><line class="gridline" x1="' + px + '" y1="' + payload.plotTop + '" x2="' + px + '" y2="' + payload.plotBottom + '" />'
+            + '<text class="tick" x="' + px + '" y="' + (payload.plotBottom + 16) + '" text-anchor="middle">'
+            + escapeHtmlClient(formatTickClient(v, xTicks.step)) + '</text></g>';
+        }).join('');
+        var yHtml = yTicks.values.map(function (v) {
+          var py = scaleY(payload, v).toFixed(1);
+          return '<g><line class="gridline" x1="' + payload.plotLeft + '" y1="' + py + '" x2="' + payload.plotRight + '" y2="' + py + '" />'
+            + '<text class="tick" x="' + (payload.plotLeft - 8) + '" y="' + (parseFloat(py) + 4).toFixed(1) + '" text-anchor="end">'
+            + escapeHtmlClient(formatTickClient(v, yTicks.step)) + '</text></g>';
+        }).join('');
+
+        var xGroup = svg.querySelector('.xTicksGroup');
+        var yGroup = svg.querySelector('.yTicksGroup');
+        if (xGroup) xGroup.innerHTML = xHtml;
+        if (yGroup) yGroup.innerHTML = yHtml;
+      }
+
+      // Nearest value in a monotonic array (px positions for the hovered chart, data x for the rest).
+      function nearestIndex(sortedValues, target) {
+        var lo = 0, hi = sortedValues.length - 1;
+        while (lo < hi) {
+          var mid = (lo + hi) >> 1;
+          if (sortedValues[mid] < target) lo = mid + 1; else hi = mid;
+        }
+        if (lo > 0 && Math.abs(sortedValues[lo - 1] - target) <= Math.abs(sortedValues[lo] - target)) return lo - 1;
+        return lo;
+      }
+
+      function formatCrosshairValue(value, unit) {
+        var digits = Math.abs(value) >= 100 ? 0 : Math.abs(value) >= 10 ? 1 : 2;
+        return value.toFixed(digits) + (unit ? ' ' + unit : '');
+      }
+
+      // Max 2 at once: more than that on top of the main line becomes unreadable.
+      var OVERLAY_PALETTE = ['#e67e22', '#00acc1'];
+
+      function initOverlayControls(svgId, payload, instance) {
+        var controls = document.querySelector('.overlayControls[data-overlay-for="' + svgId + '"]');
+        if (!controls || !payload.overlays) return;
+        var active = {};
+
+        function overlayLineId(metricKey) { return svgId + '_overlay_' + metricKey; }
+
+        function drawOverlay(metricKey, color) {
+          var series = payload.overlays[metricKey];
+          if (!series || !instance.overlayGroup) return;
+          var range = (series.max - series.min) || 1;
+          var pts = series.points.map(function (p) {
+            var px = scaleX(payload, p[0]);
+            var py = payload.plotBottom - ((p[1] - series.min) / range) * (payload.plotBottom - payload.plotTop);
+            return px.toFixed(1) + ',' + py.toFixed(1);
+          }).join(' ');
+          var existing = instance.overlayGroup.querySelector('#' + overlayLineId(metricKey));
+          if (existing) {
+            existing.setAttribute('points', pts);
+            return;
+          }
+          var poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+          poly.setAttribute('id', overlayLineId(metricKey));
+          poly.setAttribute('points', pts);
+          poly.setAttribute('fill', 'none');
+          poly.setAttribute('stroke', color);
+          poly.setAttribute('stroke-width', '2');
+          poly.setAttribute('vector-effect', 'non-scaling-stroke');
+          poly.setAttribute('opacity', '0.9');
+          instance.overlayGroup.appendChild(poly);
+        }
+
+        function removeOverlay(metricKey) {
+          var el = instance.overlayGroup && instance.overlayGroup.querySelector('#' + overlayLineId(metricKey));
+          if (el) el.parentNode.removeChild(el);
+        }
+
+        var checkboxes = controls.querySelectorAll('input[type=checkbox]');
+        checkboxes.forEach(function (checkbox) {
+          var metricKey = checkbox.getAttribute('data-overlay-metric');
+          var series = payload.overlays[metricKey];
+          var rangeEl = checkbox.parentElement.querySelector('.overlayRange');
+          if (rangeEl && series) {
+            rangeEl.textContent = ' (' + formatCrosshairValue(series.min, '') + '\u2026' + formatCrosshairValue(series.max, series.unit) + ')';
+          }
+          checkbox.addEventListener('change', function () {
+            if (checkbox.checked) {
+              if (Object.keys(active).length >= 2) {
+                checkbox.checked = false;
+                return;
+              }
+              var usedColors = Object.keys(active).map(function (key) { return active[key]; });
+              var color = OVERLAY_PALETTE.filter(function (c) { return usedColors.indexOf(c) === -1; })[0] || OVERLAY_PALETTE[0];
+              active[metricKey] = color;
+              drawOverlay(metricKey, color);
+              checkbox.parentElement.style.color = color;
+            } else {
+              delete active[metricKey];
+              removeOverlay(metricKey);
+              checkbox.parentElement.style.color = '';
+            }
+          });
+        });
+      }
+
+      function initChart(svgId) {
+        var payload = payloads[svgId];
+        var svg = document.getElementById(svgId);
+        if (!payload || !svg) return;
+
+        var pxXs = payload.points.map(function (p) { return scaleX(payload, p[0]); });
+        var dataXs = payload.points.map(function (p) { return p[0]; });
+        var line = svg.querySelector('.crosshair');
+        var dot = svg.querySelector('.crosshairDot');
+        var capture = svg.querySelector('.crosshairCapture');
+        var instance = { payload: payload, pxXs: pxXs, dataXs: dataXs, overlayGroup: svg.querySelector('.overlayGroup') };
+        instances[svgId] = instance;
+
+        instance.showAt = function (index) {
+          if (index < 0 || index >= payload.points.length || !line || !dot) return;
+          var point = payload.points[index];
+          var px = scaleX(payload, point[0]).toFixed(1);
+          var py = scaleY(payload, point[1]).toFixed(1);
+          line.setAttribute('x1', px);
+          line.setAttribute('x2', px);
+          line.style.display = '';
+          dot.setAttribute('cx', px);
+          dot.setAttribute('cy', py);
+          dot.style.display = '';
+        };
+        instance.hide = function () {
+          if (line) line.style.display = 'none';
+          if (dot) dot.style.display = 'none';
+        };
+
+        if (capture) {
+          capture.addEventListener('mousemove', function (evt) {
+            var pt = svg.createSVGPoint();
+            pt.x = evt.clientX; pt.y = evt.clientY;
+            var ctm = svg.getScreenCTM();
+            if (!ctm) return;
+            var local = pt.matrixTransform(ctm.inverse());
+            var hoveredIdx = nearestIndex(pxXs, local.x);
+            var dataX = payload.points[hoveredIdx][0];
+            // All three charts share the distance axis, so one hover moves every crosshair.
+            svgIds.forEach(function (id) {
+              var target = instances[id];
+              if (!target) return;
+              var idx = id === svgId ? hoveredIdx : nearestIndex(target.dataXs, dataX);
+              target.showAt(idx);
+            });
+          });
+          capture.addEventListener('mouseleave', function () {
+            svgIds.forEach(function (id) {
+              if (instances[id]) instances[id].hide();
+            });
+          });
+        }
+
+        if (window.ResizeObserver) {
+          var lastWidth = 0;
+          var observer = new ResizeObserver(function (entries) {
+            var rect = entries[0].contentRect;
+            if (Math.abs(rect.width - lastWidth) < 1) return;
+            lastWidth = rect.width;
+            var plotWidthPx = (payload.plotRight - payload.plotLeft) * (rect.width / payload.width);
+            var plotHeightPx = (payload.plotBottom - payload.plotTop) * (rect.height / payload.height);
+            redrawTicks(svg, payload, clampCount(plotWidthPx / 90, 3, 15), clampCount(plotHeightPx / 50, 3, 15));
+          });
+          observer.observe(svg);
+        }
+
+        initOverlayControls(svgId, payload, instance);
+      }
+
+      svgIds.forEach(initChart);
+    }());
   </script>`;
 }
 
@@ -1818,6 +2064,12 @@ function sharedCss() {
     .routeStart { fill:var(--vscode-testing-iconPassed); } .routeEnd { fill:var(--vscode-testing-iconFailed); }
     .kmMarker { stroke:color-mix(in srgb,var(--ink) 30%,transparent); stroke-width:1; stroke-dasharray:2 5; }
     .kmLabel { fill:var(--muted); font-size:9px; }
+    .crosshair { stroke:color-mix(in srgb,var(--ink) 55%,transparent); stroke-width:1; pointer-events:none; }
+    .crosshairDot { fill:var(--accent); stroke:var(--bg); stroke-width:1.5; pointer-events:none; }
+    .crosshairCapture { cursor:crosshair; }
+    .overlayControls { display:flex; gap:12px; flex-wrap:wrap; margin:4px 0 8px; font-size:0.82rem; color:var(--muted); }
+    .overlayControls label { display:flex; align-items:center; gap:4px; cursor:pointer; }
+    .overlayRange { font-size:0.75rem; }
     .statRow { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; margin:8px 0 10px; }
     .stat { border:1px solid var(--border); border-radius:10px; padding:6px 8px; background:color-mix(in srgb,var(--card) 84%,var(--bg)); }
     .statK { color:var(--muted); font-size:0.75rem; text-transform:uppercase; letter-spacing:0.06em; }
@@ -2099,15 +2351,15 @@ function renderScaledLineChartSvg(chart, lineClass, xLabel, yLabel, addDistanceM
       <text class="kmLabel" x="${m.px.toFixed(1)}" y="${chart.plotTop + 10}" text-anchor="middle">${escapeHtml(m.label)}</text>
     </g>`).join('');
 
-  const xTicks = chart.xTicks.map((t) => `<g>
+  const xTicks = `<g class="xTicksGroup">${chart.xTicks.map((t) => `<g>
       <line class="gridline" x1="${t.px.toFixed(1)}" y1="${chart.plotTop}" x2="${t.px.toFixed(1)}" y2="${chart.plotBottom}" />
       <text class="tick" x="${t.px.toFixed(1)}" y="${chart.plotBottom + 16}" text-anchor="middle">${escapeHtml(formatTick(t.value, chart.xStep))}</text>
-    </g>`).join('');
+    </g>`).join('')}</g>`;
 
-  const yTicks = chart.yTicks.map((t) => `<g>
+  const yTicks = `<g class="yTicksGroup">${chart.yTicks.map((t) => `<g>
       <line class="gridline" x1="${chart.plotLeft}" y1="${t.py.toFixed(1)}" x2="${chart.plotRight}" y2="${t.py.toFixed(1)}" />
       <text class="tick" x="${chart.plotLeft - 8}" y="${(t.py + 4).toFixed(1)}" text-anchor="end">${escapeHtml(formatTick(t.value, chart.yStep))}</text>
-    </g>`).join('');
+    </g>`).join('')}</g>`;
 
   const zoneThresholds = Array.isArray(options.zoneThresholds) ? options.zoneThresholds : null;
   const hasZoneLine = zoneThresholds && zoneThresholds.length >= 4;
@@ -2120,6 +2372,13 @@ function renderScaledLineChartSvg(chart, lineClass, xLabel, yLabel, addDistanceM
     ? `<polyline class="${lineClass}Comp" points="${chart.compPathData}" />`
     : '';
 
+  // Crosshair markup is inert until the client script (chartInteractions) attaches listeners.
+  const crosshairSvg = options.svgId ? `
+    <g class="overlayGroup"></g>
+    <line class="crosshair" x1="0" y1="${chart.plotTop}" x2="0" y2="${chart.plotBottom}" style="display:none" />
+    <circle class="crosshairDot" r="4" style="display:none" />
+    <rect class="crosshairCapture" x="${chart.plotLeft}" y="${chart.plotTop}" width="${chart.plotRight - chart.plotLeft}" height="${chart.plotBottom - chart.plotTop}" fill="transparent" />` : '';
+
   return `<svg${svgIdAttr} viewBox="0 0 ${chart.width} ${chart.height}" preserveAspectRatio="none" role="img" aria-label="line chart">
     ${markerSvg}
     ${xTicks}
@@ -2130,7 +2389,94 @@ function renderScaledLineChartSvg(chart, lineClass, xLabel, yLabel, addDistanceM
     ${lineSvg}
     <text class="axisLabel" x="${(chart.plotLeft + chart.plotRight) / 2}" y="${chart.height - 4}" text-anchor="middle">${escapeHtml(xLabel)}</text>
     <text class="axisLabel" transform="translate(14 ${(chart.plotTop + chart.plotBottom) / 2}) rotate(-90)" text-anchor="middle">${escapeHtml(yLabel)}</text>
+    ${crosshairSvg}
   </svg>`;
+}
+
+// Compact client-side payload: raw series + plot geometry, so the browser can rescale without a round trip.
+function buildChartClientPayload(chart, xUnit, yUnit, overlays) {
+  if (!chart || !Array.isArray(chart.points) || chart.points.length < 2) {
+    return null;
+  }
+  return {
+    points: chart.points.map((p) => [roundTo(p.x, 4), roundTo(p.y, 3)]),
+    plotLeft: chart.plotLeft,
+    plotRight: chart.plotRight,
+    plotTop: chart.plotTop,
+    plotBottom: chart.plotBottom,
+    xMin: chart.xMin,
+    xMax: chart.xMax,
+    yMin: chart.yMin,
+    yMax: chart.yMax,
+    width: chart.width,
+    height: chart.height,
+    xUnit,
+    yUnit,
+    overlays: overlays && Object.keys(overlays).length ? overlays : undefined,
+  };
+}
+
+const OVERLAY_METRIC_LABELS = { grade: 'Grade', altitude: 'Altitude', speed: 'Speed', heart_rate: 'Heart Rate' };
+const OVERLAY_METRIC_UNITS = { grade: '%', altitude: 'm', speed: 'km/h', heart_rate: 'bpm' };
+
+// Computed once per activity and sliced per chart, so grade is derived at most once (reuses computeGrade).
+function buildOverlayMetrics(records, maxPoints) {
+  const hasStoredGrade = records.some((record) => Number.isFinite(asNumber(record?.grade)));
+  const gradeSource = hasStoredGrade
+    ? records
+    : (() => {
+      const grades = computeGrade(records);
+      return records.map((record, index) => ({
+        ...record,
+        grade: grades[index] ? grades[index].grade * 100 : null,
+      }));
+    })();
+
+  return {
+    grade: extractXYPoints(gradeSource, 'distance', 'grade', maxPoints, {}),
+    altitude: extractXYPoints(records, 'distance', 'altitude', maxPoints, { yTransform: (v) => v * 1000 }),
+    speed: extractXYPoints(records, 'distance', 'speed', maxPoints, {}),
+    heart_rate: extractXYPoints(records, 'distance', 'heart_rate', maxPoints, {}),
+  };
+}
+
+// Every metric except the chart's own, and only when there is enough range to draw a line.
+function buildOverlayOptions(overlayMetrics, ownKey) {
+  const result = {};
+  for (const key of Object.keys(overlayMetrics)) {
+    if (key === ownKey) {
+      continue;
+    }
+    const series = overlayMetrics[key];
+    if (!series || series.points.length < 2 || !series.yValues.length) {
+      continue;
+    }
+    const min = Math.min(...series.yValues);
+    const max = Math.max(...series.yValues);
+    if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
+      continue;
+    }
+    result[key] = {
+      points: series.points.map((p) => [roundTo(p.x, 4), roundTo(p.y, 2)]),
+      min,
+      max,
+      label: OVERLAY_METRIC_LABELS[key] || key,
+      unit: OVERLAY_METRIC_UNITS[key] || '',
+    };
+  }
+  return result;
+}
+
+function renderOverlayControls(svgId, overlays) {
+  const keys = Object.keys(overlays || {});
+  if (!keys.length) {
+    return '';
+  }
+  const items = keys.map((key) => `<label>
+      <input type="checkbox" data-overlay-metric="${escapeHtml(key)}">
+      ${escapeHtml(overlays[key].label)}<span class="overlayRange"></span>
+    </label>`).join('');
+  return `<div class="overlayControls" data-overlay-for="${escapeHtml(svgId)}">${items}</div>`;
 }
 
 function buildZoneSegmentPolylines(chart, thresholds) {
