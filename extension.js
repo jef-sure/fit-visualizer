@@ -24,6 +24,7 @@ const {
   calculateNormalizedPower,
   calculateTrainingStressScore,
   calculateXPower,
+  computeGrade,
   createNonce,
   deriveSpeedsFromDistance,
   despikeSeries,
@@ -50,6 +51,15 @@ const ANALYSIS_VERSION = 7;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
 const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
+
+// sql.js rewrites the whole database file, so overlapping analyses would clobber each other.
+let llmTaskQueue = Promise.resolve();
+
+function enqueueLlmTask(task) {
+  const result = llmTaskQueue.then(task, task);
+  llmTaskQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
 
 function activate(context) {
   extensionContextRef = context;
@@ -486,11 +496,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
         if (!userText) {
           throw new Error('Enter a question for AI chat.');
         }
-        const existing = await getAnalysisChatFromDb(dbPath, requestedActivityId);
-        const withUser = appendChatTurn(existing, 'user', userText);
-        const assistantReply = await generateActivityChatReply(dbPath, requestedActivityId, withUser, userText);
-        const nextChat = appendChatTurn(withUser, 'assistant', assistantReply);
-        await storeAnalysisChatInDb(dbPath, requestedActivityId, nextChat);
+        const nextChat = await appendActivityChatTurn(dbPath, requestedActivityId, userText);
         panel.webview.postMessage({ type: 'analysisChatState', id: requestedActivityId, messages: nextChat });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -789,11 +795,18 @@ function upsertActivity(db, filePath, fitData) {
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
 
+  const grades = computeGrade(records);
+
   for (let i = 0; i < records.length; i += 1) {
     const r = records[i];
     const lat = normalizeCoordinate(r.position_lat, 90);
     const lon = normalizeCoordinate(r.position_long, 180);
     const hasGpsFix = Number.isFinite(lat) && Number.isFinite(lon) && !(lat === 0 && lon === 0);
+    const grade = grades[i];
+    // Below a metre of travel the slope is altitude noise divided by ~nothing.
+    const gradePct = grade && grade.dt > 0 && grade.dt <= 5 && grade.distanceM >= 1
+      ? roundTo(grade.grade * 100, 2)
+      : null;
     insertRecord.run([
       activityId, i,
       toSqlStr(r.timestamp) || null,
@@ -807,7 +820,7 @@ function upsertActivity(db, filePath, fitData) {
       asNumber(r.cadence) || null,
       Number.isFinite(asNumber(r.power)) ? asNumber(r.power) : null,
       asNumber(r.temperature) || null,
-      null, null, null,
+      gradePct, null, null,
     ]);
   }
 
@@ -2490,6 +2503,10 @@ function toRadians(value) {
 }
 
 async function generateActivityAnalysis(dbPath, activityId, force = false) {
+  return enqueueLlmTask(() => runActivityAnalysis(dbPath, activityId, force));
+}
+
+async function runActivityAnalysis(dbPath, activityId, force) {
   const numId = Number(activityId);
   if (!Number.isFinite(numId) || numId <= 0) {
     throw new Error(`Invalid activity ID: ${activityId}`);
@@ -3029,12 +3046,13 @@ async function getOutdatedAnalysisActivities(dbPath) {
   const db = await openDatabase(SQL, dbPath);
   let stmt;
   try {
+    // Chronological order matters: an activity's prompt may cite analyses of earlier activities.
     stmt = db.prepare(`
       SELECT a.id AS id, a.file_name AS file_name, aa.analysis_version AS analysis_version
       FROM activities a
       LEFT JOIN activity_analysis aa ON aa.activity_id = a.id
       WHERE aa.activity_id IS NULL OR aa.analysis_version < ?
-      ORDER BY a.start_time
+      ORDER BY a.start_time IS NULL, a.start_time, a.id
     `);
     stmt.bind([ANALYSIS_VERSION]);
     const rows = [];
@@ -3251,7 +3269,18 @@ async function storeAnalysisChatInDb(dbPath, activityId, messages) {
   }
 }
 
-async function generateActivityChatReply(dbPath, activityId, history, userQuestion) {
+async function appendActivityChatTurn(dbPath, activityId, userText) {
+  return enqueueLlmTask(async () => {
+    const existing = await getAnalysisChatFromDb(dbPath, activityId);
+    const withUser = appendChatTurn(existing, 'user', userText);
+    const assistantReply = await runActivityChatReply(dbPath, activityId, withUser, userText);
+    const nextChat = appendChatTurn(withUser, 'assistant', assistantReply);
+    await storeAnalysisChatInDb(dbPath, activityId, nextChat);
+    return nextChat;
+  });
+}
+
+async function runActivityChatReply(dbPath, activityId, history, userQuestion) {
   const current = await loadFitDataFromDb(dbPath, activityId);
   if (!current) {
     throw new Error(`Activity ${activityId} not found in database`);
