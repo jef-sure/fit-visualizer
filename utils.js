@@ -1028,6 +1028,93 @@ function splitByEffort(records, macro, basis, windowSeconds, minSegmentSeconds, 
   return merged;
 }
 
+function segmentEffortValue(segment) {
+  if (segment?.effortBasis === 'power' || segment?.effortBasis === 'vpower') {
+    return asNumber(segment.avgPower);
+  }
+  if (segment?.effortBasis === 'hr') {
+    return asNumber(segment.avgHr);
+  }
+  return Number.NaN;
+}
+
+function segmentsAreSimilar(left, right, options = {}) {
+  if (!left || !right || left.type !== right.type || left.effortBasis !== right.effortBasis) {
+    return false;
+  }
+
+  const durationTolerance = optionNumber(options, 'groupDurationTolerancePct', 25) / 100;
+  const effortTolerance = optionNumber(options, 'groupEffortTolerancePct', 10) / 100;
+  const longest = Math.max(left.durationS, right.durationS);
+  if (Math.abs(left.durationS - right.durationS) > longest * durationTolerance) {
+    return false;
+  }
+
+  const leftEffort = segmentEffortValue(left);
+  const rightEffort = segmentEffortValue(right);
+  if (!Number.isFinite(leftEffort) || !Number.isFinite(rightEffort)) {
+    return true;
+  }
+  return Math.abs(leftEffort - rightEffort) <= Math.max(leftEffort, rightEffort) * effortTolerance;
+}
+
+// Collapses runs of near-identical segments, including alternating work/rest intervals (period 2).
+function groupSimilarSegments(segments, options = {}) {
+  const list = Array.isArray(segments) ? segments : [];
+  const rows = [];
+  let index = 0;
+
+  const cycleRepeats = (start, period) => {
+    let repeats = 1;
+    while (start + (repeats + 1) * period <= list.length) {
+      let matches = true;
+      for (let offset = 0; offset < period && matches; offset += 1) {
+        matches = segmentsAreSimilar(list[start + offset], list[start + repeats * period + offset], options);
+      }
+      if (!matches) {
+        break;
+      }
+      repeats += 1;
+    }
+    return repeats;
+  };
+
+  while (index < list.length) {
+    let best = null;
+    for (const period of [1, 2]) {
+      const repeats = cycleRepeats(index, period);
+      const minRepeats = period === 1 ? 3 : 2;
+      if (repeats >= minRepeats && (!best || repeats * period > best.repeats * best.period)) {
+        best = { period, repeats };
+      }
+    }
+
+    if (best) {
+      rows.push({
+        kind: 'repeat',
+        period: best.period,
+        repeats: best.repeats,
+        members: list.slice(index, index + best.period * best.repeats),
+      });
+      index += best.period * best.repeats;
+    } else {
+      rows.push({ kind: 'single', segment: list[index] });
+      index += 1;
+    }
+  }
+
+  return rows;
+}
+
+// Not a cap to truncate at: exceeding it means the segmentation thresholds themselves misfired.
+function segmentLineBudget(durationSeconds, options = {}) {
+  const hours = Math.max(0, asNumber(durationSeconds) || 0) / 3600;
+  const perHour = optionNumber(options, 'promptLinesPerHour', 10);
+  const minLines = optionNumber(options, 'promptMinLines', 10);
+  const hardCeiling = optionNumber(options, 'promptMaxLines', 150);
+  return clamp(Math.round(hours * perHour), minLines, hardCeiling);
+}
+
 function normalizeRecordSpeeds(records) {
   if (!Array.isArray(records) || !records.length) {
     return [];
@@ -1440,9 +1527,11 @@ module.exports = {
   estimateFtpCandidates,
   estimatePowerFromMotion,
   estimateSpeedConfidence,
+  groupSimilarSegments,
   haversineKm,
   normalizeCoordinate,
   segmentByGrade,
+  segmentLineBudget,
   selectEffortSignal,
   selectFtpEstimate,
   calculateTrainingStressScore,

@@ -3,7 +3,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const initSqlJs = require('../vendor/sql-wasm/sql-wasm.js');
-const { generateAnalysisPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('../analysis');
+const {
+  buildRecentHistoryContext,
+  buildSegmentContext,
+  formatFieldsSkippingEmpty,
+  generateAnalysisPrompt,
+  generateAnalysisChatPrompt,
+  requestCopilotAnalysis,
+  summarizePromptBlocks,
+} = require('../analysis');
 const { ensureDatabaseSchema } = require('../database-schema');
 const {
   calculateAutoHeartRateProfile,
@@ -40,6 +48,7 @@ const {
   haversineKm,
   normalizeRecordSpeeds,
   segmentByGrade,
+  segmentLineBudget,
   selectEffortSignal,
   selectFtpEstimate,
 } = require('../utils');
@@ -927,7 +936,7 @@ test('LLM request logging is configurable and wired into both call sites', () =>
   assert.ok(properties['fitVisualizer.llmLogRetentionDays']);
 
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
-  assert.match(source, /kind: 'analysis', \.\.\.result/);
+  assert.match(source, /kind: 'analysis',/);
   assert.match(source, /kind: 'chat', \.\.\.result/);
   assert.match(source, /path\.join\(path\.dirname\(dbPath\), 'logs'\)/);
 });
@@ -1014,6 +1023,164 @@ test('analysis prompt uses the dated heart-rate profile', () => {
   assert.match(prompt, /Zone 2-5 Starts: 118, 139, 159, 177 bpm/);
   assert.match(prompt, /Use the supplied dated heart-rate profile/);
   assert.doesNotMatch(prompt, /Do not assign HR zones because/);
+});
+
+test('empty fields are dropped from the prompt instead of becoming N/A', () => {
+  assert.equal(
+    formatFieldsSkippingEmpty([['Distance', '20.0', 'km'], ['Cadence', null], ['TSS', undefined], ['Power', '']]),
+    '- Distance: 20.0 km'
+  );
+
+  const sparse = generateAnalysisPrompt({ sessions: [{ total_distance_km: 20.1, avg_hr: 140 }] }, { total_activities: 0 });
+  assert.doesNotMatch(sparse, /N\/A/);
+  assert.doesNotMatch(sparse, /Avg Cadence/);
+  assert.doesNotMatch(sparse, /xPower/);
+  assert.match(sparse, /- Distance: 20\.10 km/);
+  assert.match(sparse, /Fields that are absent were not measured/);
+
+  const chat = generateAnalysisChatPrompt({ sessions: [{ total_distance_km: 20.1 }] }, {}, {}, '', [], 'why?');
+  assert.doesNotMatch(chat, /N\/A/);
+});
+
+test('segment breakdown lists segments, collapses repeats and folds short stops', () => {
+  const segments = [
+    { index: 0, type: 'climb', effortBasis: 'vpower', startElapsed: 0, endElapsed: 300, durationS: 300, avgGrade: 6.2, avgPower: 215, avgHr: 148, elevGainM: 90, hrDriftPct: 3 },
+    { index: 1, type: 'stopped', effortBasis: 'none', startElapsed: 300, endElapsed: 323, durationS: 23 },
+    { index: 2, type: 'flat', effortBasis: 'hr', effortReason: 'vpower unreliable off the climbs', startElapsed: 323, endElapsed: 1123, durationS: 800, avgGrade: 0.2, avgHr: 152, avgSpeedKmh: 26.4 },
+    { index: 3, type: 'descent', effortBasis: 'none', technical: true, startElapsed: 1123, endElapsed: 1213, durationS: 90, avgGrade: -11 },
+  ];
+
+  const context = buildSegmentContext(segments);
+  assert.match(context.text, /\*\*Segment Breakdown:\*\*/);
+  assert.match(context.text, /climb, avg grade 6\.2%, vpower ~215 W/);
+  assert.match(context.text, /HR drift \+3%/);
+  assert.match(context.text, /flat, avg grade 0\.2%, avg HR 152/);
+  // The basis rule is stated once, not repeated on every heart-rate line.
+  assert.match(context.text, /Effort basis is implied by the metric quoted/);
+  assert.equal(context.text.match(/vpower only on climbs/g).length, 1);
+  assert.match(context.text, /technical, no reliable effort estimate/);
+  // A 23-second stop is folded into a summary line rather than spending a line of its own.
+  assert.match(context.text, /Plus 1 short stops, 0:23 total/);
+  assert.doesNotMatch(context.text, /\d\. .*stopped/);
+
+  const intervals = [];
+  for (let i = 0; i < 8; i += 1) {
+    const start = i * 300;
+    intervals.push({ index: i * 2, type: 'flat', effortBasis: 'power', startElapsed: start, endElapsed: start + 240, durationS: 240, avgPower: 250 + i, avgGrade: 0.1 });
+    intervals.push({ index: i * 2 + 1, type: 'flat', effortBasis: 'power', startElapsed: start + 240, endElapsed: start + 300, durationS: 60, avgPower: 120 + i, avgGrade: 0.1 });
+  }
+  const grouped = buildSegmentContext(intervals);
+  assert.equal(grouped.lines, 1, 'eight identical work/rest pairs collapse to one line');
+  assert.match(grouped.text, /8x \[ ~4:00 flat power 250-257 W \| ~1:00 flat power 120-127 W \]/);
+});
+
+test('segment line budget scales with duration and never truncates', () => {
+  assert.equal(segmentLineBudget(0), 10);
+  assert.equal(segmentLineBudget(3600), 10);
+  assert.equal(segmentLineBudget(10 * 3600), 100);
+  assert.equal(segmentLineBudget(1000 * 3600), 150);
+
+  const noisy = [];
+  for (let i = 0; i < 40; i += 1) {
+    noisy.push({
+      index: i,
+      // Cycling three terrain types defeats both period-1 and period-2 grouping.
+      type: ['climb', 'flat', 'descent'][i % 3],
+      effortBasis: 'hr',
+      startElapsed: i * 20,
+      endElapsed: i * 20 + 20,
+      durationS: 20,
+      avgHr: 100 + i,
+      avgGrade: i % 3 === 0 ? 5 : (i % 3 === 1 ? 0.2 : -5),
+    });
+  }
+  const context = buildSegmentContext(noisy);
+  assert.equal(context.lines, 40, 'the list is reported in full');
+  assert.equal(context.maxLines, 10);
+  assert.equal(context.exceeded, true, 'and flagged so the thresholds get reviewed');
+});
+
+test('recent history keeps the latest analyses verbose and older ones compact', () => {
+  const entries = [];
+  for (let i = 0; i < 6; i += 1) {
+    entries.push({
+      startTime: `2026-08-0${i + 1}T10:00:00.000Z`,
+      distanceKm: 20 + i,
+      durationS: 3600,
+      trainingStressScore: 100 + i,
+      analysisText: `Full analysis ${i}`,
+      chatCount: i === 5 ? 2 : 0,
+    });
+  }
+
+  const text = buildRecentHistoryContext(entries);
+  assert.match(text, /\*\*Recent Activity History \(earlier workouts, oldest first\):\*\*/);
+  assert.match(text, /2026-08-01: 20\.0 km, 01:00:00, TSS 100/);
+  assert.doesNotMatch(text, /Full analysis 0/);
+  assert.match(text, /Full analysis 5/);
+  assert.match(text, /\(follow-up chat: 2 questions\)/);
+  assert.equal(buildRecentHistoryContext([]), '');
+});
+
+test('prompt places data before rules and carries segment guidance', () => {
+  const segments = [
+    { index: 0, type: 'climb', effortBasis: 'vpower', startElapsed: 0, endElapsed: 300, durationS: 300, avgGrade: 6, avgPower: 210 },
+  ];
+  const prompt = generateAnalysisPrompt(
+    { sessions: [{ total_distance_km: 20 }], segments },
+    { total_activities: 0 },
+    {},
+    null,
+    [],
+    [{ startTime: '2026-08-01T10:00:00.000Z', distanceKm: 20, analysisText: 'Earlier ride was steady.' }]
+  );
+
+  assert.ok(prompt.indexOf('**Segment Breakdown:**') < prompt.indexOf('**Evidence Rules:**'));
+  assert.ok(prompt.indexOf('**Recent Activity History') < prompt.indexOf('**Segment Breakdown:**'));
+  assert.ok(prompt.indexOf('**Evidence Rules:**') < prompt.indexOf('**Questions for Analysis:**'));
+  assert.match(prompt, /never compare vpower numbers against HR numbers directly/);
+  assert.match(prompt, /past analyses of other workouts/);
+
+  const withoutSegments = generateAnalysisPrompt({ sessions: [{}] }, { total_activities: 0 });
+  assert.doesNotMatch(withoutSegments, /Segment Breakdown/);
+  assert.doesNotMatch(withoutSegments, /Never compare a vpower-based segment/);
+});
+
+test('recent-history lookup reads earlier activities and falls back to the last one', async () => {
+  const SQL = await initSqlJs({
+    locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm'),
+  });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    db.run(`INSERT INTO activities (id, file_path, start_time) VALUES
+      (1, 'old.fit', '2026-01-01T10:00:00.000Z'),
+      (2, 'recent.fit', '2026-08-01T10:00:00.000Z'),
+      (3, 'current.fit', '2026-08-10T10:00:00.000Z'),
+      (4, 'later.fit', '2026-08-20T10:00:00.000Z')`);
+    db.run(`INSERT INTO activity_analysis (activity_id, analysis_text, analysis_version) VALUES
+      (1, 'old text', 8), (2, 'recent text', 8), (4, 'later text', 8)`);
+
+    const windowed = db.exec(`
+      SELECT a.id FROM activities a
+      JOIN activity_analysis aa ON aa.activity_id = a.id
+      WHERE a.id != 3 AND a.start_time >= date('2026-08-10T10:00:00.000Z', '-30 days')
+        AND a.start_time < '2026-08-10T10:00:00.000Z'
+      ORDER BY a.start_time ASC
+    `)[0].values.flat();
+    // Only earlier activities inside the window: never the older one, never a later ride.
+    assert.deepEqual(windowed, [2]);
+
+    const fallback = db.exec(`
+      SELECT a.id FROM activities a
+      JOIN activity_analysis aa ON aa.activity_id = a.id
+      WHERE a.id != 2 AND a.start_time < '2026-02-01T10:00:00.000Z'
+      ORDER BY a.start_time DESC LIMIT 1
+    `)[0].values.flat();
+    assert.deepEqual(fallback, [1]);
+  } finally {
+    db.close();
+  }
 });
 
 async function* asyncChunks(chunks) {
