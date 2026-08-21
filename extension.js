@@ -1214,6 +1214,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       maxHeartRateForHrr: NaN,
     })
     : null;
+  const mapId = isComparison ? 'fitMapComp' : 'fitMap';
   const chartPointBudget = Math.min(4000, Math.max(900, Math.floor(records.length / 2)));
   const speedChart = buildLineChart(records, 'distance', 'speed', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
   const hrChart = buildLineChart(records, 'distance', 'heart_rate', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
@@ -1232,7 +1233,6 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const gpsRoute = buildGpsRoute(records, 1400, 420, gpsRoutePointBudget);
   const compGpsPoints = hasOverlay ? safeJson(extractGpsPoints(compRecords).slice(0, gpsRoutePointBudget).map((p) => ({ lat: p.y, lon: p.x }))) : 'null';
 
-  const mapId = isComparison ? 'fitMapComp' : 'fitMap';
   const mapPayload = safeJson(gpsRoute.geoPoints);
   const safeFile = escapeHtml(fitData._fileName || '');
   const activitySession = sessions[0] || {};

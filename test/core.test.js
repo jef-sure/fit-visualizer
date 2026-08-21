@@ -149,6 +149,14 @@ test('map zooms only with ctrl or cmd held', () => {
   assert.match(source, /setZoomAround\(targetMap\.mouseEventToContainerPoint\(event\), next\)/);
 });
 
+test('mapId is declared before it is used to build chart payloads (no TDZ crash)', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const declarationIndex = source.indexOf("const mapId = isComparison ? 'fitMapComp' : 'fitMap';");
+  const firstUseIndex = source.indexOf('const chartClientPayloads = safeJson({');
+  assert.ok(declarationIndex > 0, 'mapId declaration must exist');
+  assert.ok(declarationIndex < firstUseIndex, 'mapId must be declared before chartClientPayloads uses it');
+});
+
 test('chart client payload carries geometry and a trimmed point series', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /function buildChartClientPayload\(chart, xUnit, yUnit, overlays\)/);
