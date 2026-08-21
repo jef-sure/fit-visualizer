@@ -37,6 +37,7 @@ const {
   escapeHtml,
   estimateDuration,
   estimateSpeedConfidence,
+  estimateWheelCalibrationRatio,
   formatHms,
   formatNumber,
   groupSimilarSegments,
@@ -469,6 +470,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const data = selId ? await loadFitDataFromDb(dbPath, selId) : null;
     const comp = selCompId ? await loadFitDataFromDb(dbPath, selCompId) : null;
     const athleteProfile = await getAthleteProfile(dbPath, selId);
+    const wheelCalibration = await getWheelCalibrationRecommendation(dbPath);
     const analysis = selId ? await getLatestAnalysisAnyVersion(dbPath, selId) : null;
     const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
     const hrConfig = data
@@ -476,7 +478,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       : getHeartRateConfig();
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration
     );
     if (selId) {
       panel.webview.postMessage({ type: 'analysisChatState', id: Number(selId), messages: analysisChat });
@@ -687,7 +689,7 @@ async function persistDatabase(db, dbPath) {
 function getAthleteProfileFromDbConnection(db) {
   let stmt;
   try {
-    stmt = db.prepare('SELECT sex, resting_hr, ftp, rider_mass_kg, bike_mass_kg FROM athlete_profile WHERE id = 1');
+    stmt = db.prepare('SELECT sex, resting_hr, ftp, rider_mass_kg, bike_mass_kg, wheel_circumference_mm FROM athlete_profile WHERE id = 1');
     if (!stmt.step()) {
       return { sex: '', restingHeartRate: NaN, ftp: NaN };
     }
@@ -698,6 +700,7 @@ function getAthleteProfileFromDbConnection(db) {
       ftp: asNumber(row.ftp),
       riderMassKg: asNumber(row.rider_mass_kg),
       bikeMassKg: asNumber(row.bike_mass_kg),
+      wheelCircumferenceMm: asNumber(row.wheel_circumference_mm),
     };
   } finally {
     stmt?.free();
@@ -834,6 +837,20 @@ function upsertActivity(db, filePath, fitData) {
   }
 
   insertRecord.free();
+
+  // Only stored when a calibration ratio was actually computable; "no row" reads as "no trusted data yet".
+  const calibration = estimateWheelCalibrationRatio(records);
+  db.run('DELETE FROM wheel_calibration_samples WHERE activity_id = ?', [activityId]);
+  if (calibration) {
+    db.run(`
+      INSERT INTO wheel_calibration_samples (activity_id, computed_at, ratio, trusted_distance_km)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(activity_id) DO UPDATE SET
+        computed_at = excluded.computed_at,
+        ratio = excluded.ratio,
+        trusted_distance_km = excluded.trusted_distance_km
+    `, [activityId, new Date().toISOString(), calibration.ratio, calibration.trustedDistanceKm]);
+  }
 }
 
 function getSegmentationOptions() {
@@ -948,7 +965,7 @@ async function getAthleteProfile(dbPath, activityId) {
   const db = await openDatabase(SQL, dbPath);
   let stmt;
   try {
-    stmt = db.prepare('SELECT sex, age, resting_hr, ftp, rider_mass_kg, bike_mass_kg FROM athlete_profile WHERE id = 1');
+    stmt = db.prepare('SELECT sex, age, resting_hr, ftp, rider_mass_kg, bike_mass_kg, wheel_circumference_mm FROM athlete_profile WHERE id = 1');
     const hasProfile = stmt.step();
     const row = hasProfile ? stmt.getAsObject() : {};
     const profile = {
@@ -958,6 +975,7 @@ async function getAthleteProfile(dbPath, activityId) {
       ftp: Number.isFinite(asNumber(row.ftp)) ? String(Math.round(asNumber(row.ftp))) : '',
       riderMassKg: Number.isFinite(asNumber(row.rider_mass_kg)) ? String(asNumber(row.rider_mass_kg)) : '',
       bikeMassKg: Number.isFinite(asNumber(row.bike_mass_kg)) ? String(asNumber(row.bike_mass_kg)) : '',
+      wheelCircumferenceMm: Number.isFinite(asNumber(row.wheel_circumference_mm)) ? String(asNumber(row.wheel_circumference_mm)) : '',
     };
     if (Number.isInteger(Number(activityId)) && Number(activityId) > 0) {
       stmt.free();
@@ -980,12 +998,62 @@ async function getAthleteProfile(dbPath, activityId) {
   }
 }
 
+// Silent unless there is enough trusted GPS distance AND the deviation is outside plain GPS noise -
+// the recommendation either exists and is justified, or the feature is invisible.
+async function getWheelCalibrationRecommendation(dbPath) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  let stmt;
+  try {
+    const profile = getAthleteProfileFromDbConnection(db);
+    stmt = db.prepare(`
+      SELECT wcs.ratio AS ratio, wcs.trusted_distance_km AS trusted_distance_km
+      FROM wheel_calibration_samples wcs
+      JOIN activities a ON a.id = wcs.activity_id
+      ORDER BY a.start_time DESC
+    `);
+    const rows = [];
+    let cumulativeKm = 0;
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      rows.push(row);
+      cumulativeKm += asNumber(row.trusted_distance_km) || 0;
+      if (rows.length >= 15 || cumulativeKm >= 20) {
+        break;
+      }
+    }
+
+    const totalKm = rows.reduce((sum, row) => sum + (asNumber(row.trusted_distance_km) || 0), 0);
+    if (totalKm < 15) {
+      return null;
+    }
+
+    const ratio = rows.reduce((sum, row) => sum + asNumber(row.ratio) * asNumber(row.trusted_distance_km), 0) / totalKm;
+    const deviationPct = (ratio - 1) * 100;
+    if (Math.abs(deviationPct) <= 1) {
+      return null;
+    }
+
+    const currentMm = Number.isFinite(profile.wheelCircumferenceMm) ? profile.wheelCircumferenceMm : null;
+    return {
+      ratio: roundTo(ratio, 4),
+      deviationPct: roundTo(deviationPct, 1),
+      trustedDistanceKm: roundTo(totalKm, 1),
+      currentCircumferenceMm: currentMm,
+      recommendedCircumferenceMm: currentMm != null ? roundTo(currentMm / ratio, 1) : null,
+    };
+  } finally {
+    stmt?.free();
+    db.close();
+  }
+}
+
 function toDateOnly(value) {
   const match = String(value || '').match(/^\d{4}-\d{2}-\d{2}/);
   return match ? match[0] : null;
 }
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration) {
   const hasData = fitData && Array.isArray(fitData.records) && fitData.records.length > 0;
   const hasComp = compData && Array.isArray(compData.records) && compData.records.length > 0;
 
@@ -1023,7 +1091,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration)
     : `<div style="padding:24px;color:var(--muted)">No data for this activity.</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -1185,7 +1253,7 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -1247,6 +1315,16 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const athleteFtpValue = escapeHtml(athleteProfile?.ftp || '');
   const riderMassValue = escapeHtml(athleteProfile?.riderMassKg || '');
   const bikeMassValue = escapeHtml(athleteProfile?.bikeMassKg || '');
+  const wheelCircumferenceValue = escapeHtml(athleteProfile?.wheelCircumferenceMm || '');
+  const wheelCalibrationHint = wheelCalibration ? `<div class="calibrationHint" id="${mapId}WheelHint">
+      Based on recent rides (${wheelCalibration.trustedDistanceKm} km of trusted GPS distance), the recorded distance looks
+      ${wheelCalibration.deviationPct > 0 ? 'about ' + wheelCalibration.deviationPct + '% long' : 'about ' + Math.abs(wheelCalibration.deviationPct) + '% short'}.
+      ${wheelCalibration.recommendedCircumferenceMm != null
+    ? `Wheel circumference is probably closer to <strong>${wheelCalibration.recommendedCircumferenceMm} mm</strong> than ${wheelCalibration.currentCircumferenceMm} mm.
+        <button type="button" id="${mapId}ApplyWheelHint">Use ${wheelCalibration.recommendedCircumferenceMm} mm</button>`
+    : 'Enter your current wheel circumference below to see a suggested value.'}
+      <button type="button" id="${mapId}DismissWheelHint">Dismiss</button>
+    </div>` : '';
   const powerMetricSuffix = primaryPower.source === 'estimated' ? ' (estimated)' : '';
 
   const compStatsRow = hasOverlay && compSummary
@@ -1346,10 +1424,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           <span>Bike mass (kg)</span>
           <input id="${mapId}BikeMass" type="number" min="3" max="50" step="0.1" value="${bikeMassValue}" placeholder="required for estimated power">
         </label>
+        <label>
+          <span>Wheel circumference (mm)</span>
+          <input id="${mapId}WheelCircumference" type="number" min="1000" max="2500" step="0.1" value="${wheelCircumferenceValue}" placeholder="e.g. 2105">
+        </label>
         <button type="button" id="${mapId}AutoCalcZonesBtn">Auto-calc</button>
         <button type="submit">Save Zones</button>
         <span id="${mapId}HrProfileStatus" class="manualDataStatus"></span>
       </form>
+      ${wheelCalibrationHint}
       <div class="mapHint">Auto-calc estimates power from the saved rider and bike mass, speed, GPS altitude, and distance when power-meter data is unavailable. The last saved masses are reused for the next ride. FTP is used for IF/TSS on activity summaries. The latest profile effective on an activity date is used.${hrConfig?.effectiveDate ? ` Currently applied: ${escapeHtml(hrConfig.effectiveDate)}.` : ''}</div>
     </section>
     <section class="chart resizable" data-resize-target="${mapId}SpeedSvg" data-resize-key="fitviz_speed_height" data-min-height="200" data-max-height="1200">
@@ -1614,8 +1697,22 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           ftp: document.getElementById('${mapId}AthleteFtp').value,
           riderMassKg: document.getElementById('${mapId}RiderMass').value,
           bikeMassKg: document.getElementById('${mapId}BikeMass').value,
+          wheelCircumferenceMm: document.getElementById('${mapId}WheelCircumference').value,
         });
       });
+
+      (function () {
+        const hint = document.getElementById('${mapId}WheelHint');
+        if (!hint) return;
+        const applyBtn = document.getElementById('${mapId}ApplyWheelHint');
+        const dismissBtn = document.getElementById('${mapId}DismissWheelHint');
+        const wheelInput = document.getElementById('${mapId}WheelCircumference');
+        applyBtn?.addEventListener('click', () => {
+          if (wheelInput) wheelInput.value = ${wheelCalibration?.recommendedCircumferenceMm ?? 'null'};
+          hint.remove();
+        });
+        dismissBtn?.addEventListener('click', () => hint.remove());
+      }());
 
       if (analyzeBtn) {
         analyzeBtn.addEventListener('click', () => {
@@ -2096,6 +2193,8 @@ function sharedCss() {
     .manualDataForm button { border:0; border-radius:6px; padding:7px 14px; background:var(--accent); color:var(--bg); font-weight:700; cursor:pointer; }
     .manualDataStatus { color:var(--muted); font-size:0.82rem; align-self:center; }
     .manualDataStatus.error { color:var(--vscode-errorForeground); }
+    .calibrationHint { margin-top:10px; padding:8px 10px; border-left:4px solid var(--accent); background:color-mix(in srgb, var(--accent) 12%, transparent); font-size:0.85rem; line-height:1.5; }
+    .calibrationHint button { margin-left:8px; border:1px solid var(--border); border-radius:4px; padding:3px 8px; background:var(--input-bg); color:var(--input-fg); cursor:pointer; font-size:0.8rem; }
   `;
 }
 
@@ -3165,6 +3264,7 @@ async function updateHeartRateProfile(dbPath, message) {
   }
   const athleteProfile = parseOptionalAthleteProfile(message);
   const ftp = parseOptionalFtp(message.ftp);
+  const wheelCircumferenceMm = parseOptionalWheelCircumference(message.wheelCircumferenceMm);
 
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
@@ -3182,7 +3282,7 @@ async function updateHeartRateProfile(dbPath, message) {
         zone5_start = excluded.zone5_start,
         updated_at = excluded.updated_at
     `, [effectiveDate, maxHeartRate, ...thresholds, now, now]);
-    if (athleteProfile || ftp != null) {
+    if (athleteProfile || ftp != null || wheelCircumferenceMm != null) {
       upsertAthleteProfile(db, {
         sex: athleteProfile?.sex,
         age: athleteProfile?.age,
@@ -3190,6 +3290,7 @@ async function updateHeartRateProfile(dbPath, message) {
         riderMassKg: athleteProfile?.riderMassKg,
         bikeMassKg: athleteProfile?.bikeMassKg,
         ftp,
+        wheelCircumferenceMm,
       }, now);
     }
     if (athleteProfile) {
@@ -3345,8 +3446,8 @@ async function autoCalculateHeartRateProfileFromDb(dbPath, message) {
 
 function upsertAthleteProfile(db, profile, updatedAt) {
   db.run(`
-    INSERT INTO athlete_profile (id, sex, age, resting_hr, ftp, rider_mass_kg, bike_mass_kg, updated_at)
-    VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO athlete_profile (id, sex, age, resting_hr, ftp, rider_mass_kg, bike_mass_kg, wheel_circumference_mm, updated_at)
+    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       sex = COALESCE(excluded.sex, athlete_profile.sex),
       age = COALESCE(excluded.age, athlete_profile.age),
@@ -3354,6 +3455,7 @@ function upsertAthleteProfile(db, profile, updatedAt) {
       ftp = COALESCE(excluded.ftp, athlete_profile.ftp),
       rider_mass_kg = COALESCE(excluded.rider_mass_kg, athlete_profile.rider_mass_kg),
       bike_mass_kg = COALESCE(excluded.bike_mass_kg, athlete_profile.bike_mass_kg),
+      wheel_circumference_mm = COALESCE(excluded.wheel_circumference_mm, athlete_profile.wheel_circumference_mm),
       updated_at = excluded.updated_at
   `, [
     profile?.sex ?? null,
@@ -3362,6 +3464,7 @@ function upsertAthleteProfile(db, profile, updatedAt) {
     Number.isFinite(asNumber(profile?.ftp)) ? Math.round(asNumber(profile.ftp)) : null,
     Number.isFinite(asNumber(profile?.riderMassKg)) ? asNumber(profile.riderMassKg) : null,
     Number.isFinite(asNumber(profile?.bikeMassKg)) ? asNumber(profile.bikeMassKg) : null,
+    Number.isFinite(asNumber(profile?.wheelCircumferenceMm)) ? asNumber(profile.wheelCircumferenceMm) : null,
     updatedAt,
   ]);
 }
@@ -3425,6 +3528,17 @@ function parseOptionalFtp(value) {
     throw new Error('FTP must be between 80 and 500 watts.');
   }
   return Math.round(ftp);
+}
+
+function parseOptionalWheelCircumference(value) {
+  if (value == null || String(value).trim() === '') {
+    return null;
+  }
+  const mm = Number(value);
+  if (!Number.isFinite(mm) || mm < 1000 || mm > 2500) {
+    throw new Error('Wheel circumference must be between 1000 and 2500 mm.');
+  }
+  return roundTo(mm, 1);
 }
 
 function parseOptionalHeartRate(value, label) {
