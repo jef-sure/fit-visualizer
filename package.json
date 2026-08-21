@@ -80,6 +80,81 @@
           "minimum": 100,
           "maximum": 240,
           "description": "Legacy fallback maximum heart rate. Dated profiles entered in the activity view take precedence."
+        },
+        "fitVisualizer.logLlmRequests": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write each Copilot prompt and response to .fit-visualizer/logs next to the database."
+        },
+        "fitVisualizer.llmLogRetentionDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "description": "Delete Copilot request logs older than this many days. Set to 0 to keep them forever."
+        },
+        "fitVisualizer.segmentation.gradeThresholdPct": {
+          "type": "number",
+          "default": 2.5,
+          "minimum": 0.5,
+          "maximum": 15,
+          "description": "Grade in percent that separates climbs and descents from flat terrain."
+        },
+        "fitVisualizer.segmentation.gradeHysteresisPct": {
+          "type": "number",
+          "default": 0.5,
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Extra grade margin required to switch terrain type, preventing flapping around the threshold."
+        },
+        "fitVisualizer.segmentation.minSegmentSeconds": {
+          "type": "number",
+          "default": 45,
+          "minimum": 5,
+          "maximum": 600,
+          "description": "Shorter segments are merged into a neighbour."
+        },
+        "fitVisualizer.segmentation.technicalGradePct": {
+          "type": "number",
+          "default": -8,
+          "minimum": -30,
+          "maximum": 0,
+          "description": "Descent grade below which an erratic speed trace marks the segment as technical (no effort estimate)."
+        },
+        "fitVisualizer.segmentation.effortWindowSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 120,
+          "description": "Averaging window for the effort signal before splitting a segment into intervals."
+        },
+        "fitVisualizer.segmentation.effortCostThreshold": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "description": "Merge cost limit for interval detection. Leave empty to derive it from the noise of the effort signal."
+        },
+        "fitVisualizer.segmentation.stopSpeedKmh": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Speed at or below which a record counts as stopped."
+        },
+        "fitVisualizer.segmentation.stopMinSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 3,
+          "maximum": 300,
+          "description": "Minimum duration of a stop, and the recording gap that counts as an auto-paused stop."
+        },
+        "fitVisualizer.segmentation.gpsTrustMinKm": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.2,
+          "maximum": 10,
+          "description": "Minimum continuous distance before a GPS window can confirm the recorded speed."
         }
       }
     }

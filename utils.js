@@ -596,6 +596,438 @@ function detectStops(records, options = {}) {
   return merged;
 }
 
+function optionNumber(options, key, fallback) {
+  const value = asNumber(options?.[key]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+// Grade in percent per record: stored values win, otherwise recomputed from altitude.
+function gradeSeriesPct(records, smoothWindow = 15) {
+  if (!Array.isArray(records) || !records.length) {
+    return [];
+  }
+  const computed = computeGrade(records);
+  const raw = records.map((record, index) => {
+    const stored = asNumber(record?.grade);
+    if (Number.isFinite(stored)) {
+      return stored;
+    }
+    const entry = computed[index];
+    return entry && entry.dt > 0 && entry.dt <= 5 && entry.distanceM >= 1 ? entry.grade * 100 : Number.NaN;
+  });
+  return smoothSeries(raw, smoothWindow);
+}
+
+function segmentByGrade(records, options = {}) {
+  if (!Array.isArray(records) || !records.length) {
+    return [];
+  }
+
+  const threshold = optionNumber(options, 'gradeThresholdPct', 2.5);
+  const hysteresis = optionNumber(options, 'gradeHysteresisPct', 0.5);
+  const minDurationSeconds = optionNumber(options, 'minSegmentSeconds', 45);
+  const grades = Array.isArray(options.grades)
+    ? options.grades
+    : gradeSeriesPct(records, optionNumber(options, 'gradeSmoothWindow', 15));
+
+  const stopped = new Array(records.length).fill(false);
+  for (const stop of Array.isArray(options.stops) ? options.stops : []) {
+    for (let index = stop.startIndex; index <= stop.endIndex && index < records.length; index += 1) {
+      stopped[index] = true;
+    }
+  }
+
+  const types = new Array(records.length);
+  let state = 'flat';
+  for (let index = 0; index < records.length; index += 1) {
+    if (stopped[index]) {
+      types[index] = 'stopped';
+      continue;
+    }
+    const grade = asNumber(grades[index]);
+    if (Number.isFinite(grade)) {
+      if (state === 'climb' && grade < threshold - hysteresis) {
+        state = 'flat';
+      } else if (state === 'descent' && grade > -(threshold - hysteresis)) {
+        state = 'flat';
+      }
+      if (state === 'flat') {
+        if (grade > threshold + hysteresis) {
+          state = 'climb';
+        } else if (grade < -(threshold + hysteresis)) {
+          state = 'descent';
+        }
+      }
+    }
+    types[index] = state;
+  }
+
+  const runs = [];
+  for (let index = 0; index < types.length; index += 1) {
+    const last = runs[runs.length - 1];
+    if (last && last.type === types[index]) {
+      last.endIndex = index;
+    } else {
+      runs.push({ startIndex: index, endIndex: index, type: types[index] });
+    }
+  }
+
+  return mergeShortRuns(runs, records, minDurationSeconds);
+}
+
+function rangeDurationSeconds(records, startIndex, endIndex) {
+  const start = asNumber(records[startIndex]?.elapsed_time);
+  const end = asNumber(records[endIndex]?.elapsed_time);
+  return Number.isFinite(start) && Number.isFinite(end) ? end - start : 0;
+}
+
+function mergeShortRuns(runs, records, minDurationSeconds) {
+  let current = runs.slice();
+  // Each pass merges at most one run, so the budget has to come from the starting count.
+  const maxPasses = runs.length + 2;
+
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    let merged = false;
+
+    for (let index = 0; index < current.length && current.length > 1; index += 1) {
+      const run = current[index];
+      if (run.type === 'stopped' || rangeDurationSeconds(records, run.startIndex, run.endIndex) >= minDurationSeconds) {
+        continue;
+      }
+
+      const previous = current[index - 1];
+      const next = current[index + 1];
+      // A brief moving stretch between two stops is stop-and-go traffic, not a segment of its own.
+      const moving = [previous, next].filter((candidate) => candidate && candidate.type !== 'stopped');
+      const candidates = moving.length ? moving : [previous, next].filter(Boolean);
+      if (!candidates.length) {
+        continue;
+      }
+
+      const target = candidates.length === 2
+        && rangeDurationSeconds(records, next.startIndex, next.endIndex)
+          > rangeDurationSeconds(records, previous.startIndex, previous.endIndex)
+        ? next
+        : candidates[0];
+
+      if (target === previous) {
+        previous.endIndex = run.endIndex;
+      } else {
+        target.startIndex = run.startIndex;
+      }
+      current.splice(index, 1);
+      merged = true;
+      break;
+    }
+
+    current = current.reduce((accumulator, run) => {
+      const last = accumulator[accumulator.length - 1];
+      if (last && last.type === run.type) {
+        last.endIndex = run.endIndex;
+        return accumulator;
+      }
+      accumulator.push({ ...run });
+      return accumulator;
+    }, []);
+
+    if (!merged) {
+      break;
+    }
+  }
+
+  return current;
+}
+
+// Bottom-up merging: repeatedly join the adjacent pair that costs the least extra variance.
+function bottomUpSegment(series, options = {}) {
+  const values = (Array.isArray(series) ? series : []).map((value) => asNumber(value));
+  if (values.length <= 1) {
+    return values.length ? [{ start: 0, end: 0 }] : [];
+  }
+
+  const finite = values.filter((value) => Number.isFinite(value));
+  const relativeNoise = optionNumber(options, 'effortRelativeNoise', 0.1);
+  const costThreshold = Number.isFinite(asNumber(options.effortCostThreshold))
+    ? asNumber(options.effortCostThreshold)
+    : (relativeNoise * Math.abs(median(finite) || 1)) ** 2 * 3;
+
+  const segments = values.map((value, index) => ({
+    start: index,
+    end: index,
+    count: Number.isFinite(value) ? 1 : 0,
+    sum: Number.isFinite(value) ? value : 0,
+  }));
+
+  const mergeCost = (left, right) => {
+    if (!left.count || !right.count) {
+      return 0;
+    }
+    const delta = (left.sum / left.count) - (right.sum / right.count);
+    return ((left.count * right.count) / (left.count + right.count)) * delta ** 2;
+  };
+
+  while (segments.length > 1) {
+    let bestIndex = -1;
+    let bestCost = Infinity;
+    for (let index = 0; index + 1 < segments.length; index += 1) {
+      const cost = mergeCost(segments[index], segments[index + 1]);
+      if (cost < bestCost) {
+        bestCost = cost;
+        bestIndex = index;
+      }
+    }
+
+    if (bestIndex < 0 || bestCost > costThreshold) {
+      break;
+    }
+
+    const left = segments[bestIndex];
+    const right = segments[bestIndex + 1];
+    left.end = right.end;
+    left.count += right.count;
+    left.sum += right.sum;
+    segments.splice(bestIndex + 1, 1);
+  }
+
+  return segments.map(({ start, end }) => ({ start, end }));
+}
+
+const EFFORT_SIGNAL_STRATEGIES = {
+  cycling(segment, context) {
+    if (segment.type === 'stopped') {
+      return { basis: 'none', reason: 'stopped' };
+    }
+    if (segment.technical) {
+      return { basis: 'none', reason: 'technical descent, speed data unreliable' };
+    }
+    if (context.powerSource === 'measured' && segment.hasPower) {
+      return { basis: 'power', reason: 'power meter' };
+    }
+    if (segment.type === 'climb' && segment.hasPower
+      && asNumber(segment.avgGrade) >= optionNumber(context, 'vpowerMinGradePct', 3)) {
+      return { basis: 'vpower', reason: 'gravity dominates on this climb' };
+    }
+    if (segment.hasHeartRate) {
+      return { basis: 'hr', reason: segment.hasPower ? 'vpower unreliable off the climbs' : 'no power data' };
+    }
+    return segment.hasPower
+      ? { basis: 'vpower', reason: 'no heart-rate data' }
+      : { basis: 'none', reason: 'no effort data' };
+  },
+
+  running(segment) {
+    if (segment.type === 'stopped') {
+      return { basis: 'none', reason: 'stopped' };
+    }
+    // Grade-adjusted pace is not implemented yet, so running falls back to heart rate.
+    return segment.hasHeartRate
+      ? { basis: 'hr', reason: 'grade-adjusted pace not available' }
+      : { basis: 'none', reason: 'no effort data' };
+  },
+
+  other(segment) {
+    if (segment.type === 'stopped') {
+      return { basis: 'none', reason: 'stopped' };
+    }
+    return segment.hasHeartRate
+      ? { basis: 'hr', reason: 'heart rate only for this sport' }
+      : { basis: 'none', reason: 'no effort data' };
+  },
+};
+
+function normalizeSport(sport) {
+  const value = String(sport || '').toLowerCase();
+  if (value.includes('cycl') || value.includes('bik')) {
+    return 'cycling';
+  }
+  if (value.includes('run')) {
+    return 'running';
+  }
+  return 'other';
+}
+
+function selectEffortSignal(segment, context = {}) {
+  const strategy = EFFORT_SIGNAL_STRATEGIES[normalizeSport(context.sport)] || EFFORT_SIGNAL_STRATEGIES.other;
+  return strategy(segment || {}, context);
+}
+
+function summarizeSegmentRange(records, range, shared, options) {
+  const { startIndex, endIndex, type } = range;
+  const speeds = [];
+  const heartRates = [];
+  const powers = [];
+  const segmentGrades = [];
+  let elevGainM = 0;
+  let highConfidence = 0;
+  let confidenceSamples = 0;
+
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    const record = records[index] || {};
+    const speed = asNumber(record.speed);
+    const heartRate = asNumber(record.heart_rate);
+    const power = asNumber(record.power);
+    const grade = asNumber(shared.grades[index]);
+
+    if (Number.isFinite(speed)) speeds.push(speed);
+    if (Number.isFinite(heartRate) && heartRate > 0) heartRates.push(heartRate);
+    if (Number.isFinite(power) && power >= 0) powers.push(power);
+    if (Number.isFinite(grade)) segmentGrades.push(grade);
+
+    if (index > startIndex) {
+      const rise = shared.altitudesM[index] - shared.altitudesM[index - 1];
+      if (Number.isFinite(rise) && rise > 0) {
+        elevGainM += rise;
+      }
+    }
+
+    if (shared.speedConfidence[index]) {
+      confidenceSamples += 1;
+      if (shared.speedConfidence[index] === 'high') {
+        highConfidence += 1;
+      }
+    }
+  }
+
+  const avgSpeedKmh = speeds.length ? average(speeds) : Number.NaN;
+  const speedSpread = speeds.length > 1 && avgSpeedKmh > 0
+    ? Math.sqrt(average(speeds.map((value) => (value - avgSpeedKmh) ** 2))) / avgSpeedKmh
+    : 0;
+  const avgGrade = segmentGrades.length ? average(segmentGrades) : Number.NaN;
+  const technical = type === 'descent'
+    && avgGrade <= optionNumber(options, 'technicalGradePct', -8)
+    && speedSpread >= optionNumber(options, 'technicalSpeedSpread', 0.25);
+  // A stop spans either idle samples or a recording gap; averaging across it says nothing.
+  const moving = type !== 'stopped';
+
+  return {
+    startIndex,
+    endIndex,
+    type,
+    startElapsed: asNumber(records[startIndex]?.elapsed_time),
+    endElapsed: asNumber(records[endIndex]?.elapsed_time),
+    durationS: rangeDurationSeconds(records, startIndex, endIndex),
+    avgGrade: moving && Number.isFinite(avgGrade) ? roundTo(avgGrade, 1) : null,
+    elevGainM: moving ? roundTo(elevGainM, 0) : null,
+    avgSpeedKmh: moving && Number.isFinite(avgSpeedKmh) ? roundTo(avgSpeedKmh, 1) : null,
+    avgHr: heartRates.length ? roundTo(average(heartRates), 0) : null,
+    avgPower: moving && powers.length ? roundTo(average(powers), 0) : null,
+    hasHeartRate: heartRates.length > 0,
+    hasPower: powers.length > 0,
+    speedConfidence: confidenceSamples && highConfidence / confidenceSamples >= 0.8 ? 'high' : 'low',
+    technical,
+  };
+}
+
+function buildActivitySegments(records, context = {}) {
+  if (!Array.isArray(records) || records.length < 2) {
+    return [];
+  }
+
+  const options = context.thresholds || {};
+  const stops = detectStops(records, options);
+  const grades = gradeSeriesPct(records, optionNumber(options, 'gradeSmoothWindow', 15));
+  const macros = segmentByGrade(records, { ...options, grades, stops });
+  const shared = {
+    grades,
+    speedConfidence: estimateSpeedConfidence(records, options),
+    altitudesM: smoothSeries(records.map((record) => {
+      const altitude = asNumber(record?.altitude);
+      return Number.isFinite(altitude) ? altitude * 1000 : Number.NaN;
+    }), 5),
+  };
+  const windowSeconds = optionNumber(options, 'effortWindowSeconds', 10);
+  const minSegmentSeconds = optionNumber(options, 'minSegmentSeconds', 45);
+  const athlete = context.athlete || {};
+
+  const segments = [];
+  for (const macro of macros) {
+    const macroSummary = summarizeSegmentRange(records, macro, shared, options);
+    const effort = selectEffortSignal(macroSummary, context);
+
+    const ranges = effort.basis === 'none'
+      ? [macro]
+      : splitByEffort(records, macro, effort.basis, windowSeconds, minSegmentSeconds, options);
+
+    for (const range of ranges) {
+      const summary = ranges.length === 1 ? macroSummary : summarizeSegmentRange(records, range, shared, options);
+      segments.push({
+        ...summary,
+        effortBasis: effort.basis,
+        effortReason: effort.reason,
+        hrDriftPct: segmentHrDrift(records, range, summary, effort.basis, athlete, options),
+      });
+    }
+  }
+
+  return segments.map((segment, index) => ({ ...segment, index }));
+}
+
+// Pw:HR drift needs a trusted power signal and enough time for a half-vs-half split to mean anything.
+function segmentHrDrift(records, range, summary, basis, athlete, options) {
+  const minSeconds = optionNumber(options, 'hrDriftMinSeconds', 600);
+  if ((basis !== 'power' && basis !== 'vpower') || summary.durationS < minSeconds) {
+    return null;
+  }
+
+  const drift = calculateIntervalsDecoupling(records.slice(range.startIndex, range.endIndex + 1), {
+    ftp: athlete.ftp,
+    restingHeartRate: athlete.restingHeartRate,
+    maxHeartRate: athlete.maxHeartRate,
+  });
+  return drift ? roundTo(drift, 1) : null;
+}
+
+function splitByEffort(records, macro, basis, windowSeconds, minSegmentSeconds, options) {  const valueOf = basis === 'hr'
+    ? (record) => asNumber(record?.heart_rate)
+    : (record) => asNumber(record?.power);
+
+  const windows = [];
+  for (let index = macro.startIndex; index <= macro.endIndex; index += 1) {
+    const elapsed = asNumber(records[index]?.elapsed_time);
+    const last = windows[windows.length - 1];
+    if (!last || (Number.isFinite(elapsed) && Number.isFinite(last.startElapsed)
+      && elapsed - last.startElapsed >= windowSeconds)) {
+      windows.push({ startIndex: index, endIndex: index, startElapsed: elapsed, values: [] });
+    } else {
+      windows[windows.length - 1].endIndex = index;
+    }
+    const value = valueOf(records[index]);
+    if (Number.isFinite(value)) {
+      windows[windows.length - 1].values.push(value);
+    }
+  }
+
+  if (windows.length < 2) {
+    return [macro];
+  }
+
+  const parts = bottomUpSegment(
+    windows.map((window) => (window.values.length ? average(window.values) : Number.NaN)),
+    options
+  ).map((part) => ({
+    startIndex: windows[part.start].startIndex,
+    endIndex: windows[part.end].endIndex,
+    type: macro.type,
+  }));
+
+  const merged = [];
+  for (const part of parts) {
+    const last = merged[merged.length - 1];
+    if (last && rangeDurationSeconds(records, last.startIndex, last.endIndex) < minSegmentSeconds) {
+      last.endIndex = part.endIndex;
+      continue;
+    }
+    merged.push({ ...part });
+  }
+  if (merged.length > 1
+    && rangeDurationSeconds(records, merged[merged.length - 1].startIndex, merged[merged.length - 1].endIndex) < minSegmentSeconds) {
+    merged[merged.length - 2].endIndex = merged[merged.length - 1].endIndex;
+    merged.pop();
+  }
+
+  return merged;
+}
+
 function normalizeRecordSpeeds(records) {
   if (!Array.isArray(records) || !records.length) {
     return [];
@@ -1000,6 +1432,8 @@ module.exports = {
   calculateHistoricalMeanMaximalPower,
   calculateMeanMaximalPower,
   calculateNormalizedPower,
+  bottomUpSegment,
+  buildActivitySegments,
   computeGpsDerivedSpeed,
   computeGrade,
   detectStops,
@@ -1008,6 +1442,8 @@ module.exports = {
   estimateSpeedConfidence,
   haversineKm,
   normalizeCoordinate,
+  segmentByGrade,
+  selectEffortSignal,
   selectFtpEstimate,
   calculateTrainingStressScore,
   calculateXPower,

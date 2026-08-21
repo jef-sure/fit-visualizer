@@ -1,7 +1,7 @@
 const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { generateAnalysisPrompt, generateAnalysisChatPrompt, requestCopilotAnalysis } = require('./analysis');
+const { generateAnalysisPrompt, generateAnalysisChatPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('./analysis');
 const { registerCommands } = require('./commands');
 const { ensureDatabaseSchema } = require('./database-schema');
 const { fileExists, getFitUris, parseFitFile } = require('./fit-files');
@@ -14,6 +14,7 @@ const {
   addEstimatedPowerWhenMissing,
   asNumber,
   average,
+  buildActivitySegments,
   calculateBanisterTrimp,
   calculateBikeStressScore,
   calculateHistoricalMeanMaximalPower,
@@ -59,6 +60,7 @@ const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
 
 // sql.js rewrites the whole database file, so overlapping analyses would clobber each other.
 let llmTaskQueue = Promise.resolve();
+let llmLogCleanupDone = false;
 
 function enqueueLlmTask(task) {
   const result = llmTaskQueue.then(task, task);
@@ -830,6 +832,27 @@ function upsertActivity(db, filePath, fitData) {
   }
 
   insertRecord.free();
+}
+
+function getSegmentationOptions() {
+  const config = vscode.workspace.getConfiguration('fitVisualizer.segmentation');
+  const read = (key) => {
+    const value = Number(config.get(key));
+    return Number.isFinite(value) ? value : undefined;
+  };
+
+  return {
+    gradeThresholdPct: read('gradeThresholdPct'),
+    gradeHysteresisPct: read('gradeHysteresisPct'),
+    minSegmentSeconds: read('minSegmentSeconds'),
+    technicalGradePct: read('technicalGradePct'),
+    effortWindowSeconds: read('effortWindowSeconds'),
+    effortCostThreshold: read('effortCostThreshold'),
+    speedThresholdKmh: read('stopSpeedKmh'),
+    minDurationSeconds: read('stopMinSeconds'),
+    gapSeconds: read('stopMinSeconds'),
+    minWindowKm: read('gpsTrustMinKm'),
+  };
 }
 
 function getHeartRateConfig() {
@@ -2502,10 +2525,71 @@ async function runActivityAnalysis(dbPath, activityId, force) {
   const previousAnalysis = (await getLatestAnalysisAnyVersion(dbPath, numId))?.text || null;
   const followUpHistory = await getAnalysisChatFromDb(dbPath, numId);
   const prompt = generateAnalysisPrompt(analysisData, summary, hrConfig, previousAnalysis, followUpHistory);
-  const analysis = await requestCopilotAnalysis(vscode, prompt);
+  const analysis = await requestCopilotAnalysis(vscode, prompt, {
+    onCompleted: (result) => logLlmRequest(dbPath, { activityId: numId, kind: 'analysis', ...result }),
+  });
   await storeAnalysisInDb(dbPath, numId, analysis);
 
   return analysis;
+}
+
+function getLlmLogConfig() {
+  const config = vscode.workspace.getConfiguration('fitVisualizer');
+  const retentionDays = Number(config.get('llmLogRetentionDays'));
+  return {
+    enabled: config.get('logLlmRequests') !== false,
+    retentionDays: Number.isFinite(retentionDays) && retentionDays > 0 ? retentionDays : 0,
+  };
+}
+
+async function logLlmRequest(dbPath, entry) {
+  const { enabled, retentionDays } = getLlmLogConfig();
+  if (!enabled || !dbPath) {
+    return;
+  }
+
+  const logDir = path.join(path.dirname(dbPath), 'logs');
+  await fs.mkdir(logDir, { recursive: true });
+
+  const timestamp = new Date().toISOString();
+  const fileName = `${entry.activityId}-${timestamp.replace(/[:.]/g, '-')}-${entry.kind}.json`;
+  const promptSummary = summarizePromptBlocks(entry.prompt);
+  await fs.writeFile(path.join(logDir, fileName), JSON.stringify({
+    timestamp,
+    activityId: entry.activityId,
+    kind: entry.kind,
+    modelId: entry.modelId,
+    analysisVersion: ANALYSIS_VERSION,
+    promptChars: promptSummary.totalChars,
+    promptBlocks: promptSummary.blocks,
+    prompt: entry.prompt,
+    response: entry.response ?? null,
+    error: entry.error ?? null,
+  }, null, 2));
+
+  if (retentionDays && !llmLogCleanupDone) {
+    llmLogCleanupDone = true;
+    await pruneLlmLogs(logDir, retentionDays);
+  }
+}
+
+async function pruneLlmLogs(logDir, retentionDays) {
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  try {
+    const names = await fs.readdir(logDir);
+    for (const name of names) {
+      if (!name.endsWith('.json')) {
+        continue;
+      }
+      const filePath = path.join(logDir, name);
+      const stats = await fs.stat(filePath);
+      if (stats.mtimeMs < cutoff) {
+        await fs.unlink(filePath);
+      }
+    }
+  } catch {
+    // Log housekeeping is best effort.
+  }
 }
 
 async function reanalyzeOutdatedActivities() {
@@ -2613,9 +2697,20 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
       : session.max_hr,
   });
   const athleteFtp = asNumber(athleteProfile.ftp);
+  const segments = buildActivitySegments(powerData.records, {
+    sport: session.sport,
+    powerSource: powerData.source,
+    thresholds: getSegmentationOptions(),
+    athlete: {
+      ftp: athleteFtp,
+      restingHeartRate: athleteProfile.restingHeartRate,
+      maxHeartRate: asNumber(hrConfig?.maxHeartRate),
+    },
+  });
   return {
     ...fitData,
     records: powerData.records,
+    segments,
     sessions: [{
       ...session,
       avg_speed_kmh: summary.avgSpeed > 0 ? summary.avgSpeed : session.avg_speed_kmh,
@@ -3262,7 +3357,9 @@ async function runActivityChatReply(dbPath, activityId, history, userQuestion) {
   const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time);
   const baseAnalysis = (await getLatestAnalysisAnyVersion(dbPath, activityId))?.text || null;
   const prompt = generateAnalysisChatPrompt(analysisData, summary, hrConfig, baseAnalysis, history, userQuestion);
-  return requestCopilotAnalysis(vscode, prompt);
+  return requestCopilotAnalysis(vscode, prompt, {
+    onCompleted: (result) => logLlmRequest(dbPath, { activityId: Number(activityId), kind: 'chat', ...result }),
+  });
 }
 
 function deactivate() {}
