@@ -199,6 +199,18 @@ test('chart interactions script ports buildTicks, syncs a shared crosshair and a
   assert.match(source, /getScreenCTM\(\)/);
 });
 
+test('crosshair shows a text label with the actual X/Y values at the hovered point', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /<text class="crosshairLabel" style="display:none">/);
+  assert.match(source, /<tspan class="crosshairLabelX"/);
+  assert.match(source, /<tspan class="crosshairLabelY"/);
+  assert.match(source, /labelX\.textContent = formatCrosshairValue\(point\[0\], payload\.xUnit\);/);
+  assert.match(source, /labelY\.textContent = formatCrosshairValue\(point\[1\], payload\.yUnit\);/);
+  // Flips side near the right edge so the label text never runs off the chart.
+  assert.match(source, /var nearRightEdge = pxNum > \(payload\.plotLeft \+ payload\.plotRight\) \/ 2;/);
+  assert.match(source, /if \(label\) label\.style\.display = 'none';/);
+});
+
 test('metric overlays reuse computeGrade once, exclude the chart\'s own metric and cap at two active', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /function buildOverlayMetrics\(records, maxPoints\)/);
