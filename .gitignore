@@ -142,3 +142,4 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 fit-visualizer-segmentation-plan.md
+.segment-probe.js

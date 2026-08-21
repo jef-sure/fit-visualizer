@@ -35,6 +35,16 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
     throw new Error('No Copilot language model is available. Check that GitHub Copilot Chat is installed and signed in.');
   }
 
+  // Copilot may hand out different models over time, so the log has to record which one answered.
+  const modelId = models[0].id || models[0].family || 'unknown';
+  const report = async (result) => {
+    try {
+      await options.onCompleted?.({ modelId, prompt, ...result });
+    } catch {
+      // Logging must never break an analysis.
+    }
+  };
+
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
       const response = await models[0].sendRequest([
@@ -48,6 +58,7 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
       if (!analysis.trim()) {
         throw new Error('Copilot returned an empty analysis.');
       }
+      await report({ response: analysis.trim() });
       return analysis.trim();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -56,6 +67,7 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
         await delay(retryDelayMs);
         continue;
       }
+      await report({ error: message });
       if (isRateLimitError(message)) {
         throw new Error('Copilot rate limit reached. Please wait a bit and try Analyze again.');
       }
@@ -64,6 +76,28 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
   }
 
   throw new Error('Copilot analysis failed unexpectedly.');
+}
+
+// Splits a prompt on its bold headings so the log shows which block dominates the request.
+function summarizePromptBlocks(prompt) {
+  const text = String(prompt || '');
+  const blocks = [];
+  let title = 'Preamble';
+  let start = 0;
+
+  const headingPattern = /^\*\*(.+?)\*\*/gm;
+  let match = headingPattern.exec(text);
+  while (match) {
+    if (match.index > start) {
+      blocks.push({ title, chars: match.index - start });
+    }
+    title = match[1].replace(/:$/, '');
+    start = match.index;
+    match = headingPattern.exec(text);
+  }
+  blocks.push({ title, chars: text.length - start });
+
+  return { totalChars: text.length, blocks: blocks.filter((block) => block.chars > 0) };
 }
 
 function isRateLimitError(message) {
@@ -335,4 +369,5 @@ module.exports = {
   generateAnalysisPrompt,
   generateAnalysisChatPrompt,
   requestCopilotAnalysis,
+  summarizePromptBlocks,
 };

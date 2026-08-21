@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const initSqlJs = require('../vendor/sql-wasm/sql-wasm.js');
-const { generateAnalysisPrompt, requestCopilotAnalysis } = require('../analysis');
+const { generateAnalysisPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('../analysis');
 const { ensureDatabaseSchema } = require('../database-schema');
 const {
   calculateAutoHeartRateProfile,
@@ -13,6 +13,8 @@ const {
 const {
   addEstimatedPowerWhenMissing,
   asNumber,
+  bottomUpSegment,
+  buildActivitySegments,
   calculateBanisterTrimp,
   calculateAutoFtp,
   calculateBikeStressScore,
@@ -37,8 +39,43 @@ const {
   estimatePowerFromMotion,
   haversineKm,
   normalizeRecordSpeeds,
+  segmentByGrade,
+  selectEffortSignal,
   selectFtpEstimate,
 } = require('../utils');
+
+// Terrain profile as [grade percent, seconds] pairs, sampled once per second.
+function terrainRecords(profile, options = {}) {
+  const records = [];
+  let elapsed = 0;
+  let altitudeM = 100;
+  let distanceKm = 0;
+  const speedKmh = options.speedKmh ?? 18;
+  const startLat = 52;
+  const startLon = 21;
+  const lonPerMetre = 1 / (111320 * Math.cos((startLat * Math.PI) / 180));
+
+  for (const [gradePct, seconds] of profile) {
+    for (let i = 0; i < seconds; i += 1) {
+      const metres = speedKmh / 3.6;
+      altitudeM += (metres * gradePct) / 100;
+      distanceKm += speedKmh / 3600;
+      records.push({
+        elapsed_time: elapsed,
+        speed: speedKmh,
+        distance: distanceKm,
+        altitude: altitudeM / 1000,
+        grade: gradePct,
+        heart_rate: options.heartRateFor ? options.heartRateFor(elapsed) : 140,
+        power: options.powerFor ? options.powerFor(elapsed) : undefined,
+        position_lat: startLat,
+        position_long: startLon + distanceKm * 1000 * lonPerMetre,
+      });
+      elapsed += 1;
+    }
+  }
+  return records;
+}
 
 // Straight west-to-east leg at a steady speed, roughly one point per second.
 function straightGpsRecords(count, speedKmh, options = {}) {
@@ -290,6 +327,127 @@ test('stops cover both zero-speed runs and recording gaps', () => {
 test('haversine distance matches a known one-degree separation', () => {
   assert.ok(Math.abs(haversineKm(52, 21, 53, 21) - 111.19) < 0.1);
   assert.equal(haversineKm(52, 21, 52, 21), 0);
+});
+
+test('grade segmentation labels terrain and absorbs short wobbles', () => {
+  const records = terrainRecords([[0.2, 120], [6, 300], [0.4, 180], [-7, 240], [0.1, 120]]);
+  const segments = segmentByGrade(records);
+
+  assert.deepEqual(segments.map((segment) => segment.type), ['flat', 'climb', 'flat', 'descent', 'flat']);
+  assert.equal(segments[0].startIndex, 0);
+  assert.equal(segments[segments.length - 1].endIndex, records.length - 1);
+
+  const wobbly = terrainRecords([[0.2, 120], [3.4, 8], [0.2, 120]]);
+  assert.deepEqual(segmentByGrade(wobbly).map((segment) => segment.type), ['flat']);
+});
+
+test('grade segmentation keeps stops as their own segments', () => {
+  const records = terrainRecords([[0.2, 90], [0.2, 90], [0.2, 90]]);
+  for (let i = 90; i < 130; i += 1) {
+    records[i].speed = 0;
+  }
+
+  const types = segmentByGrade(records, { stops: detectStops(records) }).map((segment) => segment.type);
+  assert.deepEqual(types, ['flat', 'stopped', 'flat']);
+});
+
+test('bottom-up segmentation finds level changes and ignores noise', () => {
+  const steady = new Array(40).fill(200).map((value, index) => value + (index % 2 ? 4 : -4));
+  assert.equal(bottomUpSegment(steady).length, 1);
+
+  const stepped = [...new Array(20).fill(150), ...new Array(20).fill(300)];
+  const parts = bottomUpSegment(stepped);
+  assert.equal(parts.length, 2);
+  assert.equal(parts[0].end, 19);
+  assert.equal(parts[1].start, 20);
+});
+
+test('effort signal follows the sport and the reliability of the segment', () => {
+  const climb = { type: 'climb', avgGrade: 6, hasPower: true, hasHeartRate: true };
+  assert.equal(selectEffortSignal(climb, { sport: 'cycling', powerSource: 'estimated' }).basis, 'vpower');
+  assert.equal(selectEffortSignal(climb, { sport: 'cycling', powerSource: 'measured' }).basis, 'power');
+
+  const flat = { type: 'flat', avgGrade: 0.5, hasPower: true, hasHeartRate: true };
+  assert.equal(selectEffortSignal(flat, { sport: 'cycling', powerSource: 'estimated' }).basis, 'hr');
+
+  const technical = { type: 'descent', avgGrade: -12, technical: true, hasPower: true, hasHeartRate: true };
+  assert.equal(selectEffortSignal(technical, { sport: 'cycling', powerSource: 'estimated' }).basis, 'none');
+
+  assert.equal(selectEffortSignal({ type: 'stopped' }, { sport: 'cycling' }).basis, 'none');
+  assert.equal(selectEffortSignal(climb, { sport: 'running', powerSource: 'estimated' }).basis, 'hr');
+  // Unknown sports fall back to heart rate instead of guessing with a cycling model.
+  assert.equal(selectEffortSignal(climb, { sport: 'hiking', powerSource: 'estimated' }).basis, 'hr');
+});
+
+test('activity segments combine terrain, effort basis and aggregates', () => {
+  const records = terrainRecords([[0.2, 180], [6, 300], [-9, 180]], {
+    speedKmh: 20,
+    powerFor: (elapsed) => (elapsed >= 180 && elapsed < 480 ? 240 : 120),
+    heartRateFor: (elapsed) => (elapsed >= 180 && elapsed < 480 ? 160 : 130),
+  });
+  const segments = buildActivitySegments(records, { sport: 'cycling', powerSource: 'estimated' });
+
+  assert.ok(segments.length >= 3);
+  assert.deepEqual(segments.map((segment) => segment.index), segments.map((segment, index) => index));
+  assert.equal(segments[0].startIndex, 0);
+  assert.equal(segments[segments.length - 1].endIndex, records.length - 1);
+
+  const climb = segments.find((segment) => segment.type === 'climb');
+  assert.equal(climb.effortBasis, 'vpower');
+  assert.ok(climb.avgGrade > 5 && climb.avgGrade < 7);
+  assert.ok(climb.elevGainM > 0);
+  // Terrain boundaries shift by a sample or two because of the hysteresis.
+  assert.ok(Math.abs(climb.avgPower - 240) <= 5, `expected ~240 W, got ${climb.avgPower}`);
+
+  const flat = segments.find((segment) => segment.type === 'flat');
+  assert.equal(flat.effortBasis, 'hr');
+  assert.ok(Math.abs(flat.avgHr - 130) <= 3, `expected ~130 bpm, got ${flat.avgHr}`);
+  // GPS never confirms a wheel sensor by default, so speed stays untrusted.
+  assert.equal(flat.speedConfidence, 'low');
+
+  assert.deepEqual(buildActivitySegments([], {}), []);
+});
+
+test('segments drop meaningless aggregates and drift', () => {
+  const records = terrainRecords([[0.2, 120], [0.2, 120], [0.2, 120]], {
+    powerFor: () => 150,
+  });
+  for (let i = 120; i < 180; i += 1) {
+    records[i].speed = 0;
+  }
+  const segments = buildActivitySegments(records, { sport: 'cycling', powerSource: 'estimated' });
+
+  const stop = segments.find((segment) => segment.type === 'stopped');
+  // Averaging speed or grade across a stop (or a recording gap) says nothing about the ride.
+  assert.equal(stop.avgSpeedKmh, null);
+  assert.equal(stop.avgGrade, null);
+  assert.equal(stop.avgPower, null);
+  assert.equal(stop.elevGainM, null);
+
+  // Half-vs-half drift on a two-minute stretch is noise, and HR-based segments have no Pw:HR at all.
+  assert.ok(segments.every((segment) => segment.hrDriftPct === null));
+});
+
+test('segmentation thresholds are exposed as settings', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const properties = manifest.contributes.configuration.properties;
+
+  for (const key of [
+    'fitVisualizer.segmentation.gradeThresholdPct',
+    'fitVisualizer.segmentation.gradeHysteresisPct',
+    'fitVisualizer.segmentation.minSegmentSeconds',
+    'fitVisualizer.segmentation.technicalGradePct',
+    'fitVisualizer.segmentation.effortWindowSeconds',
+    'fitVisualizer.segmentation.effortCostThreshold',
+    'fitVisualizer.segmentation.stopSpeedKmh',
+    'fitVisualizer.segmentation.stopMinSeconds',
+    'fitVisualizer.segmentation.gpsTrustMinKm',
+  ]) {
+    assert.ok(properties[key], `${key} must be configurable`);
+  }
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /thresholds: getSegmentationOptions\(\)/);
 });
 
 test('heart-rate zones use semantic order and stable boundaries', () => {
@@ -701,6 +859,77 @@ test('Copilot analysis reports unavailable and empty models', async () => {
     LanguageModelChatMessage: { User: (content) => content },
   };
   await assert.rejects(() => requestCopilotAnalysis(emptyResponse, 'test'), /empty analysis/);
+});
+
+test('Copilot request logging captures the model, the prompt and the reply', async () => {
+  const logged = [];
+  const vscode = {
+    lm: {
+      selectChatModels: async () => [{
+        id: 'gpt-test-1',
+        sendRequest: async () => ({ text: asyncChunks(['Analysed.']) }),
+      }],
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+
+  await requestCopilotAnalysis(vscode, 'Prompt body', { onCompleted: (entry) => logged.push(entry) });
+  assert.deepEqual(logged, [{ modelId: 'gpt-test-1', prompt: 'Prompt body', response: 'Analysed.' }]);
+
+  const failing = {
+    lm: {
+      selectChatModels: async () => [{
+        id: 'gpt-test-2',
+        sendRequest: async () => { throw new Error('boom'); },
+      }],
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+  const failures = [];
+  await assert.rejects(() => requestCopilotAnalysis(failing, 'Prompt body', {
+    onCompleted: (entry) => failures.push(entry),
+  }));
+  assert.equal(failures[0].error, 'boom');
+
+  // A broken logger must never take down an analysis.
+  const noisy = {
+    lm: {
+      selectChatModels: async () => [{ sendRequest: async () => ({ text: asyncChunks(['ok']) }) }],
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+  assert.equal(await requestCopilotAnalysis(noisy, 'p', {
+    onCompleted: () => { throw new Error('log failure'); },
+  }), 'ok');
+});
+
+test('prompt block sizes are reported per heading', () => {
+  const summary = summarizePromptBlocks([
+    'Analyze this workout.',
+    '',
+    '**This Workout:**',
+    '- Distance: 20 km',
+    '',
+    '**Segment Breakdown:**',
+    '1. climb',
+    '2. flat',
+  ].join('\n'));
+
+  assert.deepEqual(summary.blocks.map((block) => block.title), ['Preamble', 'This Workout', 'Segment Breakdown']);
+  assert.equal(summary.blocks.reduce((sum, block) => sum + block.chars, 0), summary.totalChars);
+  assert.ok(summary.blocks[2].chars > 0);
+});
+
+test('LLM request logging is configurable and wired into both call sites', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const properties = manifest.contributes.configuration.properties;
+  assert.equal(properties['fitVisualizer.logLlmRequests'].default, true);
+  assert.ok(properties['fitVisualizer.llmLogRetentionDays']);
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /kind: 'analysis', \.\.\.result/);
+  assert.match(source, /kind: 'chat', \.\.\.result/);
+  assert.match(source, /path\.join\(path\.dirname\(dbPath\), 'logs'\)/);
 });
 
 test('Copilot analysis retries once when rate limited and then succeeds', async () => {
