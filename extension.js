@@ -2059,6 +2059,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         var dataXs = payload.points.map(function (p) { return p[0]; });
         var line = svg.querySelector('.crosshair');
         var dot = svg.querySelector('.crosshairDot');
+        var label = svg.querySelector('.crosshairLabel');
+        var labelX = label && label.querySelector('.crosshairLabelX');
+        var labelY = label && label.querySelector('.crosshairLabelY');
         var capture = svg.querySelector('.crosshairCapture');
         var instance = { payload: payload, pxXs: pxXs, dataXs: dataXs, overlayGroup: svg.querySelector('.overlayGroup') };
         instances[svgId] = instance;
@@ -2066,7 +2069,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         instance.showAt = function (index) {
           if (index < 0 || index >= payload.points.length || !line || !dot) return;
           var point = payload.points[index];
-          var px = scaleX(payload, point[0]).toFixed(1);
+          var pxNum = scaleX(payload, point[0]);
+          var px = pxNum.toFixed(1);
           var py = scaleY(payload, point[1]).toFixed(1);
           line.setAttribute('x1', px);
           line.setAttribute('x2', px);
@@ -2074,10 +2078,23 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           dot.setAttribute('cx', px);
           dot.setAttribute('cy', py);
           dot.style.display = '';
+          if (label && labelX && labelY) {
+            // Anchored near the plot top (not the point itself) so it never overlaps the line/dot
+            // and never clips off the top/bottom edge regardless of the point's Y value.
+            var nearRightEdge = pxNum > (payload.plotLeft + payload.plotRight) / 2;
+            var anchorX = (nearRightEdge ? pxNum - 8 : pxNum + 8).toFixed(1);
+            label.setAttribute('text-anchor', nearRightEdge ? 'end' : 'start');
+            labelX.setAttribute('x', anchorX);
+            labelY.setAttribute('x', anchorX);
+            labelX.textContent = formatCrosshairValue(point[0], payload.xUnit);
+            labelY.textContent = formatCrosshairValue(point[1], payload.yUnit);
+            label.style.display = '';
+          }
         };
         instance.hide = function () {
           if (line) line.style.display = 'none';
           if (dot) dot.style.display = 'none';
+          if (label) label.style.display = 'none';
         };
 
         if (capture) {
@@ -2184,6 +2201,7 @@ function sharedCss() {
     .kmLabel { fill:var(--muted); font-size:9px; }
     .crosshair { stroke:color-mix(in srgb,var(--ink) 55%,transparent); stroke-width:1; pointer-events:none; }
     .crosshairDot { fill:var(--accent); stroke:var(--bg); stroke-width:1.5; pointer-events:none; }
+    .crosshairLabel { font-size:11px; font-weight:700; fill:var(--ink); paint-order:stroke; stroke:var(--card); stroke-width:3px; stroke-linejoin:round; pointer-events:none; }
     .crosshairCapture { cursor:crosshair; }
     .overlayControls { display:flex; gap:12px; flex-wrap:wrap; margin:4px 0 8px; font-size:0.82rem; color:var(--muted); }
     .overlayControls label { display:flex; align-items:center; gap:4px; cursor:pointer; }
@@ -2497,6 +2515,10 @@ function renderScaledLineChartSvg(chart, lineClass, xLabel, yLabel, addDistanceM
     <g class="overlayGroup"></g>
     <line class="crosshair" x1="0" y1="${chart.plotTop}" x2="0" y2="${chart.plotBottom}" style="display:none" />
     <circle class="crosshairDot" r="4" style="display:none" />
+    <text class="crosshairLabel" style="display:none">
+      <tspan class="crosshairLabelX" x="0" y="${chart.plotTop + 14}"></tspan>
+      <tspan class="crosshairLabelY" x="0" y="${chart.plotTop + 28}"></tspan>
+    </text>
     <rect class="crosshairCapture" x="${chart.plotLeft}" y="${chart.plotTop}" width="${chart.plotRight - chart.plotLeft}" height="${chart.plotBottom - chart.plotTop}" fill="transparent" />` : '';
 
   return `<svg${svgIdAttr} viewBox="0 0 ${chart.width} ${chart.height}" preserveAspectRatio="none" role="img" aria-label="line chart">
