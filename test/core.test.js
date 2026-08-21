@@ -450,6 +450,20 @@ test('wheel calibration integration: sample storage, recommendation gating and p
   assert.match(source, /const wheelCalibration = await getWheelCalibrationRecommendation\(dbPath\);/);
 });
 
+test('wheel calibration hint recomputes live from the typed value instead of waiting for Save Zones', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+
+  // The recommendation must not depend on a saved profile value: it reruns on every keystroke.
+  assert.match(source, /data-ratio="\$\{wheelCalibration\.ratio\}"/);
+  assert.match(source, /const ratio = parseFloat\(hint\.getAttribute\('data-ratio'\)\);/);
+  assert.match(source, /wheelInput\?\.addEventListener\('input', updateSuggestion\);/);
+  assert.match(source, /const recommended = Math\.round\(\(current \/ ratio\) \* 10\) \/ 10;/);
+  assert.match(source, /updateSuggestion\(\);\s*\}\(\)\);/);
+
+  // Applying the suggestion must not re-offer a second correction on top of the corrected value.
+  assert.match(source, /applyBtn\.style\.display = 'none';/);
+});
+
 test('grade segmentation labels terrain and absorbs short wobbles', () => {
   const records = terrainRecords([[0.2, 120], [6, 300], [0.4, 180], [-7, 240], [0.1, 120]]);
   const segments = segmentByGrade(records);
