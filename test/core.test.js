@@ -24,17 +24,41 @@ const {
   calculateNormalizedPower,
   calculateTrainingStressScore,
   calculateXPower,
+  computeGpsDerivedSpeed,
   computeGrade,
   deriveSpeedsFromDistance,
+  detectStops,
   downsamplePoints,
   escapeHtml,
+  estimateSpeedConfidence,
   formatHms,
   formatNumber,
   estimateFtpCandidates,
   estimatePowerFromMotion,
+  haversineKm,
   normalizeRecordSpeeds,
   selectFtpEstimate,
 } = require('../utils');
+
+// Straight west-to-east leg at a steady speed, roughly one point per second.
+function straightGpsRecords(count, speedKmh, options = {}) {
+  const startLat = options.startLat ?? 52.0;
+  const startLon = options.startLon ?? 21.0;
+  const lonPerMetre = 1 / (111320 * Math.cos((startLat * Math.PI) / 180));
+  const records = [];
+  for (let i = 0; i < count; i += 1) {
+    const metres = (speedKmh / 3.6) * i;
+    records.push({
+      elapsed_time: i,
+      speed: speedKmh,
+      distance: (speedKmh / 3600) * i,
+      altitude: 0.1,
+      position_lat: startLat,
+      position_long: startLon + metres * lonPerMetre,
+    });
+  }
+  return records;
+}
 
 function gradeFixtureRecords() {
   const altitudes = [100, 101, 102.5, 104, 105, 105.2, 105.1, 104, 102, 100.5, 100.4, 100.4];
@@ -195,6 +219,77 @@ test('record insert stores grade only for meaningful movement', () => {
   assert.match(source, /const grades = computeGrade\(records\);/);
   assert.match(source, /grade\.dt > 0 && grade\.dt <= 5 && grade\.distanceM >= 1\s*\?\s*roundTo\(grade\.grade \* 100, 2\)/);
   assert.match(source, /gradePct, null, null,/);
+});
+
+test('GPS derived speed reconstructs speed from positions alone', () => {
+  const records = straightGpsRecords(20, 30);
+  const gpsSpeeds = computeGpsDerivedSpeed(records);
+
+  assert.equal(gpsSpeeds.length, records.length);
+  assert.ok(Number.isNaN(gpsSpeeds[0]) || gpsSpeeds[0] > 0, 'first sample has no predecessor');
+  for (let i = 5; i < records.length - 5; i += 1) {
+    assert.ok(Math.abs(gpsSpeeds[i] - 30) < 1, `sample ${i} should be near 30 km/h, got ${gpsSpeeds[i]}`);
+  }
+});
+
+test('GPS derived speed accepts semicircle coordinates and skips missing fixes', () => {
+  const toSemicircles = (degrees) => Math.round((degrees * 2147483648) / 180);
+  const records = straightGpsRecords(12, 36).map((record, index) => ({
+    ...record,
+    position_lat: index === 4 ? null : toSemicircles(record.position_lat),
+    position_long: index === 4 ? null : toSemicircles(record.position_long),
+  }));
+  const gpsSpeeds = computeGpsDerivedSpeed(records);
+
+  assert.ok(Math.abs(gpsSpeeds[8] - 36) < 1.5, `expected ~36 km/h, got ${gpsSpeeds[8]}`);
+});
+
+test('speed confidence stays low unless the stretch is long, straight and consistent', () => {
+  const longStraight = straightGpsRecords(400, 30);
+  const trusted = estimateSpeedConfidence(longStraight);
+  assert.ok(trusted.includes('high'), 'a long clean straight should earn trust');
+
+  const short = estimateSpeedConfidence(straightGpsRecords(40, 30));
+  assert.ok(!short.includes('high'), 'a 300 m stretch is too short to average out GPS noise');
+
+  const drifting = longStraight.map((record) => ({ ...record, speed: record.speed * 1.25 }));
+  assert.ok(
+    !estimateSpeedConfidence(drifting).includes('high'),
+    'a systematic gap between wheel and GPS speed must not be trusted'
+  );
+
+  const winding = longStraight.map((record, index) => ({
+    ...record,
+    position_lat: record.position_lat + (index % 2 ? 0.0004 : -0.0004),
+  }));
+  assert.ok(!estimateSpeedConfidence(winding).includes('high'), 'a twisty track is not a trusted window');
+});
+
+test('stops cover both zero-speed runs and recording gaps', () => {
+  const records = [];
+  for (let i = 0; i < 20; i += 1) {
+    records.push({ elapsed_time: i, speed: 25 });
+  }
+  for (let i = 20; i < 45; i += 1) {
+    records.push({ elapsed_time: i, speed: 0 });
+  }
+  for (let i = 45; i < 50; i += 1) {
+    records.push({ elapsed_time: i, speed: 25 });
+  }
+  records.push({ elapsed_time: 400, speed: 25 });
+
+  const stops = detectStops(records);
+
+  assert.deepEqual(stops.map((stop) => [stop.startIndex, stop.endIndex, stop.durationS]), [
+    [20, 44, 24],
+    [49, 50, 351],
+  ]);
+  assert.deepEqual(detectStops([{ elapsed_time: 0, speed: 0 }, { elapsed_time: 3, speed: 0 }]), []);
+});
+
+test('haversine distance matches a known one-degree separation', () => {
+  assert.ok(Math.abs(haversineKm(52, 21, 53, 21) - 111.19) < 0.1);
+  assert.equal(haversineKm(52, 21, 52, 21), 0);
 });
 
 test('heart-rate zones use semantic order and stable boundaries', () => {

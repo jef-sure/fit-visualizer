@@ -345,6 +345,257 @@ function deriveSpeedsFromDistance(records) {
   return smoothSeries(raw, 5);
 }
 
+function normalizeCoordinate(raw, degreesLimit) {
+  const value = asNumber(raw);
+  if (!Number.isFinite(value)) {
+    return NaN;
+  }
+
+  if (Math.abs(value) <= degreesLimit) {
+    return value;
+  }
+
+  const fromSemicircles = (value * 180) / 2147483648;
+  if (Math.abs(fromSemicircles) <= degreesLimit) {
+    return fromSemicircles;
+  }
+
+  return NaN;
+}
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const r = 6371;
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return r * c;
+}
+
+function toRadians(value) {
+  return (value * Math.PI) / 180;
+}
+
+function gpsFixAt(records, index) {
+  const record = records[index];
+  if (!record || typeof record !== 'object') {
+    return null;
+  }
+  const elapsed = asNumber(record.elapsed_time);
+  const lat = normalizeCoordinate(record.position_lat, 90);
+  const lon = normalizeCoordinate(record.position_long, 180);
+  if (!Number.isFinite(elapsed) || !Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) {
+    return null;
+  }
+  return { elapsed, lat, lon };
+}
+
+// Speed from GPS positions only - the one signal independent of the wheel sensor.
+function computeGpsDerivedSpeed(records) {
+  if (!Array.isArray(records) || !records.length) {
+    return [];
+  }
+
+  const raw = new Array(records.length).fill(Number.NaN);
+  let previous = null;
+  for (let index = 0; index < records.length; index += 1) {
+    const fix = gpsFixAt(records, index);
+    if (!fix) {
+      continue;
+    }
+    if (previous) {
+      const dt = fix.elapsed - previous.elapsed;
+      if (dt > 0 && dt <= 30) {
+        raw[index] = (haversineKm(previous.lat, previous.lon, fix.lat, fix.lon) / dt) * 3600;
+      }
+    }
+    previous = fix;
+  }
+
+  return smoothSeries(raw, 5);
+}
+
+function median(values) {
+  const sorted = values.filter((value) => Number.isFinite(value)).sort((left, right) => left - right);
+  if (!sorted.length) {
+    return Number.NaN;
+  }
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+// Confidence in the recorded speed channel, per record. Defaults to 'low': GPS only earns
+// trust on a long, straight, clean stretch, because drift under tree cover accumulates
+// smoothly and never shows up as a single obvious jump.
+function estimateSpeedConfidence(records, options = {}) {
+  const verdicts = Array.isArray(records) ? records.map(() => 'low') : [];
+  if (!Array.isArray(records) || records.length < 2) {
+    return verdicts;
+  }
+
+  const windowSeconds = Number.isFinite(asNumber(options.windowSeconds)) ? asNumber(options.windowSeconds) : 180;
+  const minWindowKm = Number.isFinite(asNumber(options.minWindowKm)) ? asNumber(options.minWindowKm) : 1;
+  const tolerancePct = Number.isFinite(asNumber(options.tolerancePct)) ? asNumber(options.tolerancePct) : 5;
+  const minStraightness = Number.isFinite(asNumber(options.minStraightness)) ? asNumber(options.minStraightness) : 0.9;
+  const minCoverage = Number.isFinite(asNumber(options.minCoverage)) ? asNumber(options.minCoverage) : 0.9;
+  const maxAccelerationMs2 = Number.isFinite(asNumber(options.maxAccelerationMs2))
+    ? asNumber(options.maxAccelerationMs2) : 4;
+
+  const gpsSpeeds = computeGpsDerivedSpeed(records);
+
+  let windowStart = 0;
+  while (windowStart < records.length) {
+    const startFix = gpsFixAt(records, windowStart);
+    if (!startFix) {
+      windowStart += 1;
+      continue;
+    }
+
+    let windowEnd = windowStart;
+    while (windowEnd + 1 < records.length) {
+      const next = gpsFixAt(records, windowEnd + 1);
+      if (next && next.elapsed - startFix.elapsed > windowSeconds) {
+        break;
+      }
+      windowEnd += 1;
+    }
+
+    if (evaluateSpeedWindow(records, gpsSpeeds, windowStart, windowEnd, {
+      minWindowKm, tolerancePct, minStraightness, minCoverage, maxAccelerationMs2,
+    })) {
+      for (let index = windowStart; index <= windowEnd; index += 1) {
+        verdicts[index] = 'high';
+      }
+    }
+
+    windowStart = windowEnd + 1;
+  }
+
+  return verdicts;
+}
+
+function evaluateSpeedWindow(records, gpsSpeeds, startIndex, endIndex, limits) {
+  const fixes = [];
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    const fix = gpsFixAt(records, index);
+    if (fix) {
+      fixes.push({ ...fix, index });
+    }
+  }
+
+  if (fixes.length < 3 || fixes.length < (endIndex - startIndex + 1) * limits.minCoverage) {
+    return false;
+  }
+
+  let pathKm = 0;
+  for (let i = 1; i < fixes.length; i += 1) {
+    pathKm += haversineKm(fixes[i - 1].lat, fixes[i - 1].lon, fixes[i].lat, fixes[i].lon);
+
+    const previousSpeed = asNumber(gpsSpeeds[fixes[i - 1].index]);
+    const currentSpeed = asNumber(gpsSpeeds[fixes[i].index]);
+    const dt = fixes[i].elapsed - fixes[i - 1].elapsed;
+    if (Number.isFinite(previousSpeed) && Number.isFinite(currentSpeed) && dt > 0
+      && Math.abs(currentSpeed - previousSpeed) / 3.6 > limits.maxAccelerationMs2 * dt) {
+      return false;
+    }
+  }
+
+  if (pathKm < limits.minWindowKm) {
+    return false;
+  }
+
+  const straightKm = haversineKm(fixes[0].lat, fixes[0].lon, fixes[fixes.length - 1].lat, fixes[fixes.length - 1].lon);
+  if (straightKm / pathKm < limits.minStraightness) {
+    return false;
+  }
+
+  const deviations = [];
+  for (const fix of fixes) {
+    const sensorSpeed = asNumber(records[fix.index]?.speed);
+    const gpsSpeed = asNumber(gpsSpeeds[fix.index]);
+    if (Number.isFinite(sensorSpeed) && Number.isFinite(gpsSpeed)) {
+      deviations.push(Math.abs(gpsSpeed - sensorSpeed) / Math.max(sensorSpeed, 1));
+    }
+  }
+
+  if (deviations.length < fixes.length * limits.minCoverage) {
+    return false;
+  }
+
+  return median(deviations) * 100 <= limits.tolerancePct;
+}
+
+// Stops and recording gaps, so pauses stop blurring segment averages.
+function detectStops(records, options = {}) {
+  if (!Array.isArray(records) || !records.length) {
+    return [];
+  }
+
+  const speedThresholdKmh = Number.isFinite(asNumber(options.speedThresholdKmh))
+    ? asNumber(options.speedThresholdKmh) : 1;
+  const minDurationSeconds = Number.isFinite(asNumber(options.minDurationSeconds))
+    ? asNumber(options.minDurationSeconds) : 10;
+  const gapSeconds = Number.isFinite(asNumber(options.gapSeconds)) ? asNumber(options.gapSeconds) : 10;
+
+  const elapsedAt = (index) => asNumber(records[index]?.elapsed_time);
+  const intervals = [];
+  const pushInterval = (startIndex, endIndex, minimumSeconds) => {
+    const startElapsed = elapsedAt(startIndex);
+    const endElapsed = elapsedAt(endIndex);
+    if (!Number.isFinite(startElapsed) || !Number.isFinite(endElapsed)) {
+      return;
+    }
+    const durationS = endElapsed - startElapsed;
+    if (durationS >= minimumSeconds) {
+      intervals.push({ startIndex, endIndex, startElapsed, endElapsed, durationS });
+    }
+  };
+
+  let runStart = null;
+  for (let index = 0; index < records.length; index += 1) {
+    const speed = asNumber(records[index]?.speed);
+    const isStopped = Number.isFinite(speed) && speed <= speedThresholdKmh;
+    if (isStopped) {
+      if (runStart === null) {
+        runStart = index;
+      }
+      continue;
+    }
+    if (runStart !== null) {
+      pushInterval(runStart, index - 1, minDurationSeconds);
+      runStart = null;
+    }
+  }
+  if (runStart !== null) {
+    pushInterval(runStart, records.length - 1, minDurationSeconds);
+  }
+
+  // A recording gap is an auto-paused stop even though no zero-speed samples exist.
+  for (let index = 1; index < records.length; index += 1) {
+    pushInterval(index - 1, index, gapSeconds);
+  }
+
+  intervals.sort((left, right) => left.startIndex - right.startIndex || left.endIndex - right.endIndex);
+
+  const merged = [];
+  for (const interval of intervals) {
+    const last = merged[merged.length - 1];
+    if (last && interval.startIndex <= last.endIndex) {
+      if (interval.endIndex > last.endIndex) {
+        last.endIndex = interval.endIndex;
+        last.endElapsed = interval.endElapsed;
+        last.durationS = last.endElapsed - last.startElapsed;
+      }
+      continue;
+    }
+    merged.push({ ...interval });
+  }
+
+  return merged;
+}
+
 function normalizeRecordSpeeds(records) {
   if (!Array.isArray(records) || !records.length) {
     return [];
@@ -749,9 +1000,14 @@ module.exports = {
   calculateHistoricalMeanMaximalPower,
   calculateMeanMaximalPower,
   calculateNormalizedPower,
+  computeGpsDerivedSpeed,
   computeGrade,
+  detectStops,
   estimateFtpCandidates,
   estimatePowerFromMotion,
+  estimateSpeedConfidence,
+  haversineKm,
+  normalizeCoordinate,
   selectFtpEstimate,
   calculateTrainingStressScore,
   calculateXPower,
