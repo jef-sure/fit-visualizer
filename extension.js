@@ -39,12 +39,14 @@ const {
   estimateSpeedConfidence,
   formatHms,
   formatNumber,
+  groupSimilarSegments,
   haversineKm,
   maxOrZero,
   normalizeCoordinate,
   normalizeRecordSpeeds,
   roundTo,
   safeJson,
+  segmentLineBudget,
   selectFtpEstimate,
   smoothSeries,
   toSqlStr,
@@ -53,7 +55,7 @@ const {
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 7;
+const ANALYSIS_VERSION = 8;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
 const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
@@ -2524,13 +2526,34 @@ async function runActivityAnalysis(dbPath, activityId, force) {
   const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time);
   const previousAnalysis = (await getLatestAnalysisAnyVersion(dbPath, numId))?.text || null;
   const followUpHistory = await getAnalysisChatFromDb(dbPath, numId);
-  const prompt = generateAnalysisPrompt(analysisData, summary, hrConfig, previousAnalysis, followUpHistory);
+  const recentHistory = await getRecentAnalysesContext(dbPath, numId, analysisData.sessions?.[0]?.start_time);
+  const prompt = generateAnalysisPrompt(analysisData, summary, hrConfig, previousAnalysis, followUpHistory, recentHistory);
   const analysis = await requestCopilotAnalysis(vscode, prompt, {
-    onCompleted: (result) => logLlmRequest(dbPath, { activityId: numId, kind: 'analysis', ...result }),
+    onCompleted: (result) => logLlmRequest(dbPath, {
+      activityId: numId,
+      kind: 'analysis',
+      warnings: segmentBudgetWarnings(analysisData),
+      ...result,
+    }),
   });
   await storeAnalysisInDb(dbPath, numId, analysis);
 
   return analysis;
+}
+
+// Overshooting the budget means the segmentation thresholds misfired; the list is logged, never truncated.
+function segmentBudgetWarnings(analysisData) {
+  const segments = Array.isArray(analysisData?.segments) ? analysisData.segments : [];
+  if (!segments.length) {
+    return [];
+  }
+
+  const rows = groupSimilarSegments(segments);
+  const durationS = segments[segments.length - 1].endElapsed - segments[0].startElapsed;
+  const maxLines = segmentLineBudget(durationS);
+  return rows.length > maxLines
+    ? [`Segment breakdown produced ${rows.length} lines for ${(durationS / 3600).toFixed(2)} h (budget ${maxLines}); review the segmentation thresholds.`]
+    : [];
 }
 
 function getLlmLogConfig() {
@@ -2562,6 +2585,7 @@ async function logLlmRequest(dbPath, entry) {
     analysisVersion: ANALYSIS_VERSION,
     promptChars: promptSummary.totalChars,
     promptBlocks: promptSummary.blocks,
+    warnings: entry.warnings?.length ? entry.warnings : undefined,
     prompt: entry.prompt,
     response: entry.response ?? null,
     error: entry.error ?? null,
@@ -3104,6 +3128,73 @@ async function getLatestAnalysisAnyVersion(dbPath, activityId) {
     return null;
   } finally {
     stmt?.free();
+    db.close();
+  }
+}
+
+// Analyses of *other*, earlier activities, so the model sees a trend instead of judging each ride in a vacuum.
+async function getRecentAnalysesContext(dbPath, activityId, referenceDate, windowDays = 30) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  const reference = toSqlStr(referenceDate);
+  if (!reference) {
+    db.close();
+    return [];
+  }
+
+  const columns = `a.id AS id, a.start_time AS start_time, a.total_distance_km AS total_distance_km,
+      a.total_timer_s AS total_timer_s, a.training_stress_score AS training_stress_score,
+      aa.analysis_text AS analysis_text, aac.chat_json AS chat_json`;
+  const from = `FROM activities a
+      JOIN activity_analysis aa ON aa.activity_id = a.id
+      LEFT JOIN activity_analysis_chat aac ON aac.activity_id = a.id`;
+
+  const read = (sql, params) => {
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    const rows = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      let chatCount = 0;
+      try {
+        const parsed = JSON.parse(row.chat_json || '[]');
+        chatCount = Array.isArray(parsed) ? parsed.filter((entry) => entry?.role === 'user').length : 0;
+      } catch {
+        chatCount = 0;
+      }
+      rows.push({
+        activityId: Number(row.id),
+        startTime: row.start_time,
+        distanceKm: row.total_distance_km,
+        durationS: row.total_timer_s,
+        trainingStressScore: row.training_stress_score,
+        analysisText: row.analysis_text,
+        chatCount,
+      });
+    }
+    stmt.free();
+    return rows;
+  };
+
+  try {
+    const recent = read(
+      `SELECT ${columns} ${from}
+       WHERE a.id != ? AND a.start_time >= date(?, '-${Number(windowDays) || 30} days') AND a.start_time < ?
+       ORDER BY a.start_time ASC`,
+      [activityId, reference, reference]
+    );
+    if (recent.length) {
+      return recent;
+    }
+
+    return read(
+      `SELECT ${columns} ${from}
+       WHERE a.id != ? AND a.start_time < ?
+       ORDER BY a.start_time DESC
+       LIMIT 1`,
+      [activityId, reference]
+    );
+  } finally {
     db.close();
   }
 }
