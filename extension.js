@@ -1316,13 +1316,13 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const riderMassValue = escapeHtml(athleteProfile?.riderMassKg || '');
   const bikeMassValue = escapeHtml(athleteProfile?.bikeMassKg || '');
   const wheelCircumferenceValue = escapeHtml(athleteProfile?.wheelCircumferenceMm || '');
-  const wheelCalibrationHint = wheelCalibration ? `<div class="calibrationHint" id="${mapId}WheelHint">
+  // Recomputed live from whatever is typed in the field below (client script), not only after Save Zones -
+  // waiting for a round trip to see a number was the confusing part.
+  const wheelCalibrationHint = wheelCalibration ? `<div class="calibrationHint" id="${mapId}WheelHint" data-ratio="${wheelCalibration.ratio}">
       Based on recent rides (${wheelCalibration.trustedDistanceKm} km of trusted GPS distance), the recorded distance looks
       ${wheelCalibration.deviationPct > 0 ? 'about ' + wheelCalibration.deviationPct + '% long' : 'about ' + Math.abs(wheelCalibration.deviationPct) + '% short'}.
-      ${wheelCalibration.recommendedCircumferenceMm != null
-    ? `Wheel circumference is probably closer to <strong>${wheelCalibration.recommendedCircumferenceMm} mm</strong> than ${wheelCalibration.currentCircumferenceMm} mm.
-        <button type="button" id="${mapId}ApplyWheelHint">Use ${wheelCalibration.recommendedCircumferenceMm} mm</button>`
-    : 'Enter your current wheel circumference below to see a suggested value.'}
+      <span id="${mapId}WheelSuggestion"></span>
+      <button type="button" id="${mapId}ApplyWheelHint" style="display:none"></button>
       <button type="button" id="${mapId}DismissWheelHint">Dismiss</button>
     </div>` : '';
   const powerMetricSuffix = primaryPower.source === 'estimated' ? ' (estimated)' : '';
@@ -1704,14 +1704,35 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       (function () {
         const hint = document.getElementById('${mapId}WheelHint');
         if (!hint) return;
+        const ratio = parseFloat(hint.getAttribute('data-ratio'));
+        const suggestionEl = document.getElementById('${mapId}WheelSuggestion');
         const applyBtn = document.getElementById('${mapId}ApplyWheelHint');
         const dismissBtn = document.getElementById('${mapId}DismissWheelHint');
         const wheelInput = document.getElementById('${mapId}WheelCircumference');
+
+        // Recomputes on every keystroke: no need to save first to see whether a number appears.
+        function updateSuggestion() {
+          const current = Number(wheelInput.value);
+          if (!wheelInput.value || !Number.isFinite(current) || current <= 0) {
+            suggestionEl.textContent = 'Type your current wheel circumference above to see a suggested value.';
+            applyBtn.style.display = 'none';
+            return;
+          }
+          const recommended = Math.round((current / ratio) * 10) / 10;
+          suggestionEl.innerHTML = 'Wheel circumference is probably closer to <strong>' + recommended + ' mm</strong> than ' + current + ' mm. Click Save Zones to keep it.';
+          applyBtn.textContent = 'Use ' + recommended + ' mm';
+          applyBtn.dataset.recommended = String(recommended);
+          applyBtn.style.display = '';
+        }
+
+        wheelInput?.addEventListener('input', updateSuggestion);
         applyBtn?.addEventListener('click', () => {
-          if (wheelInput) wheelInput.value = ${wheelCalibration?.recommendedCircumferenceMm ?? 'null'};
-          hint.remove();
+          if (wheelInput && applyBtn.dataset.recommended) wheelInput.value = applyBtn.dataset.recommended;
+          suggestionEl.textContent = 'Applied. Click Save Zones to keep it.';
+          applyBtn.style.display = 'none';
         });
         dismissBtn?.addEventListener('click', () => hint.remove());
+        updateSuggestion();
       }());
 
       if (analyzeBtn) {
