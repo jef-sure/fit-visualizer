@@ -1,8 +1,8 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.1.5",
-  "description": "Visualize .fit activity files with charts and summary stats",
+  "version": "0.1.6",
+  "description": "Visualize cycling and running FIT files and get AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
     "vscode": "^1.95.0"
@@ -169,7 +169,13 @@
     "fit",
     "garmin",
     "cycling",
-    "visualization"
+    "running",
+    "visualization",
+    "wahoo",
+    "polar",
+    "coros",
+    "cycplus",
+    "copilot"
   ],
   "author": "",
   "license": "ISC",
