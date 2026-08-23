@@ -22,6 +22,7 @@ FIT Visualizer builds a local ride database and gives you fast charts, route map
 ## Requirements
 
 - GitHub Copilot Chat, installed and signed in — AI analysis runs through it. Everything else (charts, map, segmentation, zones, calibration) works without it.
+- Own a Cycplus M1 bike computer? [cycplusSync](https://github.com/jef-sure/cycplusSync) pulls `.fit` files off it over Bluetooth onto your disk, so you can then index them here.
 
 ## Quick Start
 
