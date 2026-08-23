@@ -1,8 +1,20 @@
 # FIT Visualizer
 
-Visualize and analyze cycling and running FIT files directly in VS Code.
+**A platform-independent, local-first FIT activity viewer and training analyzer for VS Code.**
 
-FIT Visualizer builds a local ride database and gives you fast charts, route maps, ride comparisons, heart-rate zones, automatic effort segmentation, and AI-assisted activity analysis grounded in your own training history.
+Explore your cycling and running activities directly in VS Code, including GPS tracks, elevation, heart rate, cadence, power, effort segmentation, historical comparisons, and optional AI-assisted analysis.
+
+![FIT Visualizer](images/5.png)
+
+## Why FIT Visualizer?
+
+FIT Visualizer started as a personal project.
+
+I wanted a simple way to view and analyze my own FIT activities on Linux, but I couldn't find a tool that worked well for me. So I decided to build one myself, with a focus on keeping my activity data local and making it easy to explore from VS Code.
+
+The project has grown from a simple FIT viewer into a local activity database and training-analysis tool.
+
+It is still actively evolving, driven primarily by real-world activities and use cases.
 
 ## Highlights
 
@@ -18,6 +30,19 @@ FIT Visualizer builds a local ride database and gives you fast charts, route map
 - Save dated heart-rate zone profiles
 - Generate AI analysis of the current ride in the context of comparable past rides, recent training load, and personal records
 - Re-analyze activities in bulk after an update changes how analysis works, instead of doing it one by one
+
+![FIT Visualizer](images/1.png)
+
+![FIT Visualizer](images/2.png)
+
+![FIT Visualizer](images/3.png)
+
+![FIT Visualizer](images/4.png)
+
+![FIT Visualizer](images/5.png)
+
+![FIT Visualizer](images/6.png)
+
 
 ## Requirements
 
