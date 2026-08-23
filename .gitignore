@@ -141,7 +141,6 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
-fit-visualizer-segmentation-plan.md
+fit-visualizer-segmentation-plan*.md
 .segment-probe.js
 .prompt-probe.js
-fit-visualizer-segmentation-plan (5).md

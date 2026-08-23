@@ -178,7 +178,7 @@
     "copilot"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/jef-sure/fit-visualizer.git"
