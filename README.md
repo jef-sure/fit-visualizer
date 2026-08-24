@@ -4,13 +4,13 @@
 
 Explore your cycling and running activities directly in VS Code, including GPS tracks, elevation, heart rate, cadence, power, effort segmentation, historical comparisons, and optional AI-assisted analysis.
 
-![FIT Visualizer](images/5.png)
+![FIT Visualizer Summary](images/1.png)
 
 ## Why FIT Visualizer?
 
 FIT Visualizer started as a personal project.
 
-I wanted a simple way to view and analyze my own FIT activities on Linux, but I couldn't find a tool that worked well for me. So I decided to build one myself, with a focus on keeping my activity data local and making it easy to explore from VS Code.
+I wanted a simple way to view and analyze my own FIT activities on Linux, but I couldn't find a tool that worked well for me. So I decided to build one myself, with a focus on keeping my activity data local and making it easy to explore in VS Code.
 
 The project has grown from a simple FIT viewer into a local activity database and training-analysis tool.
 
@@ -18,8 +18,8 @@ It is still actively evolving, driven primarily by real-world activities and use
 
 ## Highlights
 
-- Open FIT files in a custom visual editor
-- Auto-index rides into local SQLite storage
+- Open FIT files in an interactive visual editor
+- Auto-index activities into local SQLite storage
 - Compare two activities in one view
 - Speed, heart rate, and altitude charts by distance — with adaptive axis labels that add detail as you resize
 - Overlay any two extra metrics (grade, altitude, speed, heart rate) on top of a chart
@@ -31,22 +31,21 @@ It is still actively evolving, driven primarily by real-world activities and use
 - Generate AI analysis of the current ride in the context of comparable past rides, recent training load, and personal records
 - Re-analyze activities in bulk after an update changes how analysis works, instead of doing it one by one
 
-![FIT Visualizer](images/1.png)
+![FIT Activity Summary](images/1.png)
 
-![FIT Visualizer](images/2.png)
+![HR Zones and Speed](images/2.png)
 
-![FIT Visualizer](images/3.png)
+![HR Zones](images/3.png)
 
-![FIT Visualizer](images/4.png)
+![Altitude](images/4.png)
 
-![FIT Visualizer](images/5.png)
+![Interactive map](images/5.png)
 
-![FIT Visualizer](images/6.png)
-
+![AI Analysis](images/6.png)
 
 ## Requirements
 
-- GitHub Copilot Chat, installed and signed in — AI analysis runs through it. Everything else (charts, map, segmentation, zones, calibration) works without it.
+- GitHub Copilot Chat, installed and signed in, for AI analysis. Everything else (charts, map, segmentation, zones, calibration) works without it.
 - Own a Cycplus M1 bike computer? [cycplusSync](https://github.com/jef-sure/cycplusSync) pulls `.fit` files off it over Bluetooth onto your disk, so you can then index them here.
 
 ## Quick Start
@@ -55,7 +54,7 @@ It is still actively evolving, driven primarily by real-world activities and use
 2. Run **FIT: Index New Files**.
 3. Open a FIT file or run **FIT: Browse Loaded Data**.
 4. (Optional) Configure your Heart Rate Zone Profile.
-5. Click **Analyze Activity**.
+5. Click **Analyze Activity** to generate the activity analysis.
 
 ## Commands
 
@@ -86,6 +85,8 @@ If your bike uses a wheel speed sensor, its distance depends on a configured whe
 
 ## AI-Assisted Analysis
 
+AI analysis is optional; the rest of FIT Visualizer works without GitHub Copilot.
+
 Analysis runs through GitHub Copilot's chat models (whichever model your Copilot picker is currently using — this can change over time, and each request logs which one answered). Analysis considers:
 
 - The current ride's own stats and segment breakdown
@@ -103,26 +104,52 @@ Prompts and responses are logged locally (see **Settings**) so you can review ex
 
 ## Settings
 
-| Setting | Default | Purpose |
-|---|---|---|
-| `fitVisualizer.maxHeartRate` | — | Legacy fallback max HR; prefer a dated zone profile in the activity view. |
-| `fitVisualizer.logLlmRequests` | `true` | Write each Copilot prompt/response to `.fit-visualizer/logs`. |
-| `fitVisualizer.llmLogRetentionDays` | `30` | Delete request logs older than this; `0` keeps them indefinitely. |
-| `fitVisualizer.segmentation.gradeThresholdPct` | `2.5` | Grade (%) separating climbs/descents from flat terrain. |
-| `fitVisualizer.segmentation.gradeHysteresisPct` | `0.5` | Extra margin required to switch terrain type, to stop flapping right at the threshold. |
-| `fitVisualizer.segmentation.minSegmentSeconds` | `45` | Shorter segments get merged into a neighbor. |
-| `fitVisualizer.segmentation.technicalGradePct` | `-8` | Descent grade below which an erratic speed trace marks the segment as technical (no effort estimate). |
-| `fitVisualizer.segmentation.effortWindowSeconds` | `10` | Averaging window before splitting a segment into intervals. |
-| `fitVisualizer.segmentation.effortCostThreshold` | — | Merge-cost limit for interval detection; left empty, it's derived from the ride's own noise level. |
-| `fitVisualizer.segmentation.stopSpeedKmh` | `1` | Speed at/below which a record counts as stopped. |
-| `fitVisualizer.segmentation.stopMinSeconds` | `10` | Minimum duration to count as a stop or auto-paused gap. |
-| `fitVisualizer.segmentation.gpsTrustMinKm` | `1` | Minimum continuous, straight distance before a GPS window can confirm — or calibrate against — the recorded speed. |
+Most settings can be left at their defaults. Segmentation thresholds are mainly useful if your terrain or riding style differs significantly from typical road/gravel riding.
 
-Segmentation thresholds are tuned for typical road/gravel riding; if your terrain is very different (very short punchy climbs, near-constant technical trail), expect to adjust them.
+| Setting                                          | Default | Purpose                                                                                                            |
+| ------------------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------ |
+| `fitVisualizer.maxHeartRate`                     | —       | Legacy fallback max HR; prefer a dated zone profile in the activity view.                                          |
+| `fitVisualizer.logLlmRequests`                   | `true`  | Write each Copilot prompt/response to `.fit-visualizer/logs`.                                                      |
+| `fitVisualizer.llmLogRetentionDays`              | `30`    | Delete request logs older than this; `0` keeps them indefinitely.                                                  |
+| `fitVisualizer.segmentation.gradeThresholdPct`   | `2.5`   | Grade (%) separating climbs/descents from flat terrain.                                                            |
+| `fitVisualizer.segmentation.gradeHysteresisPct`  | `0.5`   | Extra margin required to switch terrain type, to stop flapping right at the threshold.                             |
+| `fitVisualizer.segmentation.minSegmentSeconds`   | `45`    | Shorter segments get merged into a neighbor.                                                                       |
+| `fitVisualizer.segmentation.technicalGradePct`   | `-8`    | Descent grade below which an erratic speed trace marks the segment as technical (no effort estimate).              |
+| `fitVisualizer.segmentation.effortWindowSeconds` | `10`    | Averaging window before splitting a segment into intervals.                                                        |
+| `fitVisualizer.segmentation.effortCostThreshold` | —       | Merge-cost limit for interval detection; left empty, it's derived from the ride's own noise level.                 |
+| `fitVisualizer.segmentation.stopSpeedKmh`        | `1`     | Speed at/below which a record counts as stopped.                                                                   |
+| `fitVisualizer.segmentation.stopMinSeconds`      | `10`    | Minimum duration to count as a stop or auto-paused gap.                                                            |
+| `fitVisualizer.segmentation.gpsTrustMinKm`       | `1`     | Minimum continuous, straight distance before a GPS window can confirm — or calibrate against — the recorded speed. |
 
 ## Local Data
 
+FIT Visualizer keeps your activity data local to your workspace.
+
 - Database: `.fit-visualizer/fit-data.sqlite`
-- Copilot request/response logs: `.fit-visualizer/logs` (see `logLlmRequests`/`llmLogRetentionDays` above)
+- Copilot request/response logs: `.fit-visualizer/logs`
 - Scope: workspace-local (or selected folder)
-- Indexed rides persist between sessions
+- Indexed activities persist between sessions
+
+Your original `.fit` files are not uploaded or copied to a remote service by FIT Visualizer.
+
+AI analysis is optional. When enabled, the information required for analysis is sent through GitHub Copilot according to your Copilot configuration.
+
+When AI-assisted analysis is enabled, FIT Visualizer builds an analysis context from the activity rather than sending the original FIT file. Some basic activity information, such as date, duration and distance, is included directly. Most of the context consists of derived and segmented data, where segments group parts of the activity with a similar effort profile, together with training metrics and other analysis results.
+
+### Privacy
+
+FIT files can contain sensitive information, including GPS coordinates, timestamps, heart-rate data, device information, and your training history.
+
+FIT Visualizer processes and stores indexed activity data locally. No cloud service is required for browsing, charts, maps, segmentation, zones, or calibration.
+
+AI-assisted analysis is different: when enabled, the analysis context is sent through GitHub Copilot. This can include data from the current activity and relevant historical activities.
+
+If `fitVisualizer.logLlmRequests` is enabled, the Copilot prompts and responses are also stored locally in `.fit-visualizer/logs`.
+
+Review your Copilot configuration and the logging setting before using AI analysis with activities containing sensitive information.
+
+## Demo Activity
+
+The screenshots in this README use a public cycling activity from the [kuperov/fit](https://github.com/kuperov/fit) repository.
+
+The activity contains a real GPS track and a substantial climbing section, making it a useful example for exploring FIT Visualizer's map, elevation, segmentation, and analysis features.
