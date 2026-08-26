@@ -16,6 +16,23 @@ The project has grown from a simple FIT viewer into a local activity database an
 
 It is still actively evolving, driven primarily by real-world activities and use cases.
 
+### Philosophy
+
+FIT Visualizer has a different center of gravity than most FIT tools:
+
+**local FIT viewer → automatic load-oriented segmentation → personal history → conversational analysis**
+
+It's built to answer *"What happened on this ride, and what does that mean in the context of my previous rides?"* rather than *"Give me the most complete possible set of sports metrics."*
+
+That shapes what you ask it:
+
+- Why was this ride harder?
+- Which part of the ride explains the difference?
+- Is this similar to my previous rides?
+- Is there evidence my endurance is improving?
+
+FIT Visualizer is not trying to replace a power-analysis workbench. It is trying to make your own activity history easier to understand.
+
 ## Highlights
 
 - Open FIT files in an interactive visual editor
