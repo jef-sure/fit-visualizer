@@ -63,7 +63,20 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 ## Requirements
 
 - GitHub Copilot Chat, installed and signed in, for AI analysis. Everything else (charts, map, segmentation, zones, calibration) works without it.
-- Own a Cycplus M1 bike computer? [cycplusSync](https://github.com/jef-sure/cycplusSync) pulls `.fit` files off it over Bluetooth onto your disk, so you can then index them here.
+
+## What's a FIT File, and How Do I Get One?
+
+FIT (Flexible and Interoperable Data Transfer) is the binary format most GPS bike computers, sport watches, and fitness apps use to record an activity — GPS position, speed, heart rate, power, cadence, and more, one record per second or so. It was originally created by Garmin, but it's an open format used far beyond Garmin devices.
+
+How to get `.fit` files off common devices:
+
+- **Garmin**: Garmin Connect → activity → **⋯** → *Export Original*. Or plug the device into USB and copy files from `GARMIN/Activity`.
+- **Wahoo**: ELEMNT app → ride → share/export.
+- **Polar**: Polar Flow → activity → export, choose FIT.
+- **Suunto, COROS, Bryton, Sigma, and most other GPS computers/watches**: their companion app usually has an export option; if not, connecting over USB often exposes an `Activities`/`Garmin`-style folder with raw `.fit` files.
+- **Zwift**: saved automatically after each ride, under `Documents/Zwift/Activities`.
+- **Strava**: if the ride was uploaded from a device (not manually entered), *Export Original* on the activity page gives you back the original `.fit` file.
+- **Cycplus M1** (no companion app): see [cycplusSync](https://github.com/jef-sure/cycplusSync) above.
 
 ## Quick Start
 
