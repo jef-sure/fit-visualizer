@@ -132,25 +132,6 @@ Prompts and responses are logged locally (see **Settings**) so you can review ex
 - Auto-calc uses sex, age, resting HR, and observed max HR
 - Manual overrides can be saved and reused
 
-## Settings
-
-Most settings can be left at their defaults. Segmentation thresholds are mainly useful if your terrain or riding style differs significantly from typical road/gravel riding.
-
-| Setting                                          | Default | Purpose                                                                                                            |
-| ------------------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------ |
-| `fitVisualizer.maxHeartRate`                     | —       | Legacy fallback max HR; prefer a dated zone profile in the activity view.                                          |
-| `fitVisualizer.logLlmRequests`                   | `true`  | Write each Copilot prompt/response to `.fit-visualizer/logs`.                                                      |
-| `fitVisualizer.llmLogRetentionDays`              | `30`    | Delete request logs older than this; `0` keeps them indefinitely.                                                  |
-| `fitVisualizer.segmentation.gradeThresholdPct`   | `2.5`   | Grade (%) separating climbs/descents from flat terrain.                                                            |
-| `fitVisualizer.segmentation.gradeHysteresisPct`  | `0.5`   | Extra margin required to switch terrain type, to stop flapping right at the threshold.                             |
-| `fitVisualizer.segmentation.minSegmentSeconds`   | `45`    | Shorter segments get merged into a neighbor.                                                                       |
-| `fitVisualizer.segmentation.technicalGradePct`   | `-8`    | Descent grade below which an erratic speed trace marks the segment as technical (no effort estimate).              |
-| `fitVisualizer.segmentation.effortWindowSeconds` | `10`    | Averaging window before splitting a segment into intervals.                                                        |
-| `fitVisualizer.segmentation.effortCostThreshold` | —       | Merge-cost limit for interval detection; left empty, it's derived from the ride's own noise level.                 |
-| `fitVisualizer.segmentation.stopSpeedKmh`        | `1`     | Speed at/below which a record counts as stopped.                                                                   |
-| `fitVisualizer.segmentation.stopMinSeconds`      | `10`    | Minimum duration to count as a stop or auto-paused gap.                                                            |
-| `fitVisualizer.segmentation.gpsTrustMinKm`       | `1`     | Minimum continuous, straight distance before a GPS window can confirm — or calibrate against — the recorded speed. |
-
 ## Local Data
 
 FIT Visualizer keeps your activity data local to your workspace.
@@ -183,3 +164,22 @@ Review your Copilot configuration and the logging setting before using AI analys
 The screenshots in this README use a public cycling activity from the [kuperov/fit](https://github.com/kuperov/fit) repository.
 
 The activity contains a real GPS track and a substantial climbing section, making it a useful example for exploring FIT Visualizer's map, elevation, segmentation, and analysis features.
+
+## Settings
+
+Most settings can be left at their defaults. Segmentation thresholds are mainly useful if your terrain or riding style differs significantly from typical road/gravel riding.
+
+| Setting                                          | Default | Purpose                                                                                                            |
+| ------------------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------ |
+| `fitVisualizer.maxHeartRate`                     | —       | Legacy fallback max HR; prefer a dated zone profile in the activity view.                                          |
+| `fitVisualizer.logLlmRequests`                   | `true`  | Write each Copilot prompt/response to `.fit-visualizer/logs`.                                                      |
+| `fitVisualizer.llmLogRetentionDays`              | `30`    | Delete request logs older than this; `0` keeps them indefinitely.                                                  |
+| `fitVisualizer.segmentation.gradeThresholdPct`   | `2.5`   | Grade (%) separating climbs/descents from flat terrain.                                                            |
+| `fitVisualizer.segmentation.gradeHysteresisPct`  | `0.5`   | Extra margin required to switch terrain type, to stop flapping right at the threshold.                             |
+| `fitVisualizer.segmentation.minSegmentSeconds`   | `45`    | Shorter segments get merged into a neighbor.                                                                       |
+| `fitVisualizer.segmentation.technicalGradePct`   | `-8`    | Descent grade below which an erratic speed trace marks the segment as technical (no effort estimate).              |
+| `fitVisualizer.segmentation.effortWindowSeconds` | `10`    | Averaging window before splitting a segment into intervals.                                                        |
+| `fitVisualizer.segmentation.effortCostThreshold` | —       | Merge-cost limit for interval detection; left empty, it's derived from the ride's own noise level.                 |
+| `fitVisualizer.segmentation.stopSpeedKmh`        | `1`     | Speed at/below which a record counts as stopped.                                                                   |
+| `fitVisualizer.segmentation.stopMinSeconds`      | `10`    | Minimum duration to count as a stop or auto-paused gap.                                                            |
+| `fitVisualizer.segmentation.gpsTrustMinKm`       | `1`     | Minimum continuous, straight distance before a GPS window can confirm — or calibrate against — the recorded speed. |
