@@ -169,9 +169,12 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
   const maxRetries = Number.isInteger(options.maxRetries) && options.maxRetries >= 0
     ? options.maxRetries
     : 1;
-  const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+  const vendor = String(options.vendor || '').trim() || 'copilot';
+  const models = await vscode.lm.selectChatModels({ vendor });
   if (!models.length) {
-    throw new Error('Copilot Chat is not installed or you are not signed in.');
+    throw new Error(vendor === 'copilot'
+      ? 'Copilot Chat is not installed or you are not signed in.'
+      : `No language models are available for vendor "${vendor}".`);
   }
 
   // Copilot may hand out different models over time, so the log has to record which one answered.

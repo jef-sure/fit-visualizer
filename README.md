@@ -128,6 +128,8 @@ Derived workload metrics that cannot be calculated from the available data are o
 
 Prompts and responses are logged locally (see **Settings**) so you can review exactly what was sent and received.
 
+By default, analysis uses the VS Code `copilot` language-model vendor. Configure a different registered provider with `fitVisualizer.lmVendor`.
+
 ## Heart-Rate Zones
 
 - Supports dated zone profiles
@@ -176,6 +178,7 @@ Most settings can be left at their defaults. Segmentation thresholds are mainly 
 | `fitVisualizer.maxHeartRate`                     | —       | Legacy fallback max HR; prefer a dated zone profile in the activity view.                                          |
 | `fitVisualizer.logLlmRequests`                   | `true`  | Write each Copilot prompt/response to `.fit-visualizer/logs`.                                                      |
 | `fitVisualizer.llmLogRetentionDays`              | `30`    | Delete request logs older than this; `0` keeps them indefinitely.                                                  |
+| `fitVisualizer.lmVendor`                          | `copilot` | VS Code language-model vendor ID used for activity analysis and chat.                                            |
 | `fitVisualizer.segmentation.gradeThresholdPct`   | `2.5`   | Grade (%) separating climbs/descents from flat terrain.                                                            |
 | `fitVisualizer.segmentation.gradeHysteresisPct`  | `0.5`   | Extra margin required to switch terrain type, to stop flapping right at the threshold.                             |
 | `fitVisualizer.segmentation.minSegmentSeconds`   | `45`    | Shorter segments get merged into a neighbor.                                                                       |

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 - 2026-09-01
+
+### Added
+
+- Added a configurable VS Code language-model vendor for activity analysis and follow-up chat.
+
 ## 0.1.20 - 2026-09-01
 
 ### Fixed
