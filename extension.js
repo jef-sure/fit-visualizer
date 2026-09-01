@@ -1955,8 +1955,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }).join('');
         var yHtml = yTicks.values.map(function (v) {
           var py = scaleY(payload, v).toFixed(1);
+          var labelY = Math.max(payload.plotTop + 10, Math.min(payload.plotBottom - 4, parseFloat(py) + 4)).toFixed(1);
           return '<g><line class="gridline" x1="' + payload.plotLeft + '" y1="' + py + '" x2="' + payload.plotRight + '" y2="' + py + '" />'
-            + '<text class="tick" x="' + (payload.plotLeft - 8) + '" y="' + (parseFloat(py) + 4).toFixed(1) + '" text-anchor="end">'
+            + '<text class="tick" x="' + (payload.plotLeft - 8) + '" y="' + labelY + '" text-anchor="end">'
             + escapeHtmlClient(formatTickClient(v, yTicks.step)) + '</text></g>';
         }).join('');
 
@@ -1985,7 +1986,14 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
         var axisX = svg.querySelector('.axisLabelX');
         if (axisX) {
+          var axisXx = parseFloat(axisX.getAttribute('x'));
+          var axisXy = parseFloat(axisX.getAttribute('y'));
           axisX.style.fontSize = '11px';
+          if (isFinite(axisXx) && isFinite(axisXy)) {
+            axisX.setAttribute('transform', 'translate(' + axisXx + ' ' + axisXy + ') scale('
+              + (1 / xScale).toFixed(4) + ' ' + (1 / yScale).toFixed(4) + ') translate('
+              + (-axisXx) + ' ' + (-axisXy) + ')');
+          }
         }
       }
 
