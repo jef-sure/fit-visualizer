@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const Module = require('node:module');
 const test = require('node:test');
 const initSqlJs = require('../vendor/sql-wasm/sql-wasm.js');
 const {
@@ -29,6 +30,21 @@ const {
   saveGeneratedTranslationBundle,
   validateTranslationBundle,
 } = require('../dynamic-localization');
+
+function loadActivityWebviewForTest() {
+  const modulePath = require.resolve('../activity-webview');
+  delete require.cache[modulePath];
+  const originalLoad = Module._load;
+  Module._load = function load(request, parent, isMain) {
+    if (request === 'vscode') return { env: { language: 'en' }, l10n: { t: (text) => text } };
+    return originalLoad.call(this, request, parent, isMain);
+  };
+  try {
+    return require('../activity-webview');
+  } finally {
+    Module._load = originalLoad;
+  }
+}
 const {
   calculateAutoHeartRateProfile,
   computeHeartRateZones,
@@ -902,6 +918,24 @@ test('activity glossary localizes visible metric descriptions from one source', 
   assert.match(source, /metric\('Avg Power \(W\)' \+ powerMetricSuffix, summary\.avgPower\.toFixed\(0\), 'averagePower', glossary\)/);
   assert.match(source, /\['Max HR \(bpm\)', a\.maxHr\.toFixed\(0\), b\.maxHr\.toFixed\(0\), 'maximumHeartRate'\]/);
   assert.match(source, /metric\('TSS' \+ powerMetricSuffix,[\s\S]*?'trainingStressScore', glossary\)/);
+});
+
+test('activity webview renderer executes its complete server-side render path', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const html = renderActivityContentHtml(
+    {}, {}, {
+      _fileName: 'ride.fit',
+      records: [
+        { elapsed_time: 0, distance: 0, speed: 18, heart_rate: 120, altitude: 0.1, position_lat: 50, position_long: 6 },
+        { elapsed_time: 60, distance: 0.5, speed: 24, heart_rate: 140, altitude: 0.105, position_lat: 50.001, position_long: 6.001 },
+      ],
+      sessions: [{ total_distance: 0.5, total_timer_time: 60 }],
+      laps: [],
+    }, {}, 'nonce', false, null, {}, null, [], null,
+    localizeUi(), localizeGlossary(), false, 'English', []
+  );
+  assert.match(html, /fitMapSpeedSvg/);
+  assert.match(html, /Interactive Map/);
 });
 
 test('localized webview UI uses one complete string catalog', () => {

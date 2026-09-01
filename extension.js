@@ -70,6 +70,7 @@ const {
   segmentLineBudget,
   selectFtpEstimate,
   smoothSeries,
+  toDateOnly,
   toSqlStr,
 } = require('./utils');
 
@@ -1126,16 +1127,6 @@ async function getWheelCalibrationRecommendation(dbPath) {
     stmt?.free();
     db.close();
   }
-}
-
-function toDateOnly(value) {
-  const match = String(value || '').match(/^\d{4}-\d{2}-\d{2}/);
-  return match ? match[0] : null;
-}
-
-function positiveNumberOrBlank(value) {
-  const number = asNumber(value);
-  return Number.isFinite(number) && number > 0 ? escapeHtml(String(Math.round(number))) : '';
 }
 
 async function generateActivityAnalysis(dbPath, activityId, force = false) {
