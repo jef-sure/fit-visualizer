@@ -7,6 +7,7 @@ const { formatUi, localizeUi } = require('./ui-strings');
 const { buildCartesianGeometry, buildDistanceMarkers, buildTicks, formatTick, padRange, padYAxisRange } = require('./chart-geometry');
 const { computeElevationGainLoss, computeRouteDistanceKm, computeStats, extractGpsPoints, extractXYPoints } = require('./chart-data');
 const { buildSummary } = require('./activity-summary');
+const { buildGpsRoute: buildGpsRouteFromModule, buildLineChart: buildLineChartFromModule } = require('./chart-model');
 const {
   buildChartClientPayload: buildChartClientPayloadFromModule,
   buildOverlayMetrics: buildOverlayMetricsFromModule,
@@ -1341,9 +1342,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     : null;
   const mapId = isComparison ? 'fitMapComp' : 'fitMap';
   const chartPointBudget = Math.min(4000, Math.max(900, Math.floor(records.length / 2)));
-  const speedChart = buildLineChart(records, 'distance', 'speed', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
-  const hrChart = buildLineChart(records, 'distance', 'heart_rate', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
-  const altitudeChart = buildLineChart(records, 'distance', 'altitude', 1400, 380, chartPointBudget, { yTransform: (v) => v * 1000, compRecords: hasOverlay ? compRecords : [] });
+  const speedChart = buildLineChartFromModule(records, 'distance', 'speed', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
+  const hrChart = buildLineChartFromModule(records, 'distance', 'heart_rate', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
+  const altitudeChart = buildLineChartFromModule(records, 'distance', 'altitude', 1400, 380, chartPointBudget, { yTransform: (v) => v * 1000, compRecords: hasOverlay ? compRecords : [] });
   const overlayMetrics = buildOverlayMetricsFromModule(records, chartPointBudget);
   const speedOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'speed');
   const hrOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'heart_rate');
@@ -1355,7 +1356,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   });
   const hrZones = computeHeartRateZones(records, hrConfig?.maxHeartRate, hrConfig?.thresholds);
   const gpsRoutePointBudget = Math.min(6000, Math.max(1200, records.length));
-  const gpsRoute = buildGpsRoute(records, 1400, 420, gpsRoutePointBudget);
+  const gpsRoute = buildGpsRouteFromModule(records, 1400, 420, gpsRoutePointBudget);
   const compGpsPoints = hasOverlay ? safeJson(extractGpsPoints(compRecords).slice(0, gpsRoutePointBudget).map((p) => ({ lat: p.y, lon: p.x }))) : 'null';
 
   const mapPayload = safeJson(gpsRoute.geoPoints);
@@ -2463,35 +2464,6 @@ function positiveNumberOrBlank(value) {
   return Number.isFinite(number) && number > 0 ? escapeHtml(String(Math.round(number))) : '';
 }
 
-function buildLineChart(records, xField, yField, width, height, maxPoints, options = {}) {
-  const xTransform = typeof options.xTransform === 'function' ? options.xTransform : (v) => v;
-  const yTransform = typeof options.yTransform === 'function' ? options.yTransform : (v) => v;
-  const series = extractXYPoints(records, xField, yField, maxPoints, { xTransform, yTransform });
-
-  if (options.compRecords && options.compRecords.length > 0) {
-    const compSeries = extractXYPoints(options.compRecords, xField, yField, maxPoints, { xTransform, yTransform });
-    const allPoints = [...series.points, ...compSeries.points];
-    const base = buildCartesianGeometry(allPoints, width, height, { left: 60, right: 18, top: 12, bottom: 40 });
-    const xRange = (base.xMax - base.xMin) || 1;
-    const yRange = (base.yMax - base.yMin) || 1;
-    const pw = base.plotRight - base.plotLeft;
-    const ph = base.plotBottom - base.plotTop;
-    const sx = (x) => base.plotLeft + ((x - base.xMin) / xRange) * pw;
-    const sy = (y) => base.plotBottom - ((y - base.yMin) / yRange) * ph;
-    base.pathData = series.points.map((p) => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(' ');
-    base.pathPoints = series.points.map((p) => ({ x: sx(p.x), y: sy(p.y), source: p }));
-    base.points = series.points;
-    base.compPathData = compSeries.points.map((p) => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(' ');
-    base.stats = computeStats(series.yValues);
-    base.compStats = computeStats(compSeries.yValues);
-    return base;
-  }
-
-  const chart = buildCartesianGeometry(series.points, width, height, { left: 60, right: 18, top: 12, bottom: 40 });
-  chart.stats = computeStats(series.yValues);
-  return chart;
-}
-
 function renderScaledLineChartSvg(chart, lineClass, xLabel, yLabel, addDistanceMarkers, options = {}) {
   if (!chart || chart.points.length < 2) {
     return '<div class="muted">Not enough data for this chart.</div>';
@@ -2594,29 +2566,6 @@ function buildZoneSegmentPolylines(chart, thresholds) {
       `<line class="zoneLine zoneLine${idx + 1}" x1="${s.x1.toFixed(1)}" y1="${s.y1.toFixed(1)}" x2="${s.x2.toFixed(1)}" y2="${s.y2.toFixed(1)}" />`
     ).join(''))
     .join('');
-}
-
-function buildGpsRoute(records, width, height, maxPoints) {
-  const gpsPoints = downsamplePoints(extractGpsPoints(records), maxPoints);
-  const route = buildCartesianGeometry(gpsPoints, width, height, { left: 60, right: 18, top: 12, bottom: 36 });
-  const boundsText = route.points.length
-    ? `lat ${formatTick(route.yMin, route.yStep)}..${formatTick(route.yMax, route.yStep)}, lon ${formatTick(route.xMin, route.xStep)}..${formatTick(route.xMax, route.xStep)}`
-    : 'no GPS points available';
-
-  return {
-    ...route,
-    pointCount: gpsPoints.length,
-    boundsText,
-    routeDistanceKm: computeRouteDistanceKm(gpsPoints),
-    speedStats: computeStats(gpsPoints.map((p) => p.speed).filter((v) => Number.isFinite(v))),
-    hrStats: computeStats(gpsPoints.map((p) => p.heart_rate).filter((v) => Number.isFinite(v))),
-    geoPoints: gpsPoints.map((p) => ({
-      lat: p.y,
-      lon: p.x,
-      speed: p.speed,
-      heart_rate: p.heart_rate,
-    })),
-  };
 }
 
 function renderGpsRouteSvg(route, width, height) {
