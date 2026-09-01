@@ -1221,6 +1221,46 @@ test('summary power fallback preserves measured power and estimates missing powe
   assert.equal(measured.records[0].power, 0);
 });
 
+test('estimated power counts a stop as zero watts instead of dropping it', () => {
+  const records = [];
+  let distanceKm = 0;
+  for (let elapsed = 0; elapsed < 220; elapsed += 1) {
+    const speed = elapsed < 100 || elapsed >= 160 ? 20 : 0;
+    distanceKm += speed / 3600;
+    records.push({
+      elapsed_time: elapsed, speed, distance: distanceKm, altitude: 0.1,
+      position_lat: 50 + elapsed * 1e-5, position_long: 30,
+    });
+  }
+
+  const estimated = addEstimatedPowerWhenMissing(records, { riderMassKg: 80, bikeMassKg: 12 });
+  assert.equal(estimated.source, 'estimated');
+
+  const stopped = estimated.records.slice(105, 155);
+  assert.ok(stopped.every((record) => record.power === 0), 'every stopped sample carries an explicit zero');
+
+  // Dropping the stop instead would raise NP well above the honest, time-weighted value.
+  const withoutStop = calculateNormalizedPower(estimated.records.filter((record) => record.speed > 0));
+  const withStop = calculateNormalizedPower(estimated.records);
+  assert.ok(withStop < withoutStop, `stopped time must lower NP: ${withStop} vs ${withoutStop}`);
+});
+
+test('normalized power weights samples by elapsed time, not sample count', () => {
+  // 200 W recorded every second for 10 min, then a sparse 0 W tail of the same duration.
+  const dense = [];
+  for (let elapsed = 0; elapsed <= 600; elapsed += 1) {
+    dense.push({ elapsed_time: elapsed, power: 200 });
+  }
+  const sparse = [];
+  for (let elapsed = 605; elapsed <= 1200; elapsed += 5) {
+    sparse.push({ elapsed_time: elapsed, power: 0 });
+  }
+
+  const normalizedPower = calculateNormalizedPower([...dense, ...sparse]);
+  // Sample counting would let the 601 dense samples swamp the 120 sparse ones and land near 190 W.
+  assert.ok(normalizedPower < 175, `expected the sparse half to carry its own time, got ${normalizedPower}`);
+});
+
 test('normalized power weights variable efforts above arithmetic mean', () => {
   // 20 min of alternating 2-min blocks at 100/200 W.
   const records = [];
