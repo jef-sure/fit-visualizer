@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.3 - 2026-09-01
+
+### Fixed
+
+- Added a renderer smoke test to catch missing webview module dependencies before release.
+
 ## 0.9.2 - 2026-09-01
 
 ### Fixed

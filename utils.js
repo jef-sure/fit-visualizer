@@ -57,6 +57,11 @@ function formatHms(value) {
   return [hours, minutes, seconds].map((part) => String(part).padStart(2, '0')).join(':');
 }
 
+function toDateOnly(value) {
+  const match = String(value || '').match(/^\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : null;
+}
+
 function average(values) {
   if (!values.length) {
     return 0;
@@ -1620,5 +1625,6 @@ module.exports = {
   maxOrZero,
   roundTo,
   safeJson,
+  toDateOnly,
   toSqlStr,
 };

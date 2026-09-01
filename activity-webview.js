@@ -3,24 +3,33 @@ const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
 const { buildSummary } = require('./activity-summary');
 const { buildGpsRoute: buildGpsRouteFromModule, buildLineChart: buildLineChartFromModule } = require('./chart-model');
-const { mapSegmentsToDistanceRanges } = require('./chart-data');
+const { extractGpsPoints, mapSegmentsToDistanceRanges } = require('./chart-data');
+const { buildDistanceMarkers, formatTick } = require('./chart-geometry');
+const { createChartSvgRenderer } = require('./chart-svg');
 const {
   buildChartClientPayload: buildChartClientPayloadFromModule,
   buildOverlayMetrics: buildOverlayMetricsFromModule,
   buildOverlayOptions: buildOverlayOptionsFromModule,
 } = require('./chart-overlays');
-const { computeHeartRateZones } = require('./heart-rate');
+const { computeHeartRateZones, getHeartRateZoneIndex } = require('./heart-rate');
 const {
+  addEstimatedPowerWhenMissing,
   asNumber,
   createNonce,
   escapeHtml,
-  estimateWheelCalibrationRatio,
-  extractGpsPoints,
   formatHms,
   formatNumber,
   normalizeRecordSpeeds,
   safeJson,
+  toDateOnly,
 } = require('./utils');
+
+const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = createChartSvgRenderer({
+  buildDistanceMarkers,
+  escapeHtml,
+  formatTick,
+  getHrZoneIndex: getHeartRateZoneIndex,
+});
 
 function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments) {
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
@@ -228,9 +237,15 @@ function renderActivityTable(segments, laps, ui) {
     const visible = columns.filter(([key]) => rows.some((row) => row[key]));
     return `<div class="activityTableWrap" data-activity-table="${name}"${hidden ? ' hidden' : ''}><table class="activityTable"><thead><tr>${visible.map(([, heading]) => `<th>${escapeHtml(heading)}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${visible.map(([key]) => `<td>${escapeHtml(row[key] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   };
+
   if (!segmentRows.length) return '';
   const tabs = lapRows.length ? `<div class="activityTableTabs"><button type="button" data-activity-table-tab="segments" aria-pressed="true">${escapeHtml(ui.segments)}</button><button type="button" data-activity-table-tab="laps" aria-pressed="false">${escapeHtml(ui.laps)}</button></div>` : '';
   return `<section class="chart"><h2>${escapeHtml(lapRows.length ? ui.segments : ui.segment)}</h2>${tabs}${renderRows(segmentRows, 'segments', false)}${lapRows.length ? renderRows(lapRows, 'laps', true) : ''}</section>`;
+}
+
+function positiveNumberOrBlank(value) {
+  const number = asNumber(value);
+  return Number.isFinite(number) && number > 0 ? escapeHtml(String(Math.round(number))) : '';
 }
 
 function formatDuration(value) {
