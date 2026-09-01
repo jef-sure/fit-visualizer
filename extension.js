@@ -8,6 +8,7 @@ const { buildCartesianGeometry, buildDistanceMarkers, buildTicks, formatTick, pa
 const { computeElevationGainLoss, computeRouteDistanceKm, computeStats, extractGpsPoints, extractXYPoints } = require('./chart-data');
 const { buildSummary } = require('./activity-summary');
 const { buildGpsRoute: buildGpsRouteFromModule, buildLineChart: buildLineChartFromModule } = require('./chart-model');
+const { createChartSvgRenderer } = require('./chart-svg');
 const {
   buildChartClientPayload: buildChartClientPayloadFromModule,
   buildOverlayMetrics: buildOverlayMetricsFromModule,
@@ -70,6 +71,13 @@ const {
   smoothSeries,
   toSqlStr,
 } = require('./utils');
+
+const { buildZoneSegmentPolylines: buildZoneSegmentPolylinesFromModule, renderOverlayControls: renderOverlayControlsFromModule } = createChartSvgRenderer({
+  buildDistanceMarkers,
+  escapeHtml,
+  formatTick,
+  getHrZoneIndex: getHrZoneIndex,
+});
 
 let extensionContextRef;
 let sqlJsInitPromise = null;
@@ -1496,7 +1504,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     <section class="chart resizable" data-resize-target="${mapId}SpeedSvg" data-resize-key="fitviz_speed_height" data-min-height="200" data-max-height="1200">
       <h2>${escapeHtml(ui.speedVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
       ${renderStatsRow(speedChart.stats, 'km/h')}${hasOverlay && speedChart.compStats ? renderStatsRow(speedChart.compStats, 'km/h', true) : ''}
-      ${renderOverlayControls(mapId + 'SpeedSvg', speedOverlays)}
+      ${renderOverlayControlsFromModule(mapId + 'SpeedSvg', speedOverlays)}
       ${renderScaledLineChartSvg(speedChart, 'lineA', 'Distance (km)', 'Speed (km/h)', true, { svgId: mapId + 'SpeedSvg' })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -1505,7 +1513,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <h2>${escapeHtml(ui.heartRateVsDistance)}</h2>
       ${renderStatsRow(hrChart.stats, 'bpm')}
       ${renderHeartRateZones(hrZones)}
-      ${renderOverlayControls(mapId + 'HrSvg', hrOverlays)}
+      ${renderOverlayControlsFromModule(mapId + 'HrSvg', hrOverlays)}
       ${renderScaledLineChartSvg(hrChart, 'lineB', 'Distance (km)', 'Heart rate (bpm)', true, { svgId: mapId + 'HrSvg', zoneThresholds: hrZones.enabled ? hrZones.thresholds : null })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -1513,7 +1521,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     <section class="chart resizable" data-resize-target="${mapId}AltSvg" data-resize-key="fitviz_alt_height" data-min-height="200" data-max-height="1200">
       <h2>${escapeHtml(ui.altitudeVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
       ${renderStatsRow(altitudeChart.stats, 'm')}${hasOverlay && altitudeChart.compStats ? renderStatsRow(altitudeChart.compStats, 'm', true) : ''}
-      ${renderOverlayControls(mapId + 'AltSvg', altitudeOverlays)}
+      ${renderOverlayControlsFromModule(mapId + 'AltSvg', altitudeOverlays)}
       ${renderScaledLineChartSvg(altitudeChart, 'lineC', 'Distance (km)', 'Altitude (m)', true, { svgId: mapId + 'AltSvg' })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -2494,7 +2502,7 @@ function renderScaledLineChartSvg(chart, lineClass, xLabel, yLabel, addDistanceM
   const hasZoneLine = zoneThresholds && zoneThresholds.length >= 4;
 
   const lineSvg = hasZoneLine
-    ? buildZoneSegmentPolylines(chart, zoneThresholds)
+    ? buildZoneSegmentPolylinesFromModule(chart, zoneThresholds)
     : `<polyline class="${lineClass}" points="${chart.pathData}" />`;
 
   const compLineSvg = chart.compPathData
@@ -2524,48 +2532,6 @@ function renderScaledLineChartSvg(chart, lineClass, xLabel, yLabel, addDistanceM
     <text class="axisLabel axisLabelY" transform="translate(14 ${(chart.plotTop + chart.plotBottom) / 2}) rotate(-90)" text-anchor="middle">${escapeHtml(yLabel)}</text>
     ${crosshairSvg}
   </svg>`;
-}
-
-function renderOverlayControls(svgId, overlays) {
-  const keys = Object.keys(overlays || {});
-  if (!keys.length) {
-    return '';
-  }
-  const items = keys.map((key) => `<label>
-      <input type="checkbox" data-overlay-metric="${escapeHtml(key)}">
-      ${escapeHtml(overlays[key].label)}<span class="overlayRange"></span>
-    </label>`).join('');
-  return `<div class="overlayControls" data-overlay-for="${escapeHtml(svgId)}">${items}</div>`;
-}
-
-function buildZoneSegmentPolylines(chart, thresholds) {
-  const segmentsByZone = [[], [], [], [], []];
-  const points = chart.pathPoints;
-  const values = chart.points;
-
-  for (let i = 1; i < points.length; i += 1) {
-    const p0 = points[i - 1];
-    const p1 = points[i];
-    const y0 = values[i - 1]?.y;
-    const y1 = values[i]?.y;
-    if (!Number.isFinite(y0) || !Number.isFinite(y1)) {
-      continue;
-    }
-
-    const zone = getHrZoneIndex((y0 + y1) / 2, thresholds);
-    segmentsByZone[zone].push({
-      x1: p0.x,
-      y1: p0.y,
-      x2: p1.x,
-      y2: p1.y,
-    });
-  }
-
-  return segmentsByZone
-    .map((segments, idx) => segments.map((s) =>
-      `<line class="zoneLine zoneLine${idx + 1}" x1="${s.x1.toFixed(1)}" y1="${s.y1.toFixed(1)}" x2="${s.x2.toFixed(1)}" y2="${s.y2.toFixed(1)}" />`
-    ).join(''))
-    .join('');
 }
 
 function renderGpsRouteSvg(route, width, height) {
