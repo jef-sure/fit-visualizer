@@ -8,6 +8,11 @@ const { buildCartesianGeometry, buildDistanceMarkers, buildTicks, formatTick, pa
 const { computeElevationGainLoss, computeRouteDistanceKm, computeStats, extractGpsPoints, extractXYPoints } = require('./chart-data');
 const { buildSummary } = require('./activity-summary');
 const {
+  buildChartClientPayload: buildChartClientPayloadFromModule,
+  buildOverlayMetrics: buildOverlayMetricsFromModule,
+  buildOverlayOptions: buildOverlayOptionsFromModule,
+} = require('./chart-overlays');
+const {
   loadGeneratedTranslationBundle,
   parseGeneratedBundle,
   saveGeneratedTranslationBundle,
@@ -1339,14 +1344,14 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const speedChart = buildLineChart(records, 'distance', 'speed', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
   const hrChart = buildLineChart(records, 'distance', 'heart_rate', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
   const altitudeChart = buildLineChart(records, 'distance', 'altitude', 1400, 380, chartPointBudget, { yTransform: (v) => v * 1000, compRecords: hasOverlay ? compRecords : [] });
-  const overlayMetrics = buildOverlayMetrics(records, chartPointBudget);
-  const speedOverlays = buildOverlayOptions(overlayMetrics, 'speed');
-  const hrOverlays = buildOverlayOptions(overlayMetrics, 'heart_rate');
-  const altitudeOverlays = buildOverlayOptions(overlayMetrics, 'altitude');
+  const overlayMetrics = buildOverlayMetricsFromModule(records, chartPointBudget);
+  const speedOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'speed');
+  const hrOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'heart_rate');
+  const altitudeOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'altitude');
   const chartClientPayloads = safeJson({
-    [mapId + 'SpeedSvg']: buildChartClientPayload(speedChart, 'km', 'km/h', speedOverlays),
-    [mapId + 'HrSvg']: buildChartClientPayload(hrChart, 'km', 'bpm', hrOverlays),
-    [mapId + 'AltSvg']: buildChartClientPayload(altitudeChart, 'km', 'm', altitudeOverlays),
+    [mapId + 'SpeedSvg']: buildChartClientPayloadFromModule(speedChart, 'km', 'km/h', speedOverlays),
+    [mapId + 'HrSvg']: buildChartClientPayloadFromModule(hrChart, 'km', 'bpm', hrOverlays),
+    [mapId + 'AltSvg']: buildChartClientPayloadFromModule(altitudeChart, 'km', 'm', altitudeOverlays),
   });
   const hrZones = computeHeartRateZones(records, hrConfig?.maxHeartRate, hrConfig?.thresholds);
   const gpsRoutePointBudget = Math.min(6000, Math.max(1200, records.length));
@@ -2547,80 +2552,6 @@ function renderScaledLineChartSvg(chart, lineClass, xLabel, yLabel, addDistanceM
     <text class="axisLabel axisLabelY" transform="translate(14 ${(chart.plotTop + chart.plotBottom) / 2}) rotate(-90)" text-anchor="middle">${escapeHtml(yLabel)}</text>
     ${crosshairSvg}
   </svg>`;
-}
-
-// Compact client-side payload: raw series + plot geometry, so the browser can rescale without a round trip.
-function buildChartClientPayload(chart, xUnit, yUnit, overlays) {
-  if (!chart || !Array.isArray(chart.points) || chart.points.length < 2) {
-    return null;
-  }
-  return {
-    points: chart.points.map((p) => [roundTo(p.x, 4), roundTo(p.y, 3)]),
-    plotLeft: chart.plotLeft,
-    plotRight: chart.plotRight,
-    plotTop: chart.plotTop,
-    plotBottom: chart.plotBottom,
-    xMin: chart.xMin,
-    xMax: chart.xMax,
-    yMin: chart.yMin,
-    yMax: chart.yMax,
-    width: chart.width,
-    height: chart.height,
-    xUnit,
-    yUnit,
-    overlays: overlays && Object.keys(overlays).length ? overlays : undefined,
-  };
-}
-
-const OVERLAY_METRIC_LABELS = { grade: 'Grade', altitude: 'Altitude', speed: 'Speed', heart_rate: 'Heart Rate' };
-const OVERLAY_METRIC_UNITS = { grade: '%', altitude: 'm', speed: 'km/h', heart_rate: 'bpm' };
-
-// Computed once per activity and sliced per chart, so grade is derived at most once (reuses computeGrade).
-function buildOverlayMetrics(records, maxPoints) {
-  const hasStoredGrade = records.some((record) => Number.isFinite(asNumber(record?.grade)));
-  const gradeSource = hasStoredGrade
-    ? records
-    : (() => {
-      const grades = computeGrade(records);
-      return records.map((record, index) => ({
-        ...record,
-        grade: grades[index] ? grades[index].grade * 100 : null,
-      }));
-    })();
-
-  return {
-    grade: extractXYPoints(gradeSource, 'distance', 'grade', maxPoints, {}),
-    altitude: extractXYPoints(records, 'distance', 'altitude', maxPoints, { yTransform: (v) => v * 1000 }),
-    speed: extractXYPoints(records, 'distance', 'speed', maxPoints, {}),
-    heart_rate: extractXYPoints(records, 'distance', 'heart_rate', maxPoints, {}),
-  };
-}
-
-// Every metric except the chart's own, and only when there is enough range to draw a line.
-function buildOverlayOptions(overlayMetrics, ownKey) {
-  const result = {};
-  for (const key of Object.keys(overlayMetrics)) {
-    if (key === ownKey) {
-      continue;
-    }
-    const series = overlayMetrics[key];
-    if (!series || series.points.length < 2 || !series.yValues.length) {
-      continue;
-    }
-    const min = Math.min(...series.yValues);
-    const max = Math.max(...series.yValues);
-    if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
-      continue;
-    }
-    result[key] = {
-      points: series.points.map((p) => [roundTo(p.x, 4), roundTo(p.y, 2)]),
-      min,
-      max,
-      label: OVERLAY_METRIC_LABELS[key] || key,
-      unit: OVERLAY_METRIC_UNITS[key] || '',
-    };
-  }
-  return result;
 }
 
 function renderOverlayControls(svgId, overlays) {
