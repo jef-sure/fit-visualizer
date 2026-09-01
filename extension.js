@@ -1970,34 +1970,18 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         if (!rect || !(rect.width > 0) || !(rect.height > 0) || !(payload.width > 0) || !(payload.height > 0)) return;
         var xScale = rect.width / payload.width;
         var yScale = rect.height / payload.height;
+        var textScale = Math.max(0.1, Math.min(xScale, yScale));
 
-        function textAnchor(el) {
-          var x = parseFloat(el.getAttribute('x'));
-          var y = parseFloat(el.getAttribute('y'));
-          if (!isFinite(x) || !isFinite(y)) {
-            var tspan = el.querySelector('tspan');
-            x = parseFloat(tspan && tspan.getAttribute('x'));
-            y = parseFloat(tspan && tspan.getAttribute('y'));
-          }
-          return isFinite(x) && isFinite(y) ? { x: x, y: y } : null;
-        }
-
-        function stabilizeText(selector, cssPx, strokePx) {
+        function setReadableFont(selector, cssPx, strokePx) {
           svg.querySelectorAll(selector).forEach(function (el) {
-            var anchor = textAnchor(el);
-            el.style.fontSize = cssPx + 'px';
-            if (strokePx) el.style.strokeWidth = strokePx + 'px';
-            if (anchor) {
-              el.setAttribute('transform', 'translate(' + anchor.x + ' ' + anchor.y + ') scale('
-                + (1 / xScale).toFixed(4) + ' ' + (1 / yScale).toFixed(4) + ') translate('
-                + (-anchor.x) + ' ' + (-anchor.y) + ')');
-            }
+            el.style.fontSize = (cssPx / textScale).toFixed(2) + 'px';
+            if (strokePx) el.style.strokeWidth = (strokePx / textScale).toFixed(2) + 'px';
           });
         }
 
-        stabilizeText('.tick', 10);
-        stabilizeText('.kmLabel', 9);
-        stabilizeText('.crosshairLabel', 13, 3);
+        setReadableFont('.tick', 10);
+        setReadableFont('.kmLabel', 9);
+        setReadableFont('.crosshairLabel', 13, 3);
       }
 
       // Nearest value in a monotonic array (px positions for the hovered chart, data x for the rest).
