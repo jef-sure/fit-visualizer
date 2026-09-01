@@ -2,6 +2,7 @@ const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { generateAnalysisPrompt, generateAnalysisChatPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('./analysis');
+const { localizeGlossary } = require('./glossary');
 const { registerCommands } = require('./commands');
 const { ensureDatabaseSchema } = require('./database-schema');
 const { fileExists, getFitUris, parseFitFile } = require('./fit-files');
@@ -1254,6 +1255,7 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
 }
 
 function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration) {
+  const glossary = localizeGlossary(vscode.l10n.t);
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -1328,7 +1330,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const powerMetricSuffix = primaryPower.source === 'estimated' ? ' (estimated)' : '';
 
   const compStatsRow = hasOverlay && compSummary
-    ? renderComparisonTable(summary, compSummary, fitData._fileName, compData._fileName)
+    ? renderComparisonTable(summary, compSummary, fitData._fileName, compData._fileName, glossary)
     : '';
 
   return `<main class="wrap">
@@ -1346,15 +1348,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       ${metric('Max Speed (km/h)', summary.maxSpeed.toFixed(2))}
       ${metric('Avg Power (W)' + powerMetricSuffix, summary.avgPower.toFixed(0))}
       ${metric('Max Power (W)' + powerMetricSuffix, summary.maxPower.toFixed(0))}
-      ${metric('Normalized Power (W)' + powerMetricSuffix, summary.normalizedPower.toFixed(0))}
-      ${metric('Intensity Factor (IF)' + powerMetricSuffix, summary.intensityFactor > 0 ? summary.intensityFactor.toFixed(2) : 'n/a')}
-      ${metric('TSS' + powerMetricSuffix, summary.trainingStressScore > 0 ? summary.trainingStressScore.toFixed(1) : 'n/a')}
-      ${metric('xPower (GC) (W)' + powerMetricSuffix, summary.xPower > 0 ? summary.xPower.toFixed(0) : 'n/a')}
-      ${metric('RI (GC)' + powerMetricSuffix, summary.relativeIntensityGc > 0 ? summary.relativeIntensityGc.toFixed(2) : 'n/a')}
-      ${metric('BikeStress (GC)' + powerMetricSuffix, summary.bikeStressScore > 0 ? summary.bikeStressScore.toFixed(1) : 'n/a')}
-      ${metric('Decoupling % (Intervals)' + powerMetricSuffix, Number.isFinite(summary.decouplingPct) ? summary.decouplingPct.toFixed(1) + '%' : 'n/a')}
-      ${metric('TRIMP', summary.trimp > 0 ? summary.trimp.toFixed(1) : 'n/a')}
-      ${metric('hrTSS', summary.hrTss > 0 ? summary.hrTss.toFixed(1) : 'n/a')}
+      ${metric('Normalized Power (W)' + powerMetricSuffix, summary.normalizedPower?.toFixed(0) ?? 'n/a', 'normalizedPower', glossary)}
+      ${metric('Intensity Factor (IF)' + powerMetricSuffix, summary.intensityFactor > 0 ? summary.intensityFactor.toFixed(2) : 'n/a', 'intensityFactor', glossary)}
+      ${metric('TSS' + powerMetricSuffix, summary.trainingStressScore > 0 ? summary.trainingStressScore.toFixed(1) : 'n/a', 'trainingStressScore', glossary)}
+      ${metric('xPower (GC) (W)' + powerMetricSuffix, summary.xPower > 0 ? summary.xPower.toFixed(0) : 'n/a', 'xpower', glossary)}
+      ${metric('RI (GC)' + powerMetricSuffix, summary.relativeIntensityGc > 0 ? summary.relativeIntensityGc.toFixed(2) : 'n/a', 'relativeIntensity', glossary)}
+      ${metric('BikeStress (GC)' + powerMetricSuffix, summary.bikeStressScore > 0 ? summary.bikeStressScore.toFixed(1) : 'n/a', 'bikeStress', glossary)}
+      ${metric('Decoupling % (Intervals)' + powerMetricSuffix, Number.isFinite(summary.decouplingPct) ? summary.decouplingPct.toFixed(1) + '%' : 'n/a', 'decoupling', glossary)}
+      ${metric('TRIMP', summary.trimp > 0 ? summary.trimp.toFixed(1) : 'n/a', 'trimp', glossary)}
+      ${metric('hrTSS', summary.hrTss > 0 ? summary.hrTss.toFixed(1) : 'n/a', 'hrTss', glossary)}
       ${metric('Avg HR (bpm)', summary.avgHr.toFixed(0))}
       ${metric('Max HR (bpm)', summary.maxHr.toFixed(0))}
       ${metric('Elevation Gain (m)', summary.elevationGainM.toFixed(0))}
@@ -2210,6 +2212,7 @@ function sharedCss() {
     .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; }
     .metric { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:10px 12px; }
     .metric .k { color:var(--muted); font-size:0.82rem; text-transform:uppercase; letter-spacing:0.08em; }
+    .term { text-decoration:underline dotted; text-underline-offset:3px; cursor:help; }
     .metric .v { font-size:1.3rem; margin-top:3px; font-weight:bold; color:var(--accent); }
     .chart { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:12px; position:relative; }
     /* Traps Leaflet's internal z-index layers (up to 1000) inside the map card. */
@@ -2273,8 +2276,16 @@ function sharedCss() {
   `;
 }
 
-function metric(label, value) {
-  return `<div class="metric"><div class="k">${escapeHtml(String(label))}</div><div class="v">${escapeHtml(String(value))}</div></div>`;
+function metric(label, value, term, glossary) {
+  return `<div class="metric"><div class="k">${renderTerm(label, term, glossary)}</div><div class="v">${escapeHtml(String(value))}</div></div>`;
+}
+
+function renderTerm(label, term, glossary) {
+  const description = glossary?.[term];
+  const text = escapeHtml(String(label));
+  return description
+    ? `<span class="term" title="${escapeHtml(description)}">${text}</span>`
+    : text;
 }
 
 
@@ -2294,7 +2305,7 @@ function renderStatsRow(stats, unit, isComp) {
   </div>`;
 }
 
-function renderComparisonTable(a, b, aName, bName) {
+function renderComparisonTable(a, b, aName, bName, glossary) {
   const rows = [
     ['Distance (km)', a.distanceKm.toFixed(2), b.distanceKm.toFixed(2)],
     ['Duration', a.durationText, b.durationText],
@@ -2302,20 +2313,20 @@ function renderComparisonTable(a, b, aName, bName) {
     ['Max Speed (km/h)', a.maxSpeed.toFixed(2), b.maxSpeed.toFixed(2)],
     ['Avg Power (W)', a.avgPower.toFixed(0), b.avgPower.toFixed(0)],
     ['Max Power (W)', a.maxPower.toFixed(0), b.maxPower.toFixed(0)],
-    ['Normalized Power (W)', a.normalizedPower.toFixed(0), b.normalizedPower.toFixed(0)],
-    ['Intensity Factor (IF)', a.intensityFactor > 0 ? a.intensityFactor.toFixed(2) : 'n/a', b.intensityFactor > 0 ? b.intensityFactor.toFixed(2) : 'n/a'],
-    ['TSS', a.trainingStressScore > 0 ? a.trainingStressScore.toFixed(1) : 'n/a', b.trainingStressScore > 0 ? b.trainingStressScore.toFixed(1) : 'n/a'],
-    ['xPower (GC) (W)', a.xPower > 0 ? a.xPower.toFixed(0) : 'n/a', b.xPower > 0 ? b.xPower.toFixed(0) : 'n/a'],
-    ['RI (GC)', a.relativeIntensityGc > 0 ? a.relativeIntensityGc.toFixed(2) : 'n/a', b.relativeIntensityGc > 0 ? b.relativeIntensityGc.toFixed(2) : 'n/a'],
-    ['BikeStress (GC)', a.bikeStressScore > 0 ? a.bikeStressScore.toFixed(1) : 'n/a', b.bikeStressScore > 0 ? b.bikeStressScore.toFixed(1) : 'n/a'],
-    ['Decoupling % (Intervals)', Number.isFinite(a.decouplingPct) ? `${a.decouplingPct.toFixed(1)}%` : 'n/a', Number.isFinite(b.decouplingPct) ? `${b.decouplingPct.toFixed(1)}%` : 'n/a'],
-    ['TRIMP', a.trimp > 0 ? a.trimp.toFixed(1) : 'n/a', b.trimp > 0 ? b.trimp.toFixed(1) : 'n/a'],
-    ['hrTSS', a.hrTss > 0 ? a.hrTss.toFixed(1) : 'n/a', b.hrTss > 0 ? b.hrTss.toFixed(1) : 'n/a'],
+    ['Normalized Power (W)', a.normalizedPower?.toFixed(0) ?? 'n/a', b.normalizedPower?.toFixed(0) ?? 'n/a', 'normalizedPower'],
+    ['Intensity Factor (IF)', a.intensityFactor > 0 ? a.intensityFactor.toFixed(2) : 'n/a', b.intensityFactor > 0 ? b.intensityFactor.toFixed(2) : 'n/a', 'intensityFactor'],
+    ['TSS', a.trainingStressScore > 0 ? a.trainingStressScore.toFixed(1) : 'n/a', b.trainingStressScore > 0 ? b.trainingStressScore.toFixed(1) : 'n/a', 'trainingStressScore'],
+    ['xPower (GC) (W)', a.xPower > 0 ? a.xPower.toFixed(0) : 'n/a', b.xPower > 0 ? b.xPower.toFixed(0) : 'n/a', 'xpower'],
+    ['RI (GC)', a.relativeIntensityGc > 0 ? a.relativeIntensityGc.toFixed(2) : 'n/a', b.relativeIntensityGc > 0 ? b.relativeIntensityGc.toFixed(2) : 'n/a', 'relativeIntensity'],
+    ['BikeStress (GC)', a.bikeStressScore > 0 ? a.bikeStressScore.toFixed(1) : 'n/a', b.bikeStressScore > 0 ? b.bikeStressScore.toFixed(1) : 'n/a', 'bikeStress'],
+    ['Decoupling % (Intervals)', Number.isFinite(a.decouplingPct) ? `${a.decouplingPct.toFixed(1)}%` : 'n/a', Number.isFinite(b.decouplingPct) ? `${b.decouplingPct.toFixed(1)}%` : 'n/a', 'decoupling'],
+    ['TRIMP', a.trimp > 0 ? a.trimp.toFixed(1) : 'n/a', b.trimp > 0 ? b.trimp.toFixed(1) : 'n/a', 'trimp'],
+    ['hrTSS', a.hrTss > 0 ? a.hrTss.toFixed(1) : 'n/a', b.hrTss > 0 ? b.hrTss.toFixed(1) : 'n/a', 'hrTss'],
     ['Avg HR (bpm)', a.avgHr.toFixed(0), b.avgHr.toFixed(0)],
     ['Max HR (bpm)', a.maxHr.toFixed(0), b.maxHr.toFixed(0)],
     ['Elevation Gain (m)', a.elevationGainM.toFixed(0), b.elevationGainM.toFixed(0)],
     ['Elevation Loss (m)', a.elevationLossM.toFixed(0), b.elevationLossM.toFixed(0)],
-  ].map(([label, va, vb]) => `<tr><td class="cmpLabel">${escapeHtml(label)}</td><td class="cmpA">${escapeHtml(va)}</td><td class="cmpB">${escapeHtml(vb)}</td></tr>`).join('');
+  ].map(([label, va, vb, term]) => `<tr><td class="cmpLabel">${renderTerm(label, term, glossary)}</td><td class="cmpA">${escapeHtml(va)}</td><td class="cmpB">${escapeHtml(vb)}</td></tr>`).join('');
   return `<section class="chart"><h2>Comparison</h2><table class="cmpTable">
     <thead><tr><th></th><th>${escapeHtml(aName || 'Activity')}</th><th>${escapeHtml(bName || 'Comparison')}</th></tr></thead>
     <tbody>${rows}</tbody>

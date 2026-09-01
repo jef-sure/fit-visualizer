@@ -14,6 +14,7 @@ const {
   summarizePromptBlocks,
 } = require('../analysis');
 const { ensureDatabaseSchema } = require('../database-schema');
+const { GLOSSARY, localizeGlossary } = require('../glossary');
 const {
   calculateAutoHeartRateProfile,
   computeHeartRateZones,
@@ -730,6 +731,18 @@ test('shared formatting utilities preserve display behavior', () => {
   assert.deepEqual(downsamplePoints([0, 1, 2, 3], 2), [0, 2]);
   assert.equal(Number.isNaN(asNumber(null)), true);
   assert.equal(Number.isNaN(asNumber('')), true);
+});
+
+test('activity glossary localizes visible metric descriptions from one source', () => {
+  const translated = localizeGlossary((text) => text === GLOSSARY.trainingStressScore ? 'TSS: показатель тренировочной нагрузки.' : text);
+  assert.equal(translated.trainingStressScore, 'TSS: показатель тренировочной нагрузки.');
+  assert.match(translated.normalizedPower, /Normalized Power/);
+  assert.match(GLOSSARY.technical, /Technical/);
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /const glossary = localizeGlossary\(vscode\.l10n\.t\);/);
+  assert.match(source, /class="term" title="\$\{escapeHtml\(description\)\}"/);
+  assert.match(source, /metric\('TSS' \+ powerMetricSuffix,[\s\S]*?'trainingStressScore', glossary\)/);
 });
 
 test('normalized power equals constant power for steady efforts', () => {

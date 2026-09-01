@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 - 2026-09-01
+
+### Added
+
+- Added localized hover explanations for key activity and training-load terms.
+
 ## 0.3.0 - 2026-09-01
 
 ### Added

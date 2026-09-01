@@ -1,0 +1,17 @@
+{
+  "Normalized Power (NP): a weighted power estimate that reflects the physiological cost of variable efforts.": "Normalized Power (NP): взвешенная оценка мощности, отражающая физиологическую стоимость переменных усилий.",
+  "Intensity Factor (IF): normalized power divided by FTP; it expresses ride intensity relative to threshold.": "Intensity Factor (IF): нормализованная мощность, делённая на FTP; показывает интенсивность относительно порога.",
+  "Training Stress Score (TSS): a power-based estimate of training load that combines duration and intensity.": "Training Stress Score (TSS): оценка тренировочной нагрузки по мощности, объединяющая длительность и интенсивность.",
+  "xPower: GoldenCheetah's exponentially weighted estimate of the physiological cost of variable power.": "xPower: экспоненциально взвешенная оценка физиологической стоимости переменной мощности из GoldenCheetah.",
+  "Relative Intensity (RI): xPower divided by FTP.": "Relative Intensity (RI): xPower, делённая на FTP.",
+  "BikeStress: GoldenCheetah's power-based training-load score using xPower and Relative Intensity.": "BikeStress: оценка тренировочной нагрузки GoldenCheetah по мощности с использованием xPower и Relative Intensity.",
+  "Decoupling: the change in the relationship between power and heart rate from the first half of a ride to the second.": "Decoupling: изменение соотношения мощности и пульса между первой и второй половинами тренировки.",
+  "TRIMP: a heart-rate-based training impulse score that combines duration and heart-rate intensity.": "TRIMP: оценка тренировочного импульса по пульсу, объединяющая длительность и интенсивность пульса.",
+  "hrTSS: a heart-rate-based estimate of training stress when power-based TSS is unavailable.": "hrTSS: оценка тренировочного стресса по пульсу, когда TSS по мощности недоступен.",
+  "Virtual power: a power estimate calculated from speed, grade, mass, and resistance assumptions; it is most reliable on climbs.": "Virtual power: оценка мощности по скорости, уклону, массе и сопротивлению; наиболее надёжна на подъёмах.",
+  "Climb: a segment whose average grade exceeds the configured uphill threshold.": "Climb: сегмент со средним уклоном выше настроенного порога подъёма.",
+  "Descent: a segment whose average grade exceeds the configured downhill threshold in the negative direction.": "Descent: сегмент со средним отрицательным уклоном ниже настроенного порога спуска.",
+  "Flat: a segment between the configured uphill and downhill grade thresholds.": "Flat: сегмент между настроенными порогами подъёма и спуска.",
+  "Stopped: an interval detected from near-zero speed or a recording gap.": "Stopped: интервал, найденный по почти нулевой скорости или разрыву записи.",
+  "Technical: a steep descent with highly variable speed, where an effort estimate is intentionally withheld.": "Technical: крутой спуск с сильно меняющейся скоростью, для которого оценка усилия намеренно не показывается."
+}
