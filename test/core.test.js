@@ -2186,20 +2186,29 @@ test('activity_comparisons stores directed pairs independently and upserts by pa
   try {
     ensureDatabaseSchema(db);
     db.run(`INSERT INTO activities (id, file_path) VALUES (1, 'a.fit'), (2, 'b.fit')`);
-    const upsert = (activityId, comparedId, text) => db.run(`
+    const upsert = (activityId, comparedId, text, updatedAt) => db.run(`
       INSERT INTO activity_comparisons (activity_id, compared_activity_id, comparison_text, created_at, updated_at)
-      VALUES (?, ?, ?, '2026-01-01', '2026-01-01')
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(activity_id, compared_activity_id) DO UPDATE SET
         comparison_text = excluded.comparison_text,
         updated_at = excluded.updated_at
-    `, [activityId, comparedId, text]);
+    `, [activityId, comparedId, text, updatedAt, updatedAt]);
 
-    upsert(1, 2, 'A vs B v1');
-    upsert(2, 1, 'B vs A v1');
-    upsert(1, 2, 'A vs B v2');
+    upsert(1, 2, 'A vs B v1', '2026-01-01T10:00:00.000Z');
+    upsert(2, 1, 'B vs A v1', '2026-01-01T10:00:00.000Z');
+    upsert(1, 2, 'A vs B v2', '2026-01-02T10:00:00.000Z');
 
     const rows = db.exec('SELECT activity_id, compared_activity_id, comparison_text FROM activity_comparisons ORDER BY activity_id')[0].values;
     assert.deepEqual(rows, [[1, 2, 'A vs B v2'], [2, 1, 'B vs A v1']]);
+
+    // The panel lists every saved comparison FROM an activity, most recently updated first.
+    db.run(`INSERT INTO activities (id, file_path) VALUES (3, 'c.fit')`);
+    upsert(1, 3, 'A vs C v1', '2026-01-03T10:00:00.000Z');
+    const forActivity1 = db.exec(`
+      SELECT compared_activity_id, comparison_text, updated_at
+      FROM activity_comparisons WHERE activity_id = 1 ORDER BY updated_at DESC
+    `)[0].values;
+    assert.deepEqual(forActivity1.map((row) => row[0]), [3, 2], 'most recently updated pair first');
   } finally {
     db.close();
   }
@@ -2208,6 +2217,7 @@ test('activity_comparisons stores directed pairs independently and upserts by pa
 test('comparison feature is wired: DB functions, message handlers and cheap-model exclusion', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /async function getActivityComparisonFromDb\(/);
+  assert.match(source, /async function getActivityComparisonsForActivity\(/);
   assert.match(source, /async function storeActivityComparisonInDb\(/);
   assert.match(source, /async function removeActivityComparisonFromDb\(/);
   assert.match(source, /async function generateActivityComparison\(/);
@@ -2234,15 +2244,56 @@ test('segment context always returns display rows, even with nothing to show', (
   }
 });
 
-test('comparison UI renders only alongside a selected comparison activity and wires Compare/Remove buttons', () => {
+test('comparison UI lists every saved comparison regardless of the current dropdown selection', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const records = straightGpsRecords(4, 18);
+  const fitData = { records, sessions: [{ start_time: '2026-08-01T10:00:00.000Z' }], laps: [] };
+
+  // Two saved comparisons exist, but neither is the activity currently picked in the dropdown.
+  const savedComparisons = [
+    { comparedActivityId: 5, label: '01/07/2026, 10:00 · 22.0 km', comparisonText: 'Comparison vs ride 5' },
+    { comparedActivityId: 9, label: '15/06/2026, 08:00 · 18.5 km', comparisonText: 'Comparison vs ride 9' },
+  ];
+
+  const htmlWithNoSelection = renderActivityContentHtml(
+    {}, {}, fitData, null, 'n', false, null, {}, null, [], null, UI_STRINGS, GLOSSARY, false, 'en',
+    [], null, savedComparisons, null
+  );
+  assert.match(htmlWithNoSelection, /Comparison vs ride 5/);
+  assert.match(htmlWithNoSelection, /Comparison vs ride 9/);
+  assert.doesNotMatch(htmlWithNoSelection, /id="compareBtn"/, 'no trigger button without a dropdown selection');
+
+  const htmlWithNewSelection = renderActivityContentHtml(
+    {}, {}, fitData, null, 'n', false, null, {}, null, [], null, UI_STRINGS, GLOSSARY, false, 'en',
+    [], null, savedComparisons, 42
+  );
+  assert.match(htmlWithNewSelection, /Comparison vs ride 5/, 'saved comparisons stay listed for an unrelated selection');
+  assert.match(htmlWithNewSelection, />Compare with AI</, 'a new pair offers the initial label');
+
+  const htmlWithExistingSelection = renderActivityContentHtml(
+    {}, {}, fitData, null, 'n', false, null, {}, null, [], null, UI_STRINGS, GLOSSARY, false, 'en',
+    [], null, savedComparisons, 5
+  );
+  assert.match(htmlWithExistingSelection, />Compare Again</, 'an already-compared pair offers to redo it, not start it');
+
+  const emptyHtml = renderActivityContentHtml(
+    {}, {}, fitData, null, 'n', false, null, {}, null, [], null, UI_STRINGS, GLOSSARY, false, 'en',
+    [], null, [], null
+  );
+  assert.doesNotMatch(emptyHtml, /id="comparisonList"|id="compareBtn"/, 'nothing to compare and nothing saved: no section at all');
+});
+
+test('comparison UI wires Compare/Remove through a delegated click handler', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
-  assert.match(source, /const comparisonBlock = canCompare \? `/);
+  assert.match(source, /const comparisonBlock = \(comparisonEntriesSafe\.length \|\| canCompare\) \? `/);
+  assert.match(source, /class="removeComparisonBtn"/);
   assert.match(source, /id="compareBtn"/);
-  assert.match(source, /id="removeComparisonBtn"/);
   assert.match(source, /type: 'compareActivitiesAI'/);
   assert.match(source, /type: 'removeComparison'/);
   assert.match(source, /msg\.type === 'comparisonResult'/);
   assert.match(source, /msg\.type === 'comparisonRemoved'/);
+  assert.match(source, /comparisonList\?\.addEventListener\('click'/);
+  assert.match(source, /event\.target\.closest\('\.removeComparisonBtn'\)/);
 
   // Availability follows the dropdown, not whether the other ride happens to have a GPS track.
   assert.match(source, /const canCompare = Number\.isFinite\(comparedId\) && comparedId > 0;/);
@@ -2251,5 +2302,10 @@ test('comparison UI renders only alongside a selected comparison activity and wi
   // Every AI feature lives in the one AI Analysis section, between Analyze and the follow-up chat.
   assert.ok(source.indexOf('${comparisonBlock}') > source.indexOf('id="analyzeBtn"'));
   assert.ok(source.indexOf('${comparisonBlock}') < source.indexOf('id="analysisChatMessages"'));
+});
+
+test('comparison entries are labeled from the activities list the same way as the dropdown', () => {
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8'),
+    /const comparisonEntries = \(Array\.isArray\(comparisons\) \? comparisons : \[\]\)\.map\(\(entry\) => \{\s*\n\s*const compared = activities\.find\(\(a\) => Number\(a\.id\) === entry\.comparedActivityId\);\s*\n\s*return \{\s*\n\s*comparedActivityId: entry\.comparedActivityId,\s*\n\s*label: compared \? formatActivityLabel\(compared\) : `#\$\{entry\.comparedActivityId\}`,/);
 });
 

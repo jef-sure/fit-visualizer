@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.3 - 2026-09-01
+
+### Changed
+
+- The AI comparison list now shows every saved comparison for the current activity, labelled the same way as the "Compare with" dropdown (date, sport, distance, duration), regardless of what is currently selected in that dropdown. Previously only the comparison for the exact pair selected right now was shown, so a saved comparison effectively disappeared as soon as you picked a different activity or cleared the selection.
+- Selecting a comparison activity that already has a saved comparison now offers **Compare Again** instead of silently reusing the cached result with no visible way to redo it from that state.
+
 ## 0.13.2 - 2026-09-01
 
 ### Changed
