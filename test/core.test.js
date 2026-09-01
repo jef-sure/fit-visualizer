@@ -180,6 +180,18 @@ test('map can color route segments from the existing activity segmentation', () 
   assert.match(webviewSource, /SegmentLegend/);
 });
 
+test('segment map and chart hover tooltips reuse existing details without unavailable placeholders', () => {
+  const webviewSource = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  const svgSource = fs.readFileSync(path.join(__dirname, '..', 'chart-svg.js'), 'utf8');
+  assert.match(webviewSource, /window\.formatSegmentDetails = function formatSegmentDetails/);
+  assert.match(webviewSource, /line\.bindTooltip\(window\.formatSegmentDetails\(matchedSegment\)/);
+  assert.match(webviewSource, /id="\$\{mapId\}SegmentTooltip"/);
+  assert.match(webviewSource, /chartSegments\.find/);
+  assert.match(webviewSource, /Number\.isFinite\(Number\(segment\.avgHr\)\)/);
+  assert.doesNotMatch(webviewSource, /N\/A/);
+  assert.match(svgSource, /data-segment-index/);
+});
+
 test('mapId is declared before it is used to build chart payloads (no TDZ crash)', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   const declarationIndex = source.indexOf("const mapId = isComparison ? 'fitMapComp' : 'fitMap';");

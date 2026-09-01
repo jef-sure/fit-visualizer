@@ -276,6 +276,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const hrOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'heart_rate');
   const altitudeOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'altitude');
   const chartSegments = mapSegmentsToDistanceRanges(segments, records);
+  const segmentTooltipPayload = safeJson(chartSegments);
   const chartClientPayloads = safeJson({
     [mapId + 'SpeedSvg']: buildChartClientPayloadFromModule(speedChart, 'km', 'km/h', speedOverlays),
     [mapId + 'HrSvg']: buildChartClientPayloadFromModule(hrChart, 'km', 'bpm', hrOverlays),
@@ -447,6 +448,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
+    <div id="${mapId}SegmentTooltip" class="segmentTooltip" role="tooltip" hidden></div>
     <section id="${mapId}RouteSection" class="chart">
       <h2>${escapeHtml(ui.gpsRoute)}</h2>
       ${renderGpsRouteSvg(gpsRoute, 1400, 420)}
@@ -813,6 +815,22 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       let map = null;
       const hasRoute = Array.isArray(routePoints) && routePoints.length >= 2;
 
+      window.formatSegmentDetails = function formatSegmentDetails(segment) {
+        if (!segment) return '';
+        const fields = [];
+        const type = segment.technical ? ui.technical : ui[segment.type];
+        if (type) fields.push('<strong>' + escapeHtmlClient(type) + '</strong>');
+        if (Number.isFinite(Number(segment.durationS))) fields.push(escapeHtmlClient(ui.duration) + ': ' + Math.round(Number(segment.durationS) / 60) + ':' + String(Math.round(Number(segment.durationS)) % 60).padStart(2, '0'));
+        if (Number.isFinite(Number(segment.startDistanceKm)) && Number.isFinite(Number(segment.endDistanceKm))) fields.push(escapeHtmlClient(ui.distance) + ': ' + Math.max(0, Number(segment.endDistanceKm) - Number(segment.startDistanceKm)).toFixed(2) + ' km');
+        if (Number.isFinite(Number(segment.avgGrade))) fields.push(escapeHtmlClient(ui.grade) + ': ' + Number(segment.avgGrade).toFixed(1) + '%');
+        if (Number.isFinite(Number(segment.avgSpeedKmh))) fields.push(escapeHtmlClient(ui.speed) + ': ' + Number(segment.avgSpeedKmh).toFixed(1) + ' km/h');
+        if (Number.isFinite(Number(segment.avgHr))) fields.push(escapeHtmlClient(ui.heartRate) + ': ' + Math.round(Number(segment.avgHr)) + ' bpm');
+        if (Number.isFinite(Number(segment.avgPower))) fields.push(escapeHtmlClient(ui.effort) + ': ' + Math.round(Number(segment.avgPower)) + ' W');
+        if (Number.isFinite(Number(segment.elevGainM)) && Number(segment.elevGainM) > 0) fields.push(escapeHtmlClient(ui.elevation) + ': +' + Math.round(Number(segment.elevGainM)) + ' m');
+        if (segment.technical && type !== ui.technical) fields.push(escapeHtmlClient(ui.technical));
+        return fields.join('<br>');
+      };
+
       function setupCooperativeZoom(targetMap) {
         const container = targetMap.getContainer();
         const isMac = /mac/i.test(navigator.platform || navigator.userAgent || '');
@@ -892,7 +910,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             const color = mode === 'segment'
               ? (segmentColors[segmentType] || '#7f8c8d')
               : (mode !== 'none' ? colorForValue(value, mn, mx) : '#2f6db3');
-            segments.push(L.polyline([[a.lat,a.lon],[b.lat,b.lon]], { color, weight:4, opacity:0.92, lineCap:'round' }).addTo(map));
+            const line = L.polyline([[a.lat,a.lon],[b.lat,b.lon]], { color, weight:4, opacity:0.92, lineCap:'round' }).addTo(map);
+            if (mode === 'segment' && matchedSegment) line.bindTooltip(window.formatSegmentDetails(matchedSegment), { sticky: true, className: 'segmentLeafletTooltip' });
+            segments.push(line);
           }
         }
         const sel = document.getElementById('${mapId}Mode');
@@ -917,6 +937,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   <script nonce="${nonce}">
     (function () {
       var payloads = ${chartClientPayloads};
+      var chartSegments = ${segmentTooltipPayload};
+      var segmentTooltip = document.getElementById('${mapId}SegmentTooltip');
       var svgIds = Object.keys(payloads).filter(function (id) { return payloads[id]; });
       var instances = {};
 
@@ -1196,6 +1218,19 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
 
         initOverlayControls(svgId, payload, instance);
+        svg.querySelectorAll('.segmentBand[data-segment-index]').forEach(function (band) {
+          band.addEventListener('mousemove', function (event) {
+            var segment = chartSegments.find(function (candidate) { return String(candidate.index) === band.getAttribute('data-segment-index'); });
+            if (!segment || !segmentTooltip) return;
+            segmentTooltip.innerHTML = window.formatSegmentDetails(segment);
+            segmentTooltip.hidden = false;
+            var maxLeft = Math.max(8, window.innerWidth - segmentTooltip.offsetWidth - 8);
+            var maxTop = Math.max(8, window.innerHeight - segmentTooltip.offsetHeight - 8);
+            segmentTooltip.style.left = Math.max(8, Math.min(maxLeft, event.clientX + 14)) + 'px';
+            segmentTooltip.style.top = Math.max(8, Math.min(maxTop, event.clientY + 14)) + 'px';
+          });
+          band.addEventListener('mouseleave', function () { if (segmentTooltip) segmentTooltip.hidden = true; });
+        });
       }
 
       svgIds.forEach(initChart);
@@ -1269,10 +1304,12 @@ function sharedCss() {
     .routeStart { fill:var(--vscode-testing-iconPassed); } .routeEnd { fill:var(--vscode-testing-iconFailed); }
     .kmMarker { stroke:color-mix(in srgb,var(--ink) 30%,transparent); stroke-width:1; stroke-dasharray:2 5; }
     .kmLabel { fill:var(--muted); font-size:9px; }
-    .segmentBand { pointer-events:none; }
+    .segmentBand { pointer-events:all; cursor:help; }
     .segmentBandClimb { fill:#d35400; fill-opacity:0.13; } .segmentBandDescent { fill:#2980b9; fill-opacity:0.13; }
     .segmentBandFlat { fill:#3d8b40; fill-opacity:0.11; } .segmentBandStopped { fill:#7f8c8d; fill-opacity:0.14; }
     .segmentBandTechnical { fill:#c0392b; fill-opacity:0.14; }
+    .segmentTooltip, .segmentLeafletTooltip { max-width:260px; padding:7px 9px; border:1px solid var(--border); border-radius:6px; background:var(--vscode-editorHoverWidget-background, var(--card)); color:var(--ink); box-shadow:0 3px 12px rgba(0,0,0,.22); font-size:.82rem; line-height:1.4; pointer-events:none; }
+    .segmentTooltip { position:fixed; z-index:1300; }
     .segmentBandControls { display:inline-flex; align-items:center; gap:4px; margin:0 0 6px; color:var(--muted); font-size:0.82rem; cursor:pointer; }
     .crosshair { stroke:color-mix(in srgb,var(--ink) 55%,transparent); stroke-width:1; pointer-events:none; }
     .crosshairDot { fill:var(--accent); stroke:var(--bg); stroke-width:1.5; pointer-events:none; }

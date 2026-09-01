@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 - 2026-09-01
+
+### Added
+
+- Added localized hover details for terrain segments on the map and chart bands.
+
 ## 0.7.0 - 2026-09-01
 
 ### Added

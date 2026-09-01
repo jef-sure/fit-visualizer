@@ -40,7 +40,8 @@ function createChartSvgRenderer({ buildDistanceMarkers, escapeHtml, formatTick, 
       if (x2 <= x1) return '';
       const type = segment.technical ? 'technical' : segment.type;
       const bandClass = { climb: 'Climb', descent: 'Descent', flat: 'Flat', stopped: 'Stopped', technical: 'Technical' }[type];
-      return bandClass ? `<rect class="segmentBand segmentBand${bandClass}" x="${x1.toFixed(1)}" y="${chart.plotTop}" width="${(x2 - x1).toFixed(1)}" height="${chart.plotBottom - chart.plotTop}" />` : '';
+      const segmentIndex = Number.isInteger(segment.index) ? ` data-segment-index="${segment.index}"` : '';
+      return bandClass ? `<rect class="segmentBand segmentBand${bandClass}"${segmentIndex} x="${x1.toFixed(1)}" y="${chart.plotTop}" width="${(x2 - x1).toFixed(1)}" height="${chart.plotBottom - chart.plotTop}" />` : '';
     }).join('');
     const kmMarkers = addDistanceMarkers ? buildDistanceMarkers(chart, 1) : [];
     const markerSvg = kmMarkers.map((marker) => `<g>
