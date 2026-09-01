@@ -205,8 +205,8 @@ test('adaptive chart ticks recompute when only height changes', () => {
   assert.match(source, /var lastWidth = 0;\s*var lastHeight = 0;/);
   assert.match(source, /Math\.abs\(rect\.width - lastWidth\) < 1 && Math\.abs\(rect\.height - lastHeight\) < 1/);
   assert.match(source, /lastWidth = rect\.width;\s*lastHeight = rect\.height;/);
-  assert.match(source, /clampCount\(plotWidthPx \/ 80, 3, 15\)/);
-  assert.match(source, /clampCount\(plotHeightPx \/ 36, 4, 15\)/);
+  assert.match(source, /clampCount\(plotWidthPx \/ 72, 4, 18\)/);
+  assert.match(source, /clampCount\(plotHeightPx \/ 30, 6, 18\)/);
 });
 
 test('client tick rounding keeps the server step at powers of ten', () => {
@@ -220,6 +220,20 @@ test('client tick rounding keeps the server step at powers of ten', () => {
   assert.equal(rough, 1000);
   assert.equal(oldMagnitude, 100);
   assert.equal(clientMagnitude, 1000);
+});
+
+test('speed-axis tick density keeps a 10 km/h step for a 0-50 km/h range', () => {
+  const min = 0;
+  const max = 50;
+  const targetCount = 6;
+  const span = Math.abs(max - min);
+  const rough = span / Math.max(2, targetCount - 1);
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rough)));
+  const residual = rough / magnitude;
+  const nice = residual > 5 ? 10 : residual > 2 ? 5 : residual > 1 ? 2 : 1;
+  const step = nice * magnitude;
+
+  assert.equal(step, 10);
 });
 
 test('crosshair shows a text label with the actual X/Y values at the hovered point', () => {
@@ -250,7 +264,7 @@ test('chart text labels adapt to the rendered SVG scale', () => {
   assert.match(source, /class="axisLabel axisLabelX"/);
   assert.match(source, /var axisX = svg\.querySelector\('\.axisLabelX'\);/);
   assert.match(source, /axisX\.style\.fontSize = '11px';/);
-  assert.match(source, /axisX\.setAttribute\('transform', 'translate\('/);
+  assert.doesNotMatch(source, /axisX\.setAttribute\('transform'/);
   assert.match(source, /if \(instance\.lastRect\) updateChartTextScale\(svg, payload, instance\.lastRect\);/);
   assert.match(source, /redrawTicks\(svg, payload,[\s\S]*?updateChartTextScale\(svg, payload, rect\);/);
 });

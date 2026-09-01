@@ -1985,10 +1985,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
         var axisX = svg.querySelector('.axisLabelX');
         if (axisX) {
-          var axisXAnchor = axisX.getAttribute('x') + ' ' + axisX.getAttribute('y');
           axisX.style.fontSize = '11px';
-          axisX.setAttribute('transform', 'translate(' + axisXAnchor + ') scale('
-            + (1 / xScale).toFixed(4) + ' ' + (1 / yScale).toFixed(4) + ') translate(-' + axisXAnchor + ')');
         }
       }
 
@@ -2159,7 +2156,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             instance.lastRect = rect;
             var plotWidthPx = (payload.plotRight - payload.plotLeft) * (rect.width / payload.width);
             var plotHeightPx = (payload.plotBottom - payload.plotTop) * (rect.height / payload.height);
-            redrawTicks(svg, payload, clampCount(plotWidthPx / 80, 3, 15), clampCount(plotHeightPx / 36, 4, 15));
+            redrawTicks(svg, payload, clampCount(plotWidthPx / 72, 4, 18), clampCount(plotHeightPx / 30, 6, 18));
             updateChartTextScale(svg, payload, rect);
           });
           observer.observe(svg);
