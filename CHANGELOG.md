@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.2 - 2026-09-01
+
+### Fixed
+
+- TRIMP and aerobic decoupling returned `0` when they could not be calculated, which is indistinguishable from a real zero and skewed averages. Both now return no value at all, matching the other derived workload metrics. Legacy zero TRIMP values are cleared on upgrade.
+- A genuine 0% decoupling is no longer hidden from the AI prompt and the activity summary; only a missing value is omitted. Perfect aerobic coupling is a finding, not an absence of data.
+
 ## 0.12.1 - 2026-09-01
 
 ### Fixed

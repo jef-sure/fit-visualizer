@@ -1059,7 +1059,7 @@ function segmentHrDrift(records, range, summary, basis, athlete, options) {
     restingHeartRate: athlete.restingHeartRate,
     maxHeartRate: athlete.maxHeartRate,
   });
-  return drift ? roundTo(drift, 1) : null;
+  return Number.isFinite(drift) ? roundTo(drift, 1) : null;
 }
 
 function splitByEffort(records, macro, basis, windowSeconds, minSegmentSeconds, options) {  const valueOf = basis === 'hr'
@@ -1489,7 +1489,7 @@ function calculateIntervalsDecoupling(records, input) {
   }
 
   if (samples.length < 10) {
-    return 0;
+    return null;
   }
 
   const powerSeries = despikeSeries(samples.map((s) => s.p), { absThreshold: 250, ratioThreshold: 0.6 });
@@ -1509,7 +1509,7 @@ function calculateIntervalsDecoupling(records, input) {
   }
 
   if (efficiencies.length < 8) {
-    return 0;
+    return null;
   }
 
   const firstTime = efficiencies[0].t;
@@ -1519,13 +1519,13 @@ function calculateIntervalsDecoupling(records, input) {
   const secondHalf = efficiencies.filter((sample) => sample.t > midpoint).map((sample) => sample.value);
 
   if (firstHalf.length < 4 || secondHalf.length < 4) {
-    return 0;
+    return null;
   }
 
   const firstAvg = average(firstHalf);
   const secondAvg = average(secondHalf);
   if (!Number.isFinite(firstAvg) || firstAvg <= 0 || !Number.isFinite(secondAvg)) {
-    return 0;
+    return null;
   }
 
   return ((secondAvg - firstAvg) / firstAvg) * 100;
@@ -1591,7 +1591,7 @@ function calculateBanisterTrimp(input) {
       || !Number.isFinite(restingHeartRate)
       || !Number.isFinite(maxHeartRate)
       || maxHeartRate <= restingHeartRate) {
-    return 0;
+    return null;
   }
 
   const deltaHrRatio = (avgHeartRate - restingHeartRate) / (maxHeartRate - restingHeartRate);

@@ -1367,6 +1367,25 @@ test('Banister TRIMP and hrTSS are computed from HR reserve intensity', () => {
   assert.ok(trimp > 0);
   assert.ok(hrTss > 0);
   assert.ok(hrTss < 100);
+
+  // Without an HR profile neither score is computable, and that must not look like a zero workload.
+  assert.equal(calculateBanisterTrimp({ durationSec: 3600, avgHeartRate: 150 }), null);
+  assert.equal(calculateHrTss({ durationSec: 3600, avgHeartRate: 150 }), null);
+});
+
+test('decoupling reports null when it cannot be computed but keeps a genuine zero', () => {
+  const profile = { ftp: 250, restingHeartRate: 50, maxHeartRate: 190 };
+
+  assert.equal(calculateIntervalsDecoupling([], profile), null);
+  // Enough samples, but no usable heart rate at all.
+  const noHr = Array.from({ length: 40 }, (_, i) => ({ elapsed_time: i, power: 200, heart_rate: 0 }));
+  assert.equal(calculateIntervalsDecoupling(noHr, profile), null);
+
+  // Perfectly stable power and heart rate: 0% is the real answer, not a missing one.
+  const stable = Array.from({ length: 1200 }, (_, i) => ({ elapsed_time: i, power: 200, heart_rate: 140 }));
+  const coupled = calculateIntervalsDecoupling(stable, profile);
+  assert.ok(Number.isFinite(coupled), 'a stable ride must produce a number, not null');
+  assert.ok(Math.abs(coupled) < 1, `expected near-zero decoupling, got ${coupled}`);
 });
 
 test('database schema migrates manual HR overrides onto existing activities', async () => {
@@ -1400,14 +1419,14 @@ test('database schema clears legacy zero sentinels from derived workload metrics
     ensureDatabaseSchema(db);
     db.run(`INSERT INTO activities (
       file_path, normalized_power, training_stress_score, intensity_factor,
-      xpower, relative_intensity_gc, bike_stress_score, hr_tss
-    ) VALUES ('legacy.fit', 0, 0, 0, 0, 0, 0, 0)`);
+      xpower, relative_intensity_gc, bike_stress_score, hr_tss, trimp
+    ) VALUES ('legacy.fit', 0, 0, 0, 0, 0, 0, 0, 0)`);
     ensureDatabaseSchema(db);
     const row = db.exec(`SELECT normalized_power, training_stress_score, intensity_factor,
-      xpower, relative_intensity_gc, bike_stress_score, hr_tss
+      xpower, relative_intensity_gc, bike_stress_score, hr_tss, trimp
       FROM activities WHERE file_path = 'legacy.fit'`)[0].values[0];
 
-    assert.deepEqual(row, [null, null, null, null, null, null, null]);
+    assert.deepEqual(row, [null, null, null, null, null, null, null, null]);
 
     // A zero in one metric must not blank out genuinely measured values in the others.
     db.run(`INSERT INTO activities (
@@ -1420,6 +1439,12 @@ test('database schema clears legacy zero sentinels from derived workload metrics
       FROM activities WHERE file_path = 'mixed.fit'`)[0].values[0];
 
     assert.deepEqual(mixed, [210, 95.4, 0.84, 205, 0.82, 92.1, null]);
+
+    // Decoupling is signed, so a stored 0 is a real reading and must survive the cleanup.
+    db.run(`INSERT INTO activities (file_path, decoupling_pct, hr_tss) VALUES ('coupled.fit', 0, 0)`);
+    ensureDatabaseSchema(db);
+    const coupled = db.exec("SELECT decoupling_pct, hr_tss FROM activities WHERE file_path = 'coupled.fit'")[0].values[0];
+    assert.deepEqual(coupled, [0, null]);
   } finally {
     db.close();
   }

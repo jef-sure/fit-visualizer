@@ -6,9 +6,10 @@ function formatPositive(value, digits) {
   return Number.isFinite(num) && num > 0 ? num.toFixed(digits) : null;
 }
 
-function formatNonZero(value, digits) {
+// Zero is a real reading for signed metrics like decoupling, so only a missing value is dropped.
+function formatFinite(value, digits) {
   const num = Number(value);
-  return Number.isFinite(num) && num !== 0 ? num.toFixed(digits) : null;
+  return Number.isFinite(num) ? num.toFixed(digits) : null;
 }
 
 // Missing values are left out of the prompt entirely: an "N/A" only invites the model to speculate.
@@ -350,7 +351,7 @@ function buildWorkoutFields(session, records) {
     ['xPower (GC)', formatPositive(session.xpower, 0), 'W'],
     ['RI (GC)', formatPositive(session.relative_intensity_gc, 2)],
     ['BikeStress (GC)', formatPositive(session.bike_stress_score, 1)],
-    ['Decoupling % (Intervals)', formatNonZero(session.decoupling_pct, 1)],
+    ['Decoupling % (Intervals)', formatFinite(session.decoupling_pct, 1)],
     ['TRIMP', formatPositive(session.trimp, 1)],
     ['hrTSS', formatPositive(session.hr_tss, 1)],
     ['Avg Heart Rate', formatPositive(session.avg_hr, 0), 'bpm'],
@@ -506,7 +507,7 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
     ['xPower (GC)', formatPositive(session.xpower, 0), 'W'],
     ['RI (GC)', formatPositive(session.relative_intensity_gc, 2)],
     ['BikeStress (GC)', formatPositive(session.bike_stress_score, 1)],
-    ['Decoupling % (Intervals)', formatNonZero(session.decoupling_pct, 1)],
+    ['Decoupling % (Intervals)', formatFinite(session.decoupling_pct, 1)],
     ['TRIMP', formatPositive(session.trimp, 1)],
     ['hrTSS', formatPositive(session.hr_tss, 1)],
     ['Avg heart rate', formatPositive(session.avg_hr, 0), 'bpm'],
