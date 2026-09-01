@@ -1,7 +1,7 @@
 const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { generateAnalysisPrompt, generateAnalysisChatPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('./analysis');
+const { generateAnalysisPrompt, generateAnalysisChatPrompt, generateComparisonPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('./analysis');
 const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
 const { buildCartesianGeometry, buildDistanceMarkers, buildTicks, formatTick, padRange, padYAxisRange } = require('./chart-geometry');
@@ -594,6 +594,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const wheelCalibration = await getWheelCalibrationRecommendation(dbPath);
     const analysis = selId ? await getLatestAnalysisAnyVersion(dbPath, selId) : null;
     const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
+    const comparison = selId && selCompId ? await getActivityComparisonFromDb(dbPath, selId, selCompId) : null;
     const hrConfig = data
       ? await getHeartRateConfigForActivity(dbPath, data.sessions?.[0]?.start_time)
       : getHeartRateConfig();
@@ -603,7 +604,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     );
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparison
     );
     if (selId) {
       panel.webview.postMessage({ type: 'analysisChatState', id: Number(selId), messages: analysisChat });
@@ -657,6 +658,26 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         panel.webview.postMessage({ type: 'analysisChatError', id: Number(msg.id), error: errorMsg });
+      }
+    } else if (msg.type === 'compareActivitiesAI') {
+      try {
+        const requestedActivityId = Number(msg.id);
+        const comparedActivityId = Number(msg.compId);
+        const comparison = await generateActivityComparison(dbPath, requestedActivityId, comparedActivityId, msg.force);
+        panel.webview.postMessage({ type: 'comparisonResult', id: requestedActivityId, compId: comparedActivityId, comparison });
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        panel.webview.postMessage({ type: 'comparisonError', id: Number(msg.id), compId: Number(msg.compId), error: errorMsg });
+      }
+    } else if (msg.type === 'removeComparison') {
+      try {
+        const requestedActivityId = Number(msg.id);
+        const comparedActivityId = Number(msg.compId);
+        await removeActivityComparisonFromDb(dbPath, requestedActivityId, comparedActivityId);
+        panel.webview.postMessage({ type: 'comparisonRemoved', id: requestedActivityId, compId: comparedActivityId });
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        panel.webview.postMessage({ type: 'comparisonError', id: Number(msg.id), compId: Number(msg.compId), error: errorMsg });
       }
     } else if (msg.type === 'updateActivityHeartRate') {
       try {
@@ -2214,6 +2235,101 @@ async function storeAnalysisInDb(dbPath, activityId, analysis) {
   } finally {
     db.close();
   }
+}
+
+async function getActivityComparisonFromDb(dbPath, activityId, comparedActivityId) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  let stmt;
+  try {
+    stmt = db.prepare('SELECT comparison_text FROM activity_comparisons WHERE activity_id = ? AND compared_activity_id = ?');
+    stmt.bind([activityId, comparedActivityId]);
+    return stmt.step() ? stmt.getAsObject().comparison_text : null;
+  } finally {
+    stmt?.free();
+    db.close();
+  }
+}
+
+async function storeActivityComparisonInDb(dbPath, activityId, comparedActivityId, comparisonText) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  try {
+    const now = new Date().toISOString();
+    db.run(`
+      INSERT INTO activity_comparisons (activity_id, compared_activity_id, comparison_text, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(activity_id, compared_activity_id) DO UPDATE SET
+        comparison_text = excluded.comparison_text,
+        updated_at = excluded.updated_at
+    `, [activityId, comparedActivityId, comparisonText, now, now]);
+    await persistDatabase(db, dbPath);
+  } finally {
+    db.close();
+  }
+}
+
+// Removes only this one directed pair; other accumulated comparisons for either activity are untouched.
+async function removeActivityComparisonFromDb(dbPath, activityId, comparedActivityId) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  try {
+    db.run('DELETE FROM activity_comparisons WHERE activity_id = ? AND compared_activity_id = ?', [activityId, comparedActivityId]);
+    await persistDatabase(db, dbPath);
+  } finally {
+    db.close();
+  }
+}
+
+async function generateActivityComparison(dbPath, activityId, comparedActivityId, force = false) {
+  return enqueueLlmTask(() => runActivityComparison(dbPath, activityId, comparedActivityId, force));
+}
+
+async function runActivityComparison(dbPath, activityId, comparedActivityId, force) {
+  const numId = Number(activityId);
+  const compNumId = Number(comparedActivityId);
+  if (!Number.isFinite(numId) || numId <= 0 || !Number.isFinite(compNumId) || compNumId <= 0) {
+    throw new Error('Choose two activities to compare.');
+  }
+  if (numId === compNumId) {
+    throw new Error('Choose a different activity to compare against.');
+  }
+
+  if (!force) {
+    const existing = await getActivityComparisonFromDb(dbPath, numId, compNumId);
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const [current, compared] = await Promise.all([
+    loadFitDataFromDb(dbPath, numId),
+    loadFitDataFromDb(dbPath, compNumId),
+  ]);
+  if (!current) {
+    throw new Error(`Activity ${numId} not found in database`);
+  }
+  if (!compared) {
+    throw new Error(`Activity ${compNumId} not found in database`);
+  }
+
+  const [analysisData, comparedData] = await Promise.all([
+    prepareAnalysisData(dbPath, current, numId),
+    prepareAnalysisData(dbPath, compared, compNumId),
+  ]);
+
+  const prompt = generateComparisonPrompt(analysisData, comparedData, vscode.env.language);
+  const comparison = await requestCopilotAnalysis(vscode, prompt, {
+    vendor: getLanguageModelVendor(),
+    onCompleted: (result) => logLlmRequest(dbPath, {
+      activityId: numId,
+      kind: 'comparison',
+      ...result,
+    }),
+  });
+  await storeActivityComparisonInDb(dbPath, numId, compNumId, comparison);
+
+  return comparison;
 }
 
 function appendChatTurn(messages, role, content) {

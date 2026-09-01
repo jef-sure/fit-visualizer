@@ -32,7 +32,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
   getHrZoneIndex: getHeartRateZoneIndex,
 });
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisonText) {
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
   const ui = localizeUi(translate);
   const glossary = localizeGlossary(translate);
@@ -75,7 +75,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonText)
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -322,7 +322,7 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonText) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -588,6 +588,18 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <div id="analysisChatStatus" style="margin-top:6px;font-size:0.85rem;color:var(--muted);"></div>
       </div>
     </section>
+    ${hasOverlay ? `
+    <section class="chart">
+      <h2>${escapeHtml(ui.compareWithAI)}</h2>
+      <div id="comparisonContent" style="padding:12px;color:var(--muted);min-height:60px;line-height:1.5;">
+        <p style="margin:0;">${escapeHtml(ui.clickCompare)}</p>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button id="compareBtn" style="padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.compareWithAI)}</button>
+        <button id="removeComparisonBtn" style="padding:8px 16px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;display:none;">${escapeHtml(ui.removeComparison)}</button>
+      </div>
+    </section>
+    ` : ''}
   </main>
   <script nonce="${nonce}">
     (function () {
@@ -619,11 +631,17 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       const hrProfileForm = document.getElementById('${mapId}HrProfileForm');
       const hrProfileStatus = document.getElementById('${mapId}HrProfileStatus');
       const autoCalcZonesBtn = document.getElementById('${mapId}AutoCalcZonesBtn');
+      const comparisonContent = document.getElementById('comparisonContent');
+      const compareBtn = document.getElementById('compareBtn');
+      const removeComparisonBtn = document.getElementById('removeComparisonBtn');
       const vscode = window.fitVisualizerApi;
       const initialAnalysis = ${safeJson(analysis?.text || '')};
       let hasAnalysis = Boolean(initialAnalysis);
       let analysisOutdated = ${analysis && asNumber(analysis.version) < analysisVersion ? 'true' : 'false'};
       let chatMessages = ${safeJson(Array.isArray(analysisChat) ? analysisChat : [])};
+      const initialComparison = ${safeJson(comparisonText || '')};
+      let hasComparison = Boolean(initialComparison);
+      let compareActivityId = ${compData && compData._activityId ? compData._activityId : 'null'};
 
       function analyzeButtonLabel() {
         if (!hasAnalysis) return ui.analyzeActivity;
@@ -635,6 +653,23 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           ? '<div style="margin:0 0 10px 0;padding:8px 10px;border-left:4px solid #ffc107;background:rgba(255,193,7,0.1);font-size:0.92rem;">' + escapeHtml(ui.olderAnalysis) + '</div>'
           : '';
         analysisContent.innerHTML = note + '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(text) + '</div>';
+      }
+
+      function compareButtonLabel() {
+        return hasComparison ? ui.compareAgain : ui.compareWithAI;
+      }
+
+      function showComparisonText(text) {
+        if (!comparisonContent) return;
+        comparisonContent.innerHTML = '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(text) + '</div>';
+        if (removeComparisonBtn) removeComparisonBtn.style.display = '';
+      }
+
+      if (comparisonContent) {
+        if (initialComparison) {
+          showComparisonText(initialComparison);
+        }
+        if (compareBtn) compareBtn.textContent = compareButtonLabel();
       }
 
       function renderChatMessages() {
@@ -674,6 +709,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           && Number(msg.id) !== currentId) {
           return;
         }
+        if ((msg.type === 'comparisonResult' || msg.type === 'comparisonError' || msg.type === 'comparisonRemoved')
+          && Number.isFinite(currentId)
+          && (Number(msg.id) !== currentId || Number(msg.compId) !== Number(compareActivityId))) {
+          return;
+        }
         if (msg.type === 'analysisResult') {
           hasAnalysis = true;
           analysisOutdated = false;
@@ -699,6 +739,32 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           analysisChatSendBtn.disabled = false;
           analysisChatStatus.textContent = formatMessage(ui.error, String(msg.error || ui.chatFailed));
           analysisChatStatus.style.color = '#ff6b6b';
+        } else if (msg.type === 'comparisonResult') {
+          hasComparison = true;
+          showComparisonText(msg.comparison);
+          if (compareBtn) {
+            compareBtn.disabled = false;
+            compareBtn.textContent = compareButtonLabel();
+          }
+        } else if (msg.type === 'comparisonError') {
+          if (comparisonContent) {
+            comparisonContent.innerHTML = '<div style="color:#ff6b6b;">' + escapeHtml(formatMessage(ui.error, msg.error)) + '</div>';
+          }
+          if (compareBtn) {
+            compareBtn.disabled = false;
+            compareBtn.textContent = compareButtonLabel();
+          }
+        } else if (msg.type === 'comparisonRemoved') {
+          hasComparison = false;
+          if (comparisonContent) {
+            comparisonContent.innerHTML = '<p style="margin:0;color:var(--muted);">' + escapeHtml(ui.clickCompare) + '</p>';
+          }
+          if (compareBtn) compareBtn.textContent = compareButtonLabel();
+          if (removeComparisonBtn) {
+            removeComparisonBtn.disabled = false;
+            removeComparisonBtn.textContent = ui.removeComparison;
+            removeComparisonBtn.style.display = 'none';
+          }
         } else if (msg.type === 'translationError') {
           if (translationStatus) translationStatus.textContent = formatMessage(ui.error, String(msg.error || ''));
           if (generateTranslationsBtn) generateTranslationsBtn.disabled = false;
@@ -845,6 +911,24 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           vscode.postMessage({ type: 'analyzeActivity', id: window.currentActivityId, force: hasAnalysis });
         });
       }
+
+      compareBtn?.addEventListener('click', () => {
+        if (!window.currentActivityId || window.currentActivityId === 'null' || !compareActivityId) {
+          return;
+        }
+        compareBtn.disabled = true;
+        compareBtn.textContent = ui.comparing;
+        vscode.postMessage({ type: 'compareActivitiesAI', id: window.currentActivityId, compId: compareActivityId, force: hasComparison });
+      });
+
+      removeComparisonBtn?.addEventListener('click', () => {
+        if (!window.currentActivityId || window.currentActivityId === 'null' || !compareActivityId) {
+          return;
+        }
+        removeComparisonBtn.disabled = true;
+        removeComparisonBtn.textContent = ui.removingComparison;
+        vscode.postMessage({ type: 'removeComparison', id: window.currentActivityId, compId: compareActivityId });
+      });
 
       generateTranslationsBtn?.addEventListener('click', () => {
         generateTranslationsBtn.disabled = true;

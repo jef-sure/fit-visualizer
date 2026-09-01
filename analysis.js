@@ -1,4 +1,4 @@
-const { formatHms, groupSimilarSegments, segmentLineBudget } = require('./utils');
+const { formatHms, groupSimilarSegments, segmentLineBudget, collapseShortStops } = require('./utils');
 const { computeHeartRateZones } = require('./heart-rate');
 
 function formatPositive(value, digits) {
@@ -57,6 +57,7 @@ function describeSegment(segment) {
     segment.avgSpeedKmh != null ? `${segment.avgSpeedKmh} km/h` : null,
     segment.distanceKm != null ? `${segment.distanceKm} km` : null,
     segment.type === 'climb' && segment.elevGainM ? `+${segment.elevGainM} m` : null,
+    segment.pausedS != null ? `interrupted by a ${formatClock(segment.pausedS)} stop` : null,
   ]);
 }
 
@@ -324,16 +325,15 @@ function responseLanguageInstruction(locale) {
     : '';
 }
 
-function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previousAnalysis, followUpHistory, recentHistory, locale) {
-  const session = fitData.sessions?.[0] || {};
+function buildWorkoutFields(session, records) {
   const activityDateTime = formatActivityDateTime(session.start_time);
   const powerSource = session.power_source === 'estimated'
     ? 'estimated from motion data'
     : session.power_source === 'measured' ? 'measured' : null;
-  const workoutFields = formatFieldsSkippingEmpty([
+  const text = formatFieldsSkippingEmpty([
     ['Date', activityDateTime.date],
     ['Start Time', activityDateTime.time],
-    ['Average Temperature', averageTemperature(fitData.records), 'C'],
+    ['Average Temperature', averageTemperature(records), 'C'],
     ['Distance', session.total_distance_km?.toFixed(2), 'km'],
     ['Duration (timer)', session.total_timer_s ? formatHms(Math.round(session.total_timer_s)) : null],
     ['Elapsed Time (incl. stops)', session.total_elapsed_s ? formatHms(Math.round(session.total_elapsed_s)) : null],
@@ -359,6 +359,12 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
     ['Elevation Loss', formatPositive(session.total_descent_m, 0), 'm'],
     ['Power source', powerSource],
   ]);
+  return { text, powerSource };
+}
+
+function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previousAnalysis, followUpHistory, recentHistory, locale) {
+  const session = fitData.sessions?.[0] || {};
+  const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records);
   const priorActivityCount = Number(progressSummary?.total_activities || 0);
   const hasBaseline = priorActivityCount > 0;
   const hasTrendEvidence = priorActivityCount >= 3;
@@ -550,6 +556,48 @@ Respond in 4-8 sentences.
 ${responseLanguageInstruction(locale)}`;
 }
 
+// Directed: "This Workout" is the activity under review, "Another Compared Activity" is what it is checked against.
+function generateComparisonPrompt(fitData, comparedFitData, locale) {
+  const session = fitData.sessions?.[0] || {};
+  const comparedSession = comparedFitData.sessions?.[0] || {};
+  const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records);
+  const { text: comparedWorkoutFields, powerSource: comparedPowerSource } = buildWorkoutFields(comparedSession, comparedFitData.records);
+  const segmentContext = buildSegmentContext(collapseShortStops(fitData.segments)).text;
+  const comparedSegmentContext = buildSegmentContext(collapseShortStops(comparedFitData.segments)).text;
+  const hasSegments = Boolean(segmentContext) || Boolean(comparedSegmentContext);
+
+  const dataQualityNote = (label, source) => (source === 'estimated from motion data'
+    ? `**Data Quality Note (${label}):** Power metrics are motion-estimated and may be physiologically implausible, especially peak values. Disregard NP/IF/TSS/xPower/RI/BikeStress/Decoupling for training-load decisions on this activity; use heart-rate trends and effort perception instead.`
+    : null);
+
+  const body = joinNonEmpty([
+    joinNonEmpty([`**This Workout:**\n${workoutFields}`, segmentContext], '\n\n'),
+    dataQualityNote('This Workout', powerSource),
+    joinNonEmpty([`**Another Compared Activity:**\n${comparedWorkoutFields}`, comparedSegmentContext], '\n\n'),
+    dataQualityNote('Compared Activity', comparedPowerSource),
+  ], '\n\n');
+
+  const evidenceRules = [
+    'This is a directed comparison: "This Workout" is the primary activity being reviewed; "Another Compared Activity" is only the reference it is compared against. Do not treat the two as interchangeable or the comparison as symmetric.',
+    'Do not assume segments correspond by their list position or index. Segment boundaries can differ between the two activities (for example, a stop may split one activity\'s segment into two while the other has a single continuous one) — align them by sequence, cumulative distance/duration and effort profile instead.',
+    'A segment noted as interrupted by a stop is already merged across that stop into one logical segment for this comparison; treat it as continuous, not as two.',
+    hasSegments
+      ? 'Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.'
+      : null,
+    'Use only the supplied data for both activities. Fields that are absent were not measured; do not speculate about them.',
+  ].filter(Boolean).map((rule) => `- ${rule}`).join('\n');
+
+  return `Compare "This Workout" against "Another Compared Activity" segment by segment, focusing on differences in pacing, effort and terrain handling.
+
+${body}
+
+**Evidence Rules:**
+${evidenceRules}
+
+Provide a concise, actionable comparison (4-6 sentences) highlighting where the two workouts diverge and why that might matter for training.
+${responseLanguageInstruction(locale)}`;
+}
+
 function formatActivityDateTime(value) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -580,6 +628,7 @@ module.exports = {
   formatFieldsSkippingEmpty,
   generateAnalysisPrompt,
   generateAnalysisChatPrompt,
+  generateComparisonPrompt,
   requestCopilotAnalysis,
   responseLanguageInstruction,
   summarizePromptBlocks,
