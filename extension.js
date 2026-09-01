@@ -72,7 +72,7 @@ const {
   toSqlStr,
 } = require('./utils');
 
-const { buildZoneSegmentPolylines: buildZoneSegmentPolylinesFromModule, renderOverlayControls: renderOverlayControlsFromModule } = createChartSvgRenderer({
+const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = createChartSvgRenderer({
   buildDistanceMarkers,
   escapeHtml,
   formatTick,
@@ -1504,7 +1504,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     <section class="chart resizable" data-resize-target="${mapId}SpeedSvg" data-resize-key="fitviz_speed_height" data-min-height="200" data-max-height="1200">
       <h2>${escapeHtml(ui.speedVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
       ${renderStatsRow(speedChart.stats, 'km/h')}${hasOverlay && speedChart.compStats ? renderStatsRow(speedChart.compStats, 'km/h', true) : ''}
-      ${renderOverlayControlsFromModule(mapId + 'SpeedSvg', speedOverlays)}
+      ${renderOverlayControls(mapId + 'SpeedSvg', speedOverlays)}
       ${renderScaledLineChartSvg(speedChart, 'lineA', 'Distance (km)', 'Speed (km/h)', true, { svgId: mapId + 'SpeedSvg' })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -1513,7 +1513,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <h2>${escapeHtml(ui.heartRateVsDistance)}</h2>
       ${renderStatsRow(hrChart.stats, 'bpm')}
       ${renderHeartRateZones(hrZones)}
-      ${renderOverlayControlsFromModule(mapId + 'HrSvg', hrOverlays)}
+      ${renderOverlayControls(mapId + 'HrSvg', hrOverlays)}
       ${renderScaledLineChartSvg(hrChart, 'lineB', 'Distance (km)', 'Heart rate (bpm)', true, { svgId: mapId + 'HrSvg', zoneThresholds: hrZones.enabled ? hrZones.thresholds : null })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -1521,7 +1521,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     <section class="chart resizable" data-resize-target="${mapId}AltSvg" data-resize-key="fitviz_alt_height" data-min-height="200" data-max-height="1200">
       <h2>${escapeHtml(ui.altitudeVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
       ${renderStatsRow(altitudeChart.stats, 'm')}${hasOverlay && altitudeChart.compStats ? renderStatsRow(altitudeChart.compStats, 'm', true) : ''}
-      ${renderOverlayControlsFromModule(mapId + 'AltSvg', altitudeOverlays)}
+      ${renderOverlayControls(mapId + 'AltSvg', altitudeOverlays)}
       ${renderScaledLineChartSvg(altitudeChart, 'lineC', 'Distance (km)', 'Altitude (m)', true, { svgId: mapId + 'AltSvg' })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -2470,99 +2470,6 @@ function renderHeartRateZones(zoneData) {
 function positiveNumberOrBlank(value) {
   const number = asNumber(value);
   return Number.isFinite(number) && number > 0 ? escapeHtml(String(Math.round(number))) : '';
-}
-
-function renderScaledLineChartSvg(chart, lineClass, xLabel, yLabel, addDistanceMarkers, options = {}) {
-  if (!chart || chart.points.length < 2) {
-    return '<div class="muted">Not enough data for this chart.</div>';
-  }
-
-  const svgIdAttr = options.svgId ? ` id="${escapeHtml(options.svgId)}"` : '';
-
-  const kmMarkers = addDistanceMarkers
-    ? buildDistanceMarkers(chart, 1)
-    : [];
-
-  const markerSvg = kmMarkers.map((m) => `<g>
-      <line class="kmMarker" x1="${m.px.toFixed(1)}" y1="${chart.plotTop}" x2="${m.px.toFixed(1)}" y2="${chart.plotBottom}" />
-      <text class="kmLabel" x="${m.px.toFixed(1)}" y="${chart.plotTop + 10}" text-anchor="middle">${escapeHtml(m.label)}</text>
-    </g>`).join('');
-
-  const xTicks = `<g class="xTicksGroup">${chart.xTicks.map((t) => `<g>
-      <line class="gridline" x1="${t.px.toFixed(1)}" y1="${chart.plotTop}" x2="${t.px.toFixed(1)}" y2="${chart.plotBottom}" />
-      <text class="tick" x="${t.px.toFixed(1)}" y="${chart.plotBottom + 16}" text-anchor="middle">${escapeHtml(formatTick(t.value, chart.xStep))}</text>
-    </g>`).join('')}</g>`;
-
-  const yTicks = `<g class="yTicksGroup">${chart.yTicks.map((t) => `<g>
-      <line class="gridline" x1="${chart.plotLeft}" y1="${t.py.toFixed(1)}" x2="${chart.plotRight}" y2="${t.py.toFixed(1)}" />
-      <text class="tick" x="${chart.plotLeft - 8}" y="${(t.py + 4).toFixed(1)}" text-anchor="end">${escapeHtml(formatTick(t.value, chart.yStep))}</text>
-    </g>`).join('')}</g>`;
-
-  const zoneThresholds = Array.isArray(options.zoneThresholds) ? options.zoneThresholds : null;
-  const hasZoneLine = zoneThresholds && zoneThresholds.length >= 4;
-
-  const lineSvg = hasZoneLine
-    ? buildZoneSegmentPolylinesFromModule(chart, zoneThresholds)
-    : `<polyline class="${lineClass}" points="${chart.pathData}" />`;
-
-  const compLineSvg = chart.compPathData
-    ? `<polyline class="${lineClass}Comp" points="${chart.compPathData}" />`
-    : '';
-
-  // Crosshair markup is inert until the client script (chartInteractions) attaches listeners.
-  const crosshairSvg = options.svgId ? `
-    <g class="overlayGroup"></g>
-    <line class="crosshair" x1="0" y1="${chart.plotTop}" x2="0" y2="${chart.plotBottom}" style="display:none" />
-    <circle class="crosshairDot" r="4" style="display:none" />
-    <text class="crosshairLabel" style="display:none">
-      <tspan class="crosshairLabelX" x="0" y="${chart.plotTop + 14}"></tspan>
-      <tspan class="crosshairLabelY" x="0" y="${chart.plotTop + 28}"></tspan>
-    </text>
-    <rect class="crosshairCapture" x="${chart.plotLeft}" y="${chart.plotTop}" width="${chart.plotRight - chart.plotLeft}" height="${chart.plotBottom - chart.plotTop}" fill="transparent" />` : '';
-
-  return `<svg${svgIdAttr} viewBox="0 0 ${chart.width} ${chart.height}" preserveAspectRatio="none" role="img" aria-label="line chart">
-    ${markerSvg}
-    ${xTicks}
-    ${yTicks}
-    <line class="axis" x1="${chart.plotLeft}" y1="${chart.plotBottom}" x2="${chart.plotRight}" y2="${chart.plotBottom}" />
-    <line class="axis" x1="${chart.plotLeft}" y1="${chart.plotTop}" x2="${chart.plotLeft}" y2="${chart.plotBottom}" />
-    ${compLineSvg}
-    ${lineSvg}
-    <text class="axisLabel axisLabelX" x="${(chart.plotLeft + chart.plotRight) / 2}" y="${chart.height - 4}" text-anchor="middle">${escapeHtml(xLabel)}</text>
-    <text class="axisLabel axisLabelY" transform="translate(14 ${(chart.plotTop + chart.plotBottom) / 2}) rotate(-90)" text-anchor="middle">${escapeHtml(yLabel)}</text>
-    ${crosshairSvg}
-  </svg>`;
-}
-
-function renderGpsRouteSvg(route, width, height) {
-  if (!route || route.points.length < 2) {
-    return '<div class="muted">No usable GPS points found in this FIT file.</div>';
-  }
-
-  const xTicks = route.xTicks.map((t) => `<g>
-      <line class="gridline" x1="${t.px.toFixed(1)}" y1="${route.plotTop}" x2="${t.px.toFixed(1)}" y2="${route.plotBottom}" />
-      <text class="tick" x="${t.px.toFixed(1)}" y="${route.plotBottom + 16}" text-anchor="middle">${escapeHtml(formatTick(t.value, route.xStep))}</text>
-    </g>`).join('');
-
-  const yTicks = route.yTicks.map((t) => `<g>
-      <line class="gridline" x1="${route.plotLeft}" y1="${t.py.toFixed(1)}" x2="${route.plotRight}" y2="${t.py.toFixed(1)}" />
-      <text class="tick" x="${route.plotLeft - 8}" y="${(t.py + 4).toFixed(1)}" text-anchor="end">${escapeHtml(formatTick(t.value, route.yStep))}</text>
-    </g>`).join('');
-
-  const start = route.pathPoints[0];
-  const end = route.pathPoints[route.pathPoints.length - 1];
-
-  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="gps route">
-    ${xTicks}
-    ${yTicks}
-    <line class="axis" x1="${route.plotLeft}" y1="${route.plotBottom}" x2="${route.plotRight}" y2="${route.plotBottom}" />
-    <line class="axis" x1="${route.plotLeft}" y1="${route.plotTop}" x2="${route.plotLeft}" y2="${route.plotBottom}" />
-    <polyline class="lineD" points="${route.pathData}" />
-    <circle class="routeStart" cx="${start.x.toFixed(1)}" cy="${start.y.toFixed(1)}" r="4" />
-    <circle class="routeEnd" cx="${end.x.toFixed(1)}" cy="${end.y.toFixed(1)}" r="4" />
-    <text class="axisLabel" x="${(route.plotLeft + route.plotRight) / 2}" y="${height - 4}" text-anchor="middle">Longitude</text>
-    <text class="axisLabel" transform="translate(14 ${(route.plotTop + route.plotBottom) / 2}) rotate(-90)" text-anchor="middle">Latitude</text>
-  </svg>`;
 }
 
 async function generateActivityAnalysis(dbPath, activityId, force = false) {
