@@ -1,12 +1,12 @@
 # Changelog
 
-## 0.9.4 - 2026-09-01
+## 0.9.5 - 2026-09-01
 
 ### Fixed
 
-- Restored activity browser rendering for stored analyses after the webview renderer refactor.
+- Made segment tables show power only when its effort basis is meaningful and omit misleading elevation gain on descents.
 
-## 0.9.3 - 2026-09-01
+## 0.9.4 - 2026-09-01
 
 ### Fixed
 
