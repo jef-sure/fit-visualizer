@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.16 - 2026-09-01
+
+### Fixed
+
+- Kept the X-axis label visible and made adaptive chart ticks denser.
+
 ## 0.1.15 - 2026-09-01
 
 ### Fixed
