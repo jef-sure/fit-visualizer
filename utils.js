@@ -1092,13 +1092,24 @@ function splitByEffort(records, macro, basis, windowSeconds, minSegmentSeconds, 
     startIndex: windows[part.start].startIndex,
     endIndex: windows[part.end].endIndex,
     type: macro.type,
+    effortValues: windows.slice(part.start, part.end + 1).flatMap((window) => window.values),
   }));
 
+  const effortMergeTolerance = optionNumber(options, 'effortMergeTolerancePct', 12) / 100;
   const merged = [];
   for (const part of parts) {
     const last = merged[merged.length - 1];
+    const effort = part.effortValues.length ? average(part.effortValues) : Number.NaN;
+    const previousEffort = last?.effortValues?.length ? average(last.effortValues) : Number.NaN;
+    if (last && Number.isFinite(effort) && Number.isFinite(previousEffort)
+      && Math.abs(effort - previousEffort) <= Math.max(effort, previousEffort) * effortMergeTolerance) {
+      last.endIndex = part.endIndex;
+      last.effortValues.push(...part.effortValues);
+      continue;
+    }
     if (last && rangeDurationSeconds(records, last.startIndex, last.endIndex) < minSegmentSeconds) {
       last.endIndex = part.endIndex;
+      last.effortValues.push(...part.effortValues);
       continue;
     }
     merged.push({ ...part });
@@ -1109,7 +1120,7 @@ function splitByEffort(records, macro, basis, windowSeconds, minSegmentSeconds, 
     merged.pop();
   }
 
-  return merged;
+  return merged.map(({ effortValues, ...part }) => part);
 }
 
 function segmentEffortValue(segment) {

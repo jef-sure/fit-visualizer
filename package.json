@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "description": "Visualize cycling and running FIT files and get AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
@@ -139,6 +139,13 @@
           "minimum": 60,
           "maximum": 3600,
           "description": "Minimum terrain-segment duration before splitting it into separate effort intervals."
+        },
+        "fitVisualizer.segmentation.effortMergeTolerancePct": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Maximum adjacent effort difference in percent to merge into one continuous terrain segment."
         },
         "fitVisualizer.segmentation.effortCostThreshold": {
           "type": [

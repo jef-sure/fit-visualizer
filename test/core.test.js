@@ -824,6 +824,18 @@ test('short continuous climbs are not fragmented into effort micro-segments', ()
   assert.ok(climbs[0].durationS > 300);
 });
 
+test('continuous flat terrain merges adjacent micro-segments with similar heart rate', () => {
+  const records = terrainRecords([[0.2, 800]], {
+    speedKmh: 24,
+    heartRateFor: (elapsed) => 116 + (Math.floor(elapsed / 49) % 4) * 3,
+  });
+  const flats = buildActivitySegments(records, { sport: 'cycling', powerSource: 'estimated' })
+    .filter((segment) => segment.type === 'flat');
+
+  assert.equal(flats.length, 1);
+  assert.ok(flats[0].durationS >= 790);
+});
+
 test('segments drop meaningless aggregates and drift', () => {
   const records = terrainRecords([[0.2, 120], [0.2, 120], [0.2, 120]], {
     powerFor: () => 150,
@@ -855,6 +867,7 @@ test('segmentation thresholds are exposed as settings', () => {
     'fitVisualizer.segmentation.technicalGradePct',
     'fitVisualizer.segmentation.effortWindowSeconds',
     'fitVisualizer.segmentation.minEffortMacroSeconds',
+    'fitVisualizer.segmentation.effortMergeTolerancePct',
     'fitVisualizer.segmentation.effortCostThreshold',
     'fitVisualizer.segmentation.stopSpeedKmh',
     'fitVisualizer.segmentation.stopMinSeconds',

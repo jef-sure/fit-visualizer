@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.7 - 2026-09-01
+
+### Fixed
+
+- Merged adjacent terrain sections with similar effort signals to avoid artificial flat-segment fragmentation.
+
 ## 0.9.6 - 2026-09-01
 
 ### Fixed
