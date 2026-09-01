@@ -41,6 +41,7 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 - Speed, heart rate, and altitude charts by distance, with adaptive axis labels
 - Overlay any two extra metrics (grade, altitude, speed, heart rate) on top of a chart
 - Shared crosshair across all three charts: hover one, see the exact value at that point on all of them
+- Hover over key training-load terms such as TSS, Normalized Power, xPower, and TRIMP for localized explanations
 - Render GPS track on an interactive map, with Ctrl/Cmd + scroll to zoom so scrolling the page doesn't fight the map
 - Automatic ride segmentation — splits a ride into climbs, descents, flats, and stops, and estimates effort with a physics-based power model on climbs or heart rate elsewhere, honestly labeling which one applies to each segment
 - Wheel-circumference calibration hint — compares your wheel sensor's distance against GPS on trustworthy straight stretches and suggests a correction when there's enough evidence, silent otherwise
