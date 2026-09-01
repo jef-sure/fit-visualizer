@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Visualize cycling and running FIT files and get AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
