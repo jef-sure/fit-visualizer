@@ -3056,7 +3056,9 @@ async function runActivityAnalysis(dbPath, activityId, force) {
   const previousAnalysis = (await getLatestAnalysisAnyVersion(dbPath, numId))?.text || null;
   const followUpHistory = await getAnalysisChatFromDb(dbPath, numId);
   const recentHistory = await getRecentAnalysesContext(dbPath, numId, analysisData.sessions?.[0]?.start_time);
-  const prompt = generateAnalysisPrompt(analysisData, summary, hrConfig, previousAnalysis, followUpHistory, recentHistory);
+  const prompt = generateAnalysisPrompt(
+    analysisData, summary, hrConfig, previousAnalysis, followUpHistory, recentHistory, vscode.env.language
+  );
   const analysis = await requestCopilotAnalysis(vscode, prompt, {
     vendor: getLanguageModelVendor(),
     onCompleted: (result) => logLlmRequest(dbPath, {
@@ -3997,7 +3999,9 @@ async function runActivityChatReply(dbPath, activityId, history, userQuestion) {
   const summary = await getProgressSummaryFromDb(dbPath, activityId);
   const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time);
   const baseAnalysis = (await getLatestAnalysisAnyVersion(dbPath, activityId))?.text || null;
-  const prompt = generateAnalysisChatPrompt(analysisData, summary, hrConfig, baseAnalysis, history, userQuestion);
+  const prompt = generateAnalysisChatPrompt(
+    analysisData, summary, hrConfig, baseAnalysis, history, userQuestion, vscode.env.language
+  );
   return requestCopilotAnalysis(vscode, prompt, {
     vendor: getLanguageModelVendor(),
     onCompleted: (result) => logLlmRequest(dbPath, { activityId: Number(activityId), kind: 'chat', ...result }),

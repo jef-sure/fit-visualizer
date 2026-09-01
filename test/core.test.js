@@ -10,6 +10,7 @@ const {
   generateAnalysisPrompt,
   generateAnalysisChatPrompt,
   requestCopilotAnalysis,
+  responseLanguageInstruction,
   summarizePromptBlocks,
 } = require('../analysis');
 const { ensureDatabaseSchema } = require('../database-schema');
@@ -1346,6 +1347,18 @@ test('empty fields are dropped from the prompt instead of becoming N/A', () => {
 
   const chat = generateAnalysisChatPrompt({ sessions: [{ total_distance_km: 20.1 }] }, {}, {}, '', [], 'why?');
   assert.doesNotMatch(chat, /N\/A/);
+});
+
+test('analysis prompts use the VS Code language and leave unknown locales alone', () => {
+  assert.match(responseLanguageInstruction('ru'), /Respond in Russian/);
+  assert.match(responseLanguageInstruction('de-CH'), /Respond in German/);
+  assert.match(responseLanguageInstruction('pt_BR'), /Respond in Brazilian Portuguese/);
+  assert.equal(responseLanguageInstruction('xx-YY'), '');
+
+  const prompt = generateAnalysisPrompt({ sessions: [{}] }, { total_activities: 0 }, {}, null, [], [], 'ru');
+  const chat = generateAnalysisChatPrompt({ sessions: [{}] }, {}, {}, '', [], 'why?', 'de-CH');
+  assert.match(prompt, /Questions for Analysis:[\s\S]*Respond in Russian/);
+  assert.match(chat, /Respond in 4-8 sentences\.\nRespond in German/);
 });
 
 test('segment breakdown lists segments, collapses repeats and folds short stops', () => {
