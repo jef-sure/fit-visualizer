@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0 - 2026-09-01
+
+### Added
+
+- Added a shared chart control for low-opacity terrain segment bands behind speed, heart-rate, and altitude data.
+
 ## 0.6.0 - 2026-09-01
 
 ### Added

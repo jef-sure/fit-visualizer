@@ -29,6 +29,19 @@ function createChartSvgRenderer({ buildDistanceMarkers, escapeHtml, formatTick, 
     }
 
     const svgIdAttr = options.svgId ? ` id="${escapeHtml(options.svgId)}"` : '';
+    const segmentBands = (Array.isArray(options.segmentBands) ? options.segmentBands : []).map((segment) => {
+      const start = Number(segment.startDistanceKm);
+      const end = Number(segment.endDistanceKm);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return '';
+      const range = (chart.xMax - chart.xMin) || 1;
+      const scaleX = (value) => chart.plotLeft + ((value - chart.xMin) / range) * (chart.plotRight - chart.plotLeft);
+      const x1 = Math.max(chart.plotLeft, Math.min(chart.plotRight, scaleX(start)));
+      const x2 = Math.max(chart.plotLeft, Math.min(chart.plotRight, scaleX(end)));
+      if (x2 <= x1) return '';
+      const type = segment.technical ? 'technical' : segment.type;
+      const bandClass = { climb: 'Climb', descent: 'Descent', flat: 'Flat', stopped: 'Stopped', technical: 'Technical' }[type];
+      return bandClass ? `<rect class="segmentBand segmentBand${bandClass}" x="${x1.toFixed(1)}" y="${chart.plotTop}" width="${(x2 - x1).toFixed(1)}" height="${chart.plotBottom - chart.plotTop}" />` : '';
+    }).join('');
     const kmMarkers = addDistanceMarkers ? buildDistanceMarkers(chart, 1) : [];
     const markerSvg = kmMarkers.map((marker) => `<g>
       <line class="kmMarker" x1="${marker.px.toFixed(1)}" y1="${chart.plotTop}" x2="${marker.px.toFixed(1)}" y2="${chart.plotBottom}" />
@@ -59,6 +72,7 @@ function createChartSvgRenderer({ buildDistanceMarkers, escapeHtml, formatTick, 
     <rect class="crosshairCapture" x="${chart.plotLeft}" y="${chart.plotTop}" width="${chart.plotRight - chart.plotLeft}" height="${chart.plotBottom - chart.plotTop}" fill="transparent" />` : '';
 
     return `<svg${svgIdAttr} viewBox="0 0 ${chart.width} ${chart.height}" preserveAspectRatio="none" role="img" aria-label="line chart">
+    <g class="segmentBandGroup">${segmentBands}</g>
     ${markerSvg}
     ${xTicks}
     ${yTicks}

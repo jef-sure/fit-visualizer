@@ -35,6 +35,36 @@ function extractGpsPoints(records) {
   return points;
 }
 
+function mapSegmentsToDistanceRanges(segments, records) {
+  const samples = (Array.isArray(records) ? records : [])
+    .map((record) => ({ elapsed: asNumber(record?.elapsed_time), distance: asNumber(record?.distance) }))
+    .filter((sample) => Number.isFinite(sample.elapsed) && Number.isFinite(sample.distance))
+    .sort((left, right) => left.elapsed - right.elapsed);
+  if (samples.length < 2 || !Array.isArray(segments)) return [];
+
+  function distanceAt(elapsed) {
+    if (!Number.isFinite(elapsed)) return Number.NaN;
+    if (elapsed <= samples[0].elapsed) return samples[0].distance;
+    if (elapsed >= samples[samples.length - 1].elapsed) return samples[samples.length - 1].distance;
+    let low = 0;
+    let high = samples.length - 1;
+    while (low + 1 < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (samples[middle].elapsed <= elapsed) low = middle; else high = middle;
+    }
+    const start = samples[low];
+    const end = samples[high];
+    const ratio = (elapsed - start.elapsed) / ((end.elapsed - start.elapsed) || 1);
+    return start.distance + (end.distance - start.distance) * ratio;
+  }
+
+  return segments.map((segment) => ({
+    ...segment,
+    startDistanceKm: Number.isFinite(asNumber(segment?.startDistanceKm)) ? asNumber(segment.startDistanceKm) : distanceAt(asNumber(segment?.startElapsed)),
+    endDistanceKm: Number.isFinite(asNumber(segment?.endDistanceKm)) ? asNumber(segment.endDistanceKm) : distanceAt(asNumber(segment?.endElapsed)),
+  })).filter((segment) => Number.isFinite(segment.startDistanceKm) && Number.isFinite(segment.endDistanceKm));
+}
+
 function computeElevationGainLoss(altitudesM) {
   if (!altitudesM.length) return { gain: 0, loss: 0 };
   const smoothed = smoothSeries(altitudesM, 5);
@@ -86,4 +116,4 @@ function computeRouteDistanceKm(points) {
   return totalKm;
 }
 
-module.exports = { computeElevationGainLoss, computeRouteDistanceKm, computeStats, extractGpsPoints, extractXYPoints };
+module.exports = { computeElevationGainLoss, computeRouteDistanceKm, computeStats, extractGpsPoints, extractXYPoints, mapSegmentsToDistanceRanges };
