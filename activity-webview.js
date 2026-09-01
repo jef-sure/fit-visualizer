@@ -438,7 +438,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       ${metric('RI (GC)' + powerMetricSuffix, summary.relativeIntensityGc > 0 ? summary.relativeIntensityGc.toFixed(2) : 'n/a', 'relativeIntensity', glossary)}
       ${metric('BikeStress (GC)' + powerMetricSuffix, summary.bikeStressScore > 0 ? summary.bikeStressScore.toFixed(1) : 'n/a', 'bikeStress', glossary)}
       ${metric('Decoupling % (Intervals)' + powerMetricSuffix, Number.isFinite(summary.decouplingPct) ? summary.decouplingPct.toFixed(1) + '%' : 'n/a', 'decoupling', glossary)}
-      ${metric('TRIMP', summary.trimp > 0 ? summary.trimp.toFixed(1) : 'n/a', 'trimp', glossary)}
+      ${metric('TRIMP', Number.isFinite(summary.trimp) ? summary.trimp.toFixed(1) : 'n/a', 'trimp', glossary)}
       ${metric('hrTSS', summary.hrTss > 0 ? summary.hrTss.toFixed(1) : 'n/a', 'hrTss', glossary)}
       ${metric('Avg HR (bpm)', summary.avgHr.toFixed(0), 'averageHeartRate', glossary)}
       ${metric('Max HR (bpm)', summary.maxHr.toFixed(0), 'maximumHeartRate', glossary)}
@@ -1637,7 +1637,7 @@ function renderComparisonTable(a, b, aName, bName, glossary) {
     ['RI (GC)', a.relativeIntensityGc > 0 ? a.relativeIntensityGc.toFixed(2) : 'n/a', b.relativeIntensityGc > 0 ? b.relativeIntensityGc.toFixed(2) : 'n/a', 'relativeIntensity'],
     ['BikeStress (GC)', a.bikeStressScore > 0 ? a.bikeStressScore.toFixed(1) : 'n/a', b.bikeStressScore > 0 ? b.bikeStressScore.toFixed(1) : 'n/a', 'bikeStress'],
     ['Decoupling % (Intervals)', Number.isFinite(a.decouplingPct) ? `${a.decouplingPct.toFixed(1)}%` : 'n/a', Number.isFinite(b.decouplingPct) ? `${b.decouplingPct.toFixed(1)}%` : 'n/a', 'decoupling'],
-    ['TRIMP', a.trimp > 0 ? a.trimp.toFixed(1) : 'n/a', b.trimp > 0 ? b.trimp.toFixed(1) : 'n/a', 'trimp'],
+    ['TRIMP', Number.isFinite(a.trimp) ? a.trimp.toFixed(1) : 'n/a', Number.isFinite(b.trimp) ? b.trimp.toFixed(1) : 'n/a', 'trimp'],
     ['hrTSS', a.hrTss > 0 ? a.hrTss.toFixed(1) : 'n/a', b.hrTss > 0 ? b.hrTss.toFixed(1) : 'n/a', 'hrTss'],
     ['Avg HR (bpm)', a.avgHr.toFixed(0), b.avgHr.toFixed(0), 'averageHeartRate'],
     ['Max HR (bpm)', a.maxHr.toFixed(0), b.maxHr.toFixed(0), 'maximumHeartRate'],

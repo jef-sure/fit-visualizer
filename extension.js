@@ -1608,7 +1608,7 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
       relative_intensity_gc: summary.relativeIntensityGc,
       bike_stress_score: summary.bikeStressScore,
       decoupling_pct: summary.decouplingPct,
-      trimp: summary.trimp > 0 ? summary.trimp : session.trimp,
+      trimp: summary.trimp ?? (asNumber(session.trimp) > 0 ? session.trimp : null),
       hr_tss: summary.hrTss ?? (asNumber(session.hr_tss) > 0 ? session.hr_tss : null),
       ftp: Number.isFinite(athleteFtp) && athleteFtp > 0 ? athleteFtp : null,
       power_source: powerData.source,

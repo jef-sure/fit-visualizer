@@ -158,14 +158,16 @@ function ensureDatabaseSchema(db) {
         xpower                = CASE WHEN xpower = 0                THEN NULL ELSE xpower END,
         relative_intensity_gc = CASE WHEN relative_intensity_gc = 0 THEN NULL ELSE relative_intensity_gc END,
         bike_stress_score     = CASE WHEN bike_stress_score = 0     THEN NULL ELSE bike_stress_score END,
-        hr_tss                = CASE WHEN hr_tss = 0                THEN NULL ELSE hr_tss END
+        hr_tss                = CASE WHEN hr_tss = 0                THEN NULL ELSE hr_tss END,
+        trimp                 = CASE WHEN trimp = 0                 THEN NULL ELSE trimp END
     WHERE normalized_power = 0
        OR training_stress_score = 0
        OR intensity_factor = 0
        OR xpower = 0
        OR relative_intensity_gc = 0
        OR bike_stress_score = 0
-       OR hr_tss = 0;
+       OR hr_tss = 0
+       OR trimp = 0;
   `);
   addColumnIfMissing(db, 'athlete_profile', 'ftp', 'REAL');
   addColumnIfMissing(db, 'athlete_profile', 'rider_mass_kg', 'REAL');
