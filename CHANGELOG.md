@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.11 - 2026-09-01
+
+### Changed
+
+- Made chart and map segment hover details match the grouped context used by AI, with compact terrain bars below chart data.
+
 ## 0.9.10 - 2026-09-01
 
 ### Changed

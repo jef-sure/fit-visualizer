@@ -96,13 +96,13 @@ function buildSegmentContext(segments, options = {}) {
     const last = members[members.length - 1];
     const span = `${formatHms(first.startElapsed)}-${formatHms(last.endElapsed)}`;
     const body = row.kind === 'repeat' ? describeRepeat(row) : describeSegment(first);
-    return { time: `${span} (${formatClock(last.endElapsed - first.startElapsed)})`, details: body };
+    return { time: `${span} (${formatClock(last.endElapsed - first.startElapsed)})`, details: body, members };
   });
 
   if (shortStops.length) {
     const total = shortStops.reduce((sum, segment) => sum + segment.durationS, 0);
     const longest = Math.max(...shortStops.map((segment) => segment.durationS));
-    displayRows.push({ time: '', details: `Plus ${shortStops.length} short stops, ${formatClock(total)} total (longest ${formatClock(longest)})` });
+    displayRows.push({ time: '', details: `Plus ${shortStops.length} short stops, ${formatClock(total)} total (longest ${formatClock(longest)})`, members: shortStops });
   }
 
   const lines = displayRows.map((row) => `${row.time ? `${row.time} ` : ''}${row.details}`);

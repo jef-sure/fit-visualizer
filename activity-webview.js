@@ -338,7 +338,17 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const speedOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'speed');
   const hrOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'heart_rate');
   const altitudeOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'altitude');
-  const chartSegments = mapSegmentsToDistanceRanges(segments, records);
+  const segmentPresentation = buildSegmentContext(segments);
+  const presentationByIndex = new Map();
+  segmentPresentation.displayRows.forEach((row) => row.members.forEach((segment) => {
+    presentationByIndex.set(segment.index, { time: row.time, details: row.details });
+  }));
+  const presentationSegments = (Array.isArray(segments) ? segments : []).map((segment) => ({
+    ...segment,
+    displayTime: presentationByIndex.get(segment.index)?.time || '',
+    displayDetails: presentationByIndex.get(segment.index)?.details || '',
+  }));
+  const chartSegments = mapSegmentsToDistanceRanges(presentationSegments, records);
   const segmentTooltipPayload = safeJson(chartSegments);
   const activityTable = renderActivityTable(chartSegments, fitData.laps, ui);
   const chartClientPayloads = safeJson({
@@ -352,7 +362,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const compGpsPoints = hasOverlay ? safeJson(extractGpsPoints(compRecords).slice(0, gpsRoutePointBudget).map((p) => ({ lat: p.y, lon: p.x }))) : 'null';
 
   const mapPayload = safeJson(gpsRoute.geoPoints);
-  const segmentPayload = safeJson(Array.isArray(segments) ? segments : []);
+  const segmentPayload = safeJson(presentationSegments);
   const safeFile = escapeHtml(fitData._fileName || '');
   const activitySession = sessions[0] || {};
   const avgHrValue = positiveNumberOrBlank(activitySession.avg_hr);
@@ -882,6 +892,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
       window.formatSegmentDetails = function formatSegmentDetails(segment) {
         if (!segment) return '';
+        if (segment.displayDetails) {
+          return (segment.displayTime ? '<strong>' + escapeHtmlClient(segment.displayTime) + '</strong><br>' : '')
+            + escapeHtmlClient(segment.displayDetails);
+        }
         const fields = [];
         const type = segment.technical ? ui.technical : ui[segment.type];
         if (type) fields.push('<strong>' + escapeHtmlClient(type) + '</strong>');
@@ -1381,9 +1395,9 @@ function sharedCss() {
     .kmMarker { stroke:color-mix(in srgb,var(--ink) 30%,transparent); stroke-width:1; stroke-dasharray:2 5; }
     .kmLabel { fill:var(--muted); font-size:9px; }
     .segmentBand { pointer-events:all; cursor:help; }
-    .segmentBandClimb { fill:#d35400; fill-opacity:0.13; } .segmentBandDescent { fill:#2980b9; fill-opacity:0.13; }
-    .segmentBandFlat { fill:#3d8b40; fill-opacity:0.11; } .segmentBandStopped { fill:#7f8c8d; fill-opacity:0.14; }
-    .segmentBandTechnical { fill:#c0392b; fill-opacity:0.14; }
+    .segmentBandClimb { fill:#d35400; fill-opacity:0.72; } .segmentBandDescent { fill:#2980b9; fill-opacity:0.72; }
+    .segmentBandFlat { fill:#3d8b40; fill-opacity:0.66; } .segmentBandStopped { fill:#7f8c8d; fill-opacity:0.72; }
+    .segmentBandTechnical { fill:#c0392b; fill-opacity:0.72; }
     .segmentTooltip, .segmentLeafletTooltip { max-width:260px; padding:7px 9px; border:1px solid var(--border); border-radius:6px; background:var(--vscode-editorHoverWidget-background, var(--card)); color:var(--ink); box-shadow:0 3px 12px rgba(0,0,0,.22); font-size:.82rem; line-height:1.4; pointer-events:none; }
     .segmentTooltip { position:fixed; z-index:1300; }
     .activityTableTabs { display:flex; gap:6px; margin:0 0 10px; }
