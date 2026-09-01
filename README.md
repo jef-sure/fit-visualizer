@@ -152,9 +152,11 @@ One-off activity analysis (not the follow-up chat) can prefer a cheaper/smaller 
 
 ### Comparing Two Activities with AI
 
-When a comparison activity is selected in the toolbar, a **Compare with AI** button appears inside the **AI Analysis** section, between the analysis itself and the follow-up chat — all AI features live in that one section. It asks Copilot to compare the two workouts segment by segment — the primary activity ("This Workout") against the selected one ("Another Compared Activity") — without assuming their segments line up by position, since a stop can split one activity's segment into two while the other stays continuous.
+The **AI Analysis** section lists every comparison you've saved for the current activity, labelled the same way as the "Compare with" dropdown (date, sport, distance, duration) — this list is independent of whatever is currently selected in that dropdown, so previously saved comparisons stay visible even after picking a different activity or clearing the selection.
 
-Comparisons accumulate per directed pair: comparing A against B and B against A are stored separately, and re-selecting a previously compared pair shows the saved result instead of asking Copilot again. Use **Remove Comparison** to delete just that pair and allow a fresh comparison.
+Selecting a comparison activity in the toolbar adds a **Compare with AI** button for that specific pair. It asks Copilot to compare the two workouts segment by segment — the primary activity ("This Workout") against the selected one ("Another Compared Activity") — without assuming their segments line up by position, since a stop can split one activity's segment into two while the other stays continuous.
+
+Comparisons accumulate per directed pair: comparing A against B and B against A are stored separately. Selecting a pair that already has a saved comparison offers **Compare Again** instead of a fresh comparison. Each saved entry has its own **Remove Comparison** button.
 
 
 When no packaged UI translation exists for the VS Code interface language, FIT Visualizer offers an explicit action to generate one. It sends only the fixed UI and glossary string catalog to the selected language-model provider, never activity, location, health, or analysis data. The generated bundle is validated and saved locally in VS Code extension storage.

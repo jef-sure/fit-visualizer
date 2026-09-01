@@ -100,6 +100,7 @@ const UI_STRINGS = {
   removeComparison: 'Remove Comparison',
   removingComparison: 'Removing...',
   clickCompare: 'Click Compare with AI to compare these two activities.',
+  noComparisonsYet: 'No saved comparisons yet for this activity.',
 };
 
 function localizeUi(localize) {

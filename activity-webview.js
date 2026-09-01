@@ -32,7 +32,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
   getHrZoneIndex: getHeartRateZoneIndex,
 });
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisonText) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons) {
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
   const ui = localizeUi(translate);
   const glossary = localizeGlossary(translate);
@@ -56,6 +56,17 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
     }),
   ].join('');
 
+  // Labeled the same way as the dropdown, and independent of it: a saved comparison must stay
+  // visible whichever (or no) activity happens to be selected in "Compare with" right now.
+  const comparisonEntries = (Array.isArray(comparisons) ? comparisons : []).map((entry) => {
+    const compared = activities.find((a) => Number(a.id) === entry.comparedActivityId);
+    return {
+      comparedActivityId: entry.comparedActivityId,
+      label: compared ? formatActivityLabel(compared) : `#${entry.comparedActivityId}`,
+      comparisonText: entry.comparisonText,
+    };
+  });
+
   const nonce = createNonce();
 
   const selectorScript = `
@@ -75,7 +86,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonText, compId)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId)
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -322,7 +333,7 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonText, comparedActivityId) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -415,21 +426,33 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     ? renderComparisonTable(summary, compSummary, fitData._fileName, compData._fileName, glossary, ui)
     : '';
 
-  // Keyed off the dropdown selection, not off whether a GPS track loaded: an activity with only
-  // summary data (a manual entry, say) is still worth comparing, and silently hiding the whole
-  // block would leave no trace of why.
+  // Listed regardless of the current dropdown selection - a saved comparison stays visible even
+  // after picking a different (or no) activity in "Compare with", same as it stays in the DB.
+  const comparisonEntriesSafe = Array.isArray(comparisonEntries) ? comparisonEntries : [];
+  const comparisonListHtml = comparisonEntriesSafe.map((entry) => `
+      <div class="comparisonCard" data-compared-id="${entry.comparedActivityId}" style="margin-bottom:10px;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--vscode-editor-background);">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;">
+          <strong style="font-size:0.9rem;">${escapeHtml(entry.label)}</strong>
+          <button class="removeComparisonBtn" data-compared-id="${entry.comparedActivityId}" style="padding:4px 10px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.8rem;">${escapeHtml(ui.removeComparison)}</button>
+        </div>
+        <div style="white-space:pre-wrap;line-height:1.5;color:var(--ink);">${escapeHtml(entry.comparisonText)}</div>
+      </div>`).join('');
+
+  // The trigger targets whichever activity is picked in "Compare with" right now; the label
+  // switches to "Compare Again" if that pair already has a saved comparison in the list above.
   const comparedId = Number(comparedActivityId);
   const canCompare = Number.isFinite(comparedId) && comparedId > 0;
-  const comparisonBlock = canCompare ? `
+  const alreadyCompared = canCompare && comparisonEntriesSafe.some((entry) => entry.comparedActivityId === comparedId);
+  const compareTriggerHtml = canCompare
+    ? `<button id="compareBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(alreadyCompared ? ui.compareAgain : ui.compareWithAI)}</button>`
+    : '';
+
+  const comparisonBlock = (comparisonEntriesSafe.length || canCompare) ? `
       <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
         <h3 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--muted);">${escapeHtml(ui.compareWithAI)}</h3>
-        <div id="comparisonContent" style="padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--vscode-editor-background);color:var(--muted);line-height:1.5;">
-          <p style="margin:0;">${escapeHtml(ui.clickCompare)}</p>
-        </div>
-        <div style="display:flex;gap:8px;margin-top:8px;">
-          <button id="compareBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.compareWithAI)}</button>
-          <button id="removeComparisonBtn" style="padding:8px 14px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;display:none;">${escapeHtml(ui.removeComparison)}</button>
-        </div>
+        <div id="comparisonList">${comparisonListHtml || `<p id="comparisonEmpty" style="margin:0;color:var(--muted);">${escapeHtml(ui.noComparisonsYet)}</p>`}</div>
+        <div id="comparisonTrigger" style="margin-top:8px;">${compareTriggerHtml}</div>
+        <div id="comparisonStatus" style="margin-top:6px;font-size:0.85rem;color:var(--muted);"></div>
       </div>` : '';
 
   return `<main class="wrap">
@@ -637,17 +660,16 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       const hrProfileForm = document.getElementById('${mapId}HrProfileForm');
       const hrProfileStatus = document.getElementById('${mapId}HrProfileStatus');
       const autoCalcZonesBtn = document.getElementById('${mapId}AutoCalcZonesBtn');
-      const comparisonContent = document.getElementById('comparisonContent');
+      const comparisonList = document.getElementById('comparisonList');
+      const comparisonStatus = document.getElementById('comparisonStatus');
       const compareBtn = document.getElementById('compareBtn');
-      const removeComparisonBtn = document.getElementById('removeComparisonBtn');
       const vscode = window.fitVisualizerApi;
       const initialAnalysis = ${safeJson(analysis?.text || '')};
       let hasAnalysis = Boolean(initialAnalysis);
       let analysisOutdated = ${analysis && asNumber(analysis.version) < analysisVersion ? 'true' : 'false'};
       let chatMessages = ${safeJson(Array.isArray(analysisChat) ? analysisChat : [])};
-      const initialComparison = ${safeJson(comparisonText || '')};
-      let hasComparison = Boolean(initialComparison);
-      let compareActivityId = ${canCompare ? comparedId : 'null'};
+      let comparisons = ${safeJson(comparisonEntriesSafe)};
+      const compareActivityId = ${canCompare ? comparedId : 'null'};
 
       function analyzeButtonLabel() {
         if (!hasAnalysis) return ui.analyzeActivity;
@@ -662,20 +684,32 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       }
 
       function compareButtonLabel() {
-        return hasComparison ? ui.compareAgain : ui.compareWithAI;
+        const alreadyCompared = comparisons.some((entry) => entry.comparedActivityId === compareActivityId);
+        return alreadyCompared ? ui.compareAgain : ui.compareWithAI;
       }
 
-      function showComparisonText(text) {
-        if (!comparisonContent) return;
-        comparisonContent.innerHTML = '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(text) + '</div>';
-        if (removeComparisonBtn) removeComparisonBtn.style.display = '';
+      function renderComparisonCard(entry) {
+        return '<div class="comparisonCard" data-compared-id="' + entry.comparedActivityId + '" style="margin-bottom:10px;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--vscode-editor-background);">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;">'
+          + '<strong style="font-size:0.9rem;">' + escapeHtml(entry.label) + '</strong>'
+          + '<button class="removeComparisonBtn" data-compared-id="' + entry.comparedActivityId + '" style="padding:4px 10px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.8rem;">' + escapeHtml(ui.removeComparison) + '</button>'
+          + '</div>'
+          + '<div style="white-space:pre-wrap;line-height:1.5;color:var(--ink);">' + escapeHtml(entry.comparisonText) + '</div>'
+          + '</div>';
       }
 
-      if (comparisonContent) {
-        if (initialComparison) {
-          showComparisonText(initialComparison);
+      function renderComparisonList() {
+        if (!comparisonList) return;
+        comparisonList.innerHTML = comparisons.length
+          ? comparisons.map(renderComparisonCard).join('')
+          : '<p id="comparisonEmpty" style="margin:0;color:var(--muted);">' + escapeHtml(ui.noComparisonsYet) + '</p>';
+      }
+
+      function updateCompareTrigger() {
+        if (compareBtn) {
+          compareBtn.disabled = false;
+          compareBtn.textContent = compareButtonLabel();
         }
-        if (compareBtn) compareBtn.textContent = compareButtonLabel();
       }
 
       function renderChatMessages() {
@@ -717,7 +751,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
         if ((msg.type === 'comparisonResult' || msg.type === 'comparisonError' || msg.type === 'comparisonRemoved')
           && Number.isFinite(currentId)
-          && (Number(msg.id) !== currentId || Number(msg.compId) !== Number(compareActivityId))) {
+          && Number(msg.id) !== currentId) {
           return;
         }
         if (msg.type === 'analysisResult') {
@@ -746,31 +780,29 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           analysisChatStatus.textContent = formatMessage(ui.error, String(msg.error || ui.chatFailed));
           analysisChatStatus.style.color = '#ff6b6b';
         } else if (msg.type === 'comparisonResult') {
-          hasComparison = true;
-          showComparisonText(msg.comparison);
-          if (compareBtn) {
-            compareBtn.disabled = false;
-            compareBtn.textContent = compareButtonLabel();
-          }
+          const compId = Number(msg.compId);
+          const existing = comparisons.find((entry) => entry.comparedActivityId === compId);
+          const label = existing ? existing.label : (function () {
+            const select = document.getElementById('compSel');
+            const selected = select && select.selectedOptions && select.selectedOptions[0];
+            return selected ? selected.textContent : ('#' + compId);
+          }());
+          comparisons = comparisons.filter((entry) => entry.comparedActivityId !== compId);
+          comparisons.unshift({ comparedActivityId: compId, label, comparisonText: msg.comparison });
+          renderComparisonList();
+          updateCompareTrigger();
+          if (comparisonStatus) comparisonStatus.textContent = '';
         } else if (msg.type === 'comparisonError') {
-          if (comparisonContent) {
-            comparisonContent.innerHTML = '<div style="color:#ff6b6b;">' + escapeHtml(formatMessage(ui.error, msg.error)) + '</div>';
+          if (comparisonStatus) {
+            comparisonStatus.textContent = formatMessage(ui.error, msg.error);
+            comparisonStatus.style.color = '#ff6b6b';
           }
-          if (compareBtn) {
-            compareBtn.disabled = false;
-            compareBtn.textContent = compareButtonLabel();
-          }
+          updateCompareTrigger();
         } else if (msg.type === 'comparisonRemoved') {
-          hasComparison = false;
-          if (comparisonContent) {
-            comparisonContent.innerHTML = '<p style="margin:0;color:var(--muted);">' + escapeHtml(ui.clickCompare) + '</p>';
-          }
-          if (compareBtn) compareBtn.textContent = compareButtonLabel();
-          if (removeComparisonBtn) {
-            removeComparisonBtn.disabled = false;
-            removeComparisonBtn.textContent = ui.removeComparison;
-            removeComparisonBtn.style.display = 'none';
-          }
+          const removedId = Number(msg.compId);
+          comparisons = comparisons.filter((entry) => entry.comparedActivityId !== removedId);
+          renderComparisonList();
+          updateCompareTrigger();
         } else if (msg.type === 'translationError') {
           if (translationStatus) translationStatus.textContent = formatMessage(ui.error, String(msg.error || ''));
           if (generateTranslationsBtn) generateTranslationsBtn.disabled = false;
@@ -922,18 +954,24 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         if (!window.currentActivityId || window.currentActivityId === 'null' || !compareActivityId) {
           return;
         }
+        const alreadyCompared = comparisons.some((entry) => entry.comparedActivityId === compareActivityId);
         compareBtn.disabled = true;
         compareBtn.textContent = ui.comparing;
-        vscode.postMessage({ type: 'compareActivitiesAI', id: window.currentActivityId, compId: compareActivityId, force: hasComparison });
+        if (comparisonStatus) comparisonStatus.textContent = '';
+        vscode.postMessage({ type: 'compareActivitiesAI', id: window.currentActivityId, compId: compareActivityId, force: alreadyCompared });
       });
 
-      removeComparisonBtn?.addEventListener('click', () => {
-        if (!window.currentActivityId || window.currentActivityId === 'null' || !compareActivityId) {
+      // Event delegation: comparison cards (and their Remove buttons) are re-rendered as a group,
+      // so a per-button listener would need to be re-attached on every list update.
+      comparisonList?.addEventListener('click', (event) => {
+        const button = event.target.closest('.removeComparisonBtn');
+        if (!button || !window.currentActivityId || window.currentActivityId === 'null') {
           return;
         }
-        removeComparisonBtn.disabled = true;
-        removeComparisonBtn.textContent = ui.removingComparison;
-        vscode.postMessage({ type: 'removeComparison', id: window.currentActivityId, compId: compareActivityId });
+        const removedId = Number(button.dataset.comparedId);
+        button.disabled = true;
+        button.textContent = ui.removingComparison;
+        vscode.postMessage({ type: 'removeComparison', id: window.currentActivityId, compId: removedId });
       });
 
       generateTranslationsBtn?.addEventListener('click', () => {

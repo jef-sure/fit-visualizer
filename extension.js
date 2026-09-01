@@ -594,7 +594,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const wheelCalibration = await getWheelCalibrationRecommendation(dbPath);
     const analysis = selId ? await getLatestAnalysisAnyVersion(dbPath, selId) : null;
     const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
-    const comparison = selId && selCompId ? await getActivityComparisonFromDb(dbPath, selId, selCompId) : null;
+    const comparisons = selId ? await getActivityComparisonsForActivity(dbPath, selId) : [];
     const hrConfig = data
       ? await getHeartRateConfigForActivity(dbPath, data.sessions?.[0]?.start_time)
       : getHeartRateConfig();
@@ -604,7 +604,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     );
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparison
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons
     );
     if (selId) {
       panel.webview.postMessage({ type: 'analysisChatState', id: Number(selId), messages: analysisChat });
@@ -2260,6 +2260,34 @@ async function getActivityComparisonFromDb(dbPath, activityId, comparedActivityI
     stmt = db.prepare('SELECT comparison_text FROM activity_comparisons WHERE activity_id = ? AND compared_activity_id = ?');
     stmt.bind([activityId, comparedActivityId]);
     return stmt.step() ? stmt.getAsObject().comparison_text : null;
+  } finally {
+    stmt?.free();
+    db.close();
+  }
+}
+
+// All saved directed comparisons FROM this activity, so the panel can list them regardless of
+// which (if any) comparison activity happens to be selected in the dropdown right now.
+async function getActivityComparisonsForActivity(dbPath, activityId) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  let stmt;
+  try {
+    stmt = db.prepare(`
+      SELECT compared_activity_id, comparison_text, updated_at
+      FROM activity_comparisons WHERE activity_id = ? ORDER BY updated_at DESC
+    `);
+    stmt.bind([activityId]);
+    const rows = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      rows.push({
+        comparedActivityId: Number(row.compared_activity_id),
+        comparisonText: row.comparison_text,
+        updatedAt: row.updated_at,
+      });
+    }
+    return rows;
   } finally {
     stmt?.free();
     db.close();
