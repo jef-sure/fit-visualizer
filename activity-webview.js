@@ -1,4 +1,5 @@
 const vscode = require('vscode');
+const { buildSegmentContext } = require('./analysis');
 const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
 const { buildSummary } = require('./activity-summary');
@@ -214,15 +215,7 @@ function formatActivityLabel(a) {
 }
 
 function renderActivityTable(segments, laps, ui) {
-  const segmentRows = (Array.isArray(segments) ? segments : []).map((segment, index) => ({
-    label: `${index + 1}. ${segment.technical ? ui.technical : (ui[segment.type] || ui.segment)}`,
-    time: formatDuration(segment.durationS),
-    distance: rangeDistance(segment),
-    heartRate: displayNumber(segment.avgHr, ' bpm', 0),
-    effort: displaySegmentEffort(segment, ui),
-    grade: displayNumber(segment.avgGrade, '%', 1),
-    elevation: segment.type === 'climb' && Number(segment.elevGainM) > 0 ? displayNumber(segment.elevGainM, ' m', 0, '+') : '',
-  }));
+  const segmentContext = buildSegmentContext(segments).text;
   const lapRows = (Array.isArray(laps) ? laps : []).map((lap, index) => ({
     label: String(index + 1),
     time: formatDuration(lap.total_timer_time ?? lap.total_elapsed_time),
@@ -232,23 +225,16 @@ function renderActivityTable(segments, laps, ui) {
     grade: displayNumber(lap.avg_grade, '%', 1),
     elevation: Number(lap.total_ascent) > 0 ? displayNumber(lap.total_ascent, ' m', 0, '+') : '',
   }));
-  const segmentColumns = [['label', ui.segment], ['time', ui.time], ['distance', ui.distance], ['heartRate', ui.heartRate], ['effort', ui.effort], ['grade', ui.grade], ['elevation', ui.elevation]];
   const lapColumns = [['label', ui.lap], ['time', ui.time], ['distance', ui.distance], ['heartRate', ui.heartRate], ['power', ui.power], ['grade', ui.grade], ['elevation', ui.elevation]];
   const renderRows = (rows, name, hidden, columns) => {
     const visible = columns.filter(([key]) => rows.some((row) => row[key]));
     return `<div class="activityTableWrap" data-activity-table="${name}"${hidden ? ' hidden' : ''}><table class="activityTable"><thead><tr>${visible.map(([, heading]) => `<th>${escapeHtml(heading)}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${visible.map(([key]) => `<td>${escapeHtml(row[key] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   };
 
-  if (!segmentRows.length) return '';
+  if (!segmentContext) return '';
   const tabs = lapRows.length ? `<div class="activityTableTabs"><button type="button" data-activity-table-tab="segments" aria-pressed="true">${escapeHtml(ui.segments)}</button><button type="button" data-activity-table-tab="laps" aria-pressed="false">${escapeHtml(ui.laps)}</button></div>` : '';
-  return `<section class="chart"><h2>${escapeHtml(lapRows.length ? ui.segments : ui.segment)}</h2>${tabs}${renderRows(segmentRows, 'segments', false, segmentColumns)}${lapRows.length ? renderRows(lapRows, 'laps', true, lapColumns) : ''}</section>`;
-}
-
-function displaySegmentEffort(segment, ui) {
-  if (segment.type === 'descent' || segment.type === 'stopped' || !Number.isFinite(Number(segment.avgPower))) return '';
-  if (segment.effortBasis === 'power') return `${ui.power} ${Math.round(Number(segment.avgPower))} W`;
-  if (segment.effortBasis === 'vpower') return `${ui.virtualPower} ${Math.round(Number(segment.avgPower))} W`;
-  return '';
+  const segmentView = `<div class="activityTableWrap" data-activity-table="segments"><pre class="segmentContext">${escapeHtml(segmentContext)}</pre></div>`;
+  return `<section class="chart"><h2>${escapeHtml(lapRows.length ? ui.segments : ui.segment)}</h2>${tabs}${segmentView}${lapRows.length ? renderRows(lapRows, 'laps', true, lapColumns) : ''}</section>`;
 }
 
 function positiveNumberOrBlank(value) {
@@ -1398,6 +1384,7 @@ function sharedCss() {
     .activityTableTabs button { border:1px solid var(--border); border-radius:4px; padding:5px 9px; background:var(--input-bg); color:var(--input-fg); cursor:pointer; }
     .activityTableTabs button[aria-pressed="true"] { background:var(--accent); color:var(--bg); }
     .activityTableWrap { overflow:auto; }
+    .segmentContext { margin:0; white-space:pre-wrap; font:0.86rem/1.5 var(--vscode-editor-font-family,monospace); color:var(--ink); }
     .activityTable { width:100%; border-collapse:collapse; font-size:.84rem; white-space:nowrap; }
     .activityTable th, .activityTable td { padding:6px 8px; border-bottom:1px solid var(--border); text-align:right; }
     .activityTable th:first-child, .activityTable td:first-child { text-align:left; }

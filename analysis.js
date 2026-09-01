@@ -55,7 +55,7 @@ function describeSegment(segment) {
     segment.avgHr != null && segment.effortBasis !== 'hr' ? `avg HR ${segment.avgHr}` : null,
     segment.hrDriftPct != null ? `HR drift ${segment.hrDriftPct > 0 ? '+' : ''}${segment.hrDriftPct}%` : null,
     segment.avgSpeedKmh != null ? `${segment.avgSpeedKmh} km/h` : null,
-    segment.elevGainM ? `+${segment.elevGainM} m` : null,
+    segment.type === 'climb' && segment.elevGainM ? `+${segment.elevGainM} m` : null,
   ]);
 }
 

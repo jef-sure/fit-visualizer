@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.9 - 2026-09-01
+
+### Changed
+
+- Show the same grouped segment context in the activity view that is sent to AI analysis.
+
 ## 0.9.8 - 2026-09-01
 
 ### Fixed

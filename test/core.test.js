@@ -965,9 +965,9 @@ test('activity webview renderer executes its complete server-side render path', 
   );
   assert.match(html, /fitMapSpeedSvg/);
   assert.match(html, /Interactive Map/);
-  assert.doesNotMatch(html, /86 W/);
-  assert.doesNotMatch(html, /\+2 m/);
-  assert.doesNotMatch(html, /0\.00 km/);
+  const displayedSegments = /<pre class="segmentContext">([\s\S]*?)<\/pre>/.exec(html)?.[1] || '';
+  assert.match(displayedSegments, /Segment Breakdown/);
+  assert.doesNotMatch(displayedSegments, /vPower 86 W|Power 86 W|\+2 m|0\.00 km/);
 });
 
 test('localized webview UI uses one complete string catalog', () => {
