@@ -15,6 +15,7 @@ const {
   summarizePromptBlocks,
 } = require('../analysis');
 const { ensureDatabaseSchema } = require('../database-schema');
+const { padYAxisRange } = require('../chart-geometry');
 const { GLOSSARY, localizeGlossary } = require('../glossary');
 const { UI_STRINGS, formatUi, localizeUi } = require('../ui-strings');
 const {
@@ -224,11 +225,10 @@ test('adaptive chart ticks recompute when only height changes', () => {
 
 test('Y-axis range reserves headroom above the highest data value', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
-  const padRangeStart = source.indexOf('function padRange');
-  const fn = new Function(`${source.slice(padRangeStart, source.indexOf('function buildTicks', padRangeStart))}\nreturn padYAxisRange;`)();
 
-  assert.deepEqual(fn(0, 50), { min: 0, max: 54 });
-  assert.equal(fn(42, 42).max > 42, true);
+  assert.match(source, /require\('\.\/chart-geometry'\)/);
+  assert.deepEqual(padYAxisRange(0, 50), { min: 0, max: 54 });
+  assert.equal(padYAxisRange(42, 42).max > 42, true);
 });
 
 test('client tick rounding keeps the server step at powers of ten', () => {
