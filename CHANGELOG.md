@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.1 - 2026-09-01
+
+### Fixed
+
+- Restored activity browser loading after the webview renderer refactor.
+
 ## 0.9.0 - 2026-09-01
 
 ### Added
