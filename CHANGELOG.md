@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.2 - 2026-09-01
+
+### Changed
+
+- Every AI feature now lives in the single **AI Analysis** section: the analysis itself, the comparison against the selected activity, and the follow-up chat, in that order. The comparison no longer sits in a separate section elsewhere on the page.
+
+### Fixed
+
+- The comparison controls appeared only when the selected activity had a GPS track, so choosing one without recorded points - a manually logged ride, for instance - silently offered no way to compare at all. Availability now follows the dropdown selection itself.
+
 ## 0.13.1 - 2026-09-01
 
 ### Fixed

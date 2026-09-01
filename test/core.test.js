@@ -2236,7 +2236,7 @@ test('segment context always returns display rows, even with nothing to show', (
 
 test('comparison UI renders only alongside a selected comparison activity and wires Compare/Remove buttons', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
-  assert.match(source, /const comparisonSection = hasOverlay \? `/);
+  assert.match(source, /const comparisonBlock = canCompare \? `/);
   assert.match(source, /id="compareBtn"/);
   assert.match(source, /id="removeComparisonBtn"/);
   assert.match(source, /type: 'compareActivitiesAI'/);
@@ -2244,10 +2244,12 @@ test('comparison UI renders only alongside a selected comparison activity and wi
   assert.match(source, /msg\.type === 'comparisonResult'/);
   assert.match(source, /msg\.type === 'comparisonRemoved'/);
 
-  // It belongs next to the numeric comparison, not stranded at the end of a very long page.
-  assert.ok(source.indexOf('${compStatsRow}\n    ${comparisonSection}') > 0,
-    'the AI comparison must follow the comparison table');
-  assert.ok(source.indexOf('${comparisonSection}') < source.indexOf('escapeHtml(ui.aiAnalysis)'),
-    'the AI comparison must come before the analysis and chat sections');
+  // Availability follows the dropdown, not whether the other ride happens to have a GPS track.
+  assert.match(source, /const canCompare = Number\.isFinite\(comparedId\) && comparedId > 0;/);
+  assert.doesNotMatch(source, /comparisonBlock = hasOverlay/);
+
+  // Every AI feature lives in the one AI Analysis section, between Analyze and the follow-up chat.
+  assert.ok(source.indexOf('${comparisonBlock}') > source.indexOf('id="analyzeBtn"'));
+  assert.ok(source.indexOf('${comparisonBlock}') < source.indexOf('id="analysisChatMessages"'));
 });
 
