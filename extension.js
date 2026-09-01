@@ -3058,6 +3058,7 @@ async function runActivityAnalysis(dbPath, activityId, force) {
   const recentHistory = await getRecentAnalysesContext(dbPath, numId, analysisData.sessions?.[0]?.start_time);
   const prompt = generateAnalysisPrompt(analysisData, summary, hrConfig, previousAnalysis, followUpHistory, recentHistory);
   const analysis = await requestCopilotAnalysis(vscode, prompt, {
+    vendor: getLanguageModelVendor(),
     onCompleted: (result) => logLlmRequest(dbPath, {
       activityId: numId,
       kind: 'analysis',
@@ -3092,6 +3093,11 @@ function getLlmLogConfig() {
     enabled: config.get('logLlmRequests') !== false,
     retentionDays: Number.isFinite(retentionDays) && retentionDays > 0 ? retentionDays : 0,
   };
+}
+
+function getLanguageModelVendor() {
+  const vendor = vscode.workspace.getConfiguration('fitVisualizer').get('lmVendor');
+  return typeof vendor === 'string' && vendor.trim() ? vendor.trim() : 'copilot';
 }
 
 async function logLlmRequest(dbPath, entry) {
@@ -3993,6 +3999,7 @@ async function runActivityChatReply(dbPath, activityId, history, userQuestion) {
   const baseAnalysis = (await getLatestAnalysisAnyVersion(dbPath, activityId))?.text || null;
   const prompt = generateAnalysisChatPrompt(analysisData, summary, hrConfig, baseAnalysis, history, userQuestion);
   return requestCopilotAnalysis(vscode, prompt, {
+    vendor: getLanguageModelVendor(),
     onCompleted: (result) => logLlmRequest(dbPath, { activityId: Number(activityId), kind: 'chat', ...result }),
   });
 }

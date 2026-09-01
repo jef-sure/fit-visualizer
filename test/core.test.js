@@ -1114,6 +1114,24 @@ test('Copilot analysis selects a model and joins streamed text', async () => {
   assert.deepEqual(requests, [[{ role: 'user', content: 'Analyze this' }]]);
 });
 
+test('Copilot analysis accepts a configured language-model vendor and defaults blank values', async () => {
+  const selectors = [];
+  const vscode = {
+    lm: {
+      selectChatModels: async (selector) => {
+        selectors.push(selector);
+        return [{ sendRequest: async () => ({ text: asyncChunks(['ok']) }) }];
+      },
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+
+  await requestCopilotAnalysis(vscode, 'test', { vendor: 'example-provider' });
+  await requestCopilotAnalysis(vscode, 'test', { vendor: '   ' });
+
+  assert.deepEqual(selectors, [{ vendor: 'example-provider' }, { vendor: 'copilot' }]);
+});
+
 test('Copilot analysis reports unavailable and empty models', async () => {
   const noModel = {
     lm: { selectChatModels: async () => [] },
@@ -1219,8 +1237,11 @@ test('LLM request logging is configurable and wired into both call sites', () =>
   const properties = manifest.contributes.configuration.properties;
   assert.equal(properties['fitVisualizer.logLlmRequests'].default, true);
   assert.ok(properties['fitVisualizer.llmLogRetentionDays']);
+  assert.equal(properties['fitVisualizer.lmVendor'].default, 'copilot');
 
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /function getLanguageModelVendor\(\)/);
+  assert.match(source, /vendor: getLanguageModelVendor\(\),/);
   assert.match(source, /kind: 'analysis',/);
   assert.match(source, /kind: 'chat', \.\.\.result/);
   assert.match(source, /path\.join\(path\.dirname\(dbPath\), 'logs'\)/);
