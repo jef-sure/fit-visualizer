@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.13 - 2026-09-01
+
+### Fixed
+
+- Rebuilt the chart text scaling fix with a new package version for extension testing.
+
 ## 0.1.12 - 2026-09-01
 
 ### Fixed
