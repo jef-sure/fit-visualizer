@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.7 - 2026-09-01
+
+### Fixed
+
+- Completed Russian localization for the activity UI, charts, map statistics, and heart-rate zones.
+
 ## 0.13.4 - 2026-09-01
 
 ### Fixed

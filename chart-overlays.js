@@ -29,7 +29,7 @@ function buildOverlayMetrics(records, maxPoints) {
   };
 }
 
-function buildOverlayOptions(overlayMetrics, ownKey) {
+function buildOverlayOptions(overlayMetrics, ownKey, labels = OVERLAY_METRIC_LABELS, units = OVERLAY_METRIC_UNITS) {
   const result = {};
   for (const key of Object.keys(overlayMetrics)) {
     if (key === ownKey) continue;
@@ -39,7 +39,7 @@ function buildOverlayOptions(overlayMetrics, ownKey) {
     const max = Math.max(...series.yValues);
     if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) continue;
     result[key] = { points: series.points.map((point) => [roundTo(point.x, 4), roundTo(point.y, 2)]), min, max,
-      label: OVERLAY_METRIC_LABELS[key] || key, unit: OVERLAY_METRIC_UNITS[key] || '' };
+      label: labels[key] || OVERLAY_METRIC_LABELS[key] || key, unit: units[key] || OVERLAY_METRIC_UNITS[key] || '' };
   }
   return result;
 }

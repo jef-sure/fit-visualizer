@@ -15,6 +15,7 @@ const {
   buildOverlayOptions: buildOverlayOptionsFromModule,
 } = require('./chart-overlays');
 const {
+  loadBundledTranslationBundle,
   loadGeneratedTranslationBundle,
   parseGeneratedBundle,
   saveGeneratedTranslationBundle,
@@ -599,7 +600,10 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       ? await getHeartRateConfigForActivity(dbPath, data.sessions?.[0]?.start_time)
       : getHeartRateConfig();
     const segments = buildDisplaySegments(data, athleteProfile, hrConfig);
-    const generatedTranslations = await loadGeneratedTranslationBundle(
+    const bundledTranslations = await loadBundledTranslationBundle(
+      context.extensionUri.fsPath, vscode.env.language
+    );
+    const generatedTranslations = bundledTranslations || await loadGeneratedTranslationBundle(
       extensionContextRef?.globalStorageUri?.fsPath, vscode.env.language
     );
     panel.webview.html = renderActivityBrowserHtml(

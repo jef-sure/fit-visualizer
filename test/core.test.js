@@ -26,6 +26,7 @@ const { createChartSvgRenderer } = require('../chart-svg');
 const { GLOSSARY, localizeGlossary } = require('../glossary');
 const { UI_STRINGS, formatUi, localizeUi } = require('../ui-strings');
 const {
+  loadBundledTranslationBundle,
   loadGeneratedTranslationBundle,
   parseGeneratedBundle,
   saveGeneratedTranslationBundle,
@@ -562,12 +563,21 @@ test('metric overlays reuse computeGrade once, exclude the chart\'s own metric a
     heart_rate: { points: [{ x: 0, y: 120 }, { x: 1, y: 140 }], yValues: [120, 140] },
   };
 
-  const options = buildOverlayOptions(metrics, 'speed');
+  const options = buildOverlayOptions(metrics, 'speed', { grade: 'Уклон', heart_rate: 'Пульс' }, { heart_rate: 'уд/мин' });
   assert.deepEqual(Object.keys(options).sort(), ['grade', 'heart_rate']);
   // A flat (zero-range) altitude series is not offered as an overlay: there is nothing to see.
   assert.equal(options.grade.min, 1);
   assert.equal(options.grade.max, 5);
   assert.equal(options.grade.unit, '%');
+  assert.equal(options.grade.label, 'Уклон');
+  assert.equal(options.heart_rate.label, 'Пульс');
+  assert.equal(options.heart_rate.unit, 'уд/мин');
+  const russianBundle = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'l10n', 'bundle.l10n.ru.json'), 'utf8'));
+  const russianUi = localizeUi((text) => russianBundle[text] || text);
+  assert.equal(russianUi.avg, 'Средн.');
+  assert.equal(russianUi.max, 'Макс.');
+  assert.equal(russianUi.gpsPointsLabel, 'Точки GPS');
+  assert.equal(russianUi.kilometersPerHour, 'км/ч');
 });
 
 test('stored analyses stay visible and reusable after a version bump', () => {
@@ -1103,9 +1113,9 @@ test('activity glossary localizes visible metric descriptions from one source', 
   assert.match(source, /const translate = \(message\) => generatedTranslations\?\.\[message\] \|\| vscode\.l10n\.t\(message\);/);
   assert.match(source, /const glossary = localizeGlossary\(translate\);/);
   assert.match(source, /class="term" title="\$\{escapeHtml\(description\)\}"/);
-  assert.match(source, /metric\('Avg Power \(W\)' \+ powerMetricSuffix, summary\.avgPower\.toFixed\(0\), 'averagePower', glossary\)/);
-  assert.match(source, /\['Max HR \(bpm\)', a\.maxHr\.toFixed\(0\), b\.maxHr\.toFixed\(0\), 'maximumHeartRate'\]/);
-  assert.match(source, /metric\('TSS' \+ powerMetricSuffix,[\s\S]*?'trainingStressScore', glossary\)/);
+  assert.match(source, /metric\(ui\.avgPowerW \+ powerMetricSuffix, summary\.avgPower\.toFixed\(0\), 'averagePower', glossary\)/);
+  assert.match(source, /\[ui\.maxHrBpm, a\.maxHr\.toFixed\(0\), b\.maxHr\.toFixed\(0\), 'maximumHeartRate'\]/);
+  assert.match(source, /metric\(ui\.tssScore \+ powerMetricSuffix,[\s\S]*?'trainingStressScore', glossary\)/);
 });
 
 test('activity webview renderer executes its complete server-side render path', () => {
@@ -1135,8 +1145,11 @@ test('activity webview renderer executes its complete server-side render path', 
 });
 
 test('localized webview UI uses one complete string catalog', () => {
+  const defaultBundle = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'l10n', 'bundle.l10n.json'), 'utf8'));
   const bundle = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'l10n', 'bundle.l10n.ru.json'), 'utf8'));
+  assert.equal(validateTranslationBundle(defaultBundle), defaultBundle);
   for (const message of Object.values(UI_STRINGS)) {
+    assert.equal(defaultBundle[message], message, `Missing default VS Code localization entry: ${message}`);
     assert.ok(bundle[message], `Missing Russian UI translation: ${message}`);
   }
   const localized = localizeUi((text) => bundle[text] || text);
@@ -1168,6 +1181,12 @@ test('generated translation bundles are stored per locale outside the extension 
   } finally {
     fs.rmSync(storagePath, { recursive: true, force: true });
   }
+});
+
+test('bundled translations fall back from regional Russian to the Russian bundle', async () => {
+  const bundle = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'l10n', 'bundle.l10n.ru.json'), 'utf8'));
+  assert.deepEqual(await loadBundledTranslationBundle(path.join(__dirname, '..'), 'ru-RU'), bundle);
+  assert.equal(await loadBundledTranslationBundle(path.join(__dirname, '..'), 'en-US'), null);
 });
 
 test('normalized power equals constant power for steady efforts', () => {
