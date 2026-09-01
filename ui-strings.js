@@ -37,6 +37,7 @@ const UI_STRINGS = {
   singleColor: 'Single Color',
   segment: 'Segment',
   terrainLegend: 'Terrain segments',
+  terrain: 'Terrain',
   showTerrainBands: 'Show terrain segments on charts',
   segmentDetails: 'Segment details',
   duration: 'Duration',

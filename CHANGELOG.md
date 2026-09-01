@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.12 - 2026-09-01
+
+### Changed
+
+- Presented grouped segment details in dedicated table columns instead of one dense text column.
+
 ## 0.9.11 - 2026-09-01
 
 ### Changed

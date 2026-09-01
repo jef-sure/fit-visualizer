@@ -974,8 +974,10 @@ test('activity webview renderer executes its complete server-side render path', 
   );
   assert.match(html, /fitMapSpeedSvg/);
   assert.match(html, /Interactive Map/);
-  assert.match(html, /<th>Segment<\/th><th>Time<\/th><th>Segment details<\/th>/);
-  assert.match(html, /descent, avg grade -4\.4%, avg HR 130/);
+  assert.match(html, /<th>Segment<\/th><th>Time<\/th><th>Distance<\/th><th>Terrain<\/th><th>Grade<\/th><th>Effort<\/th><th>Heart Rate<\/th><th>Speed<\/th><th>Elevation<\/th>/);
+  assert.match(html, /<td>Descent<\/td>/);
+  assert.match(html, /<td>-4\.4%<\/td>/);
+  assert.match(html, /<td>130 bpm<\/td>/);
   assert.doesNotMatch(html, /vPower 86 W|Power 86 W|\+2 m|0\.00 km/);
 });
 
