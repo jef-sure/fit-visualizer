@@ -192,6 +192,24 @@ test('segment map and chart hover tooltips reuse existing details without unavai
   assert.match(svgSource, /data-segment-index/);
 });
 
+test('FIT parser lap lists are retained only from its documented data.laps field', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'fit-files.js'), 'utf8');
+  const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /function getParsedLaps\(data\) \{\s*return Array\.isArray\(data\?\.laps\) \? data\.laps : \[\];/);
+  assert.match(extensionSource, /const laps = getParsedLaps\(fitData\);/);
+});
+
+test('activity table conditionally offers device laps alongside segment rendering input', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /const activityTable = renderActivityTable\(chartSegments, fitData\.laps, ui\)/);
+  assert.match(source, /data-activity-table-tab="laps"/);
+  assert.match(source, /lapRows\.length \?/);
+  assert.match(source, /total_timer_time \?\? lap\.total_elapsed_time/);
+  assert.match(extensionSource, /laps_json/);
+  assert.match(extensionSource, /laps: parseStoredLaps\(activity\.laps_json\)/);
+});
+
 test('mapId is declared before it is used to build chart payloads (no TDZ crash)', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   const declarationIndex = source.indexOf("const mapId = isComparison ? 'fitMapComp' : 'fitMap';");

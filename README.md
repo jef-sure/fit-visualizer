@@ -48,6 +48,7 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 - Color the GPS route by speed, heart rate, or detected terrain segments, with a legend for climbs, descents, flats, stops, and technical descents
 - Show matching low-opacity terrain segment bands behind all distance charts, controlled by one shared toggle
 - Hover terrain-colored map sections or chart bands for the available segment details, including duration, distance, grade, speed, heart rate, effort, elevation, and technical status
+- Review a compact table of detected segments and, when the FIT device recorded them, its laps
 - Automatic ride segmentation — splits a ride into climbs, descents, flats, and stops, and estimates effort with a physics-based power model on climbs or heart rate elsewhere, honestly labeling which one applies to each segment
 - Wheel-circumference calibration hint — compares your wheel sensor's distance against GPS on trustworthy straight stretches and suggests a correction when there's enough evidence, silent otherwise
 - Save dated heart-rate zone profiles
@@ -114,6 +115,10 @@ Each ride is split into segments by terrain (climb, descent, flat) and by effort
 This segmentation also feeds the AI analysis, so it can reason about specific intervals rather than only ride-wide averages.
 
 Hover a terrain-colored route section or its matching chart band to inspect the characteristics recorded for that segment. Fields that are not available for a segment are left out.
+
+## Laps And Segments
+
+Below the charts, FIT Visualizer lists detected segments. When a FIT file contains device-recorded laps, a compact switch also exposes those original lap summaries. Each view shows only columns supported by its data, such as time, distance, heart rate, power, grade, and elevation.
 
 Thresholds (grade cutoff, minimum segment length, stop detection, GPS trust window, etc.) are configurable — see **Settings** below — and are meant to be tuned to your own terrain and riding style rather than used as fixed defaults.
 

@@ -38,6 +38,7 @@ function ensureDatabaseSchema(db) {
       total_calories            INTEGER,
       record_count              INTEGER,
       lap_count                 INTEGER,
+      laps_json                 TEXT,
       rider_mass_kg             REAL,
       bike_mass_kg              REAL
     );
@@ -126,6 +127,7 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'activities', 'manual_max_hr', 'REAL');
   addColumnIfMissing(db, 'activities', 'rider_mass_kg', 'REAL');
   addColumnIfMissing(db, 'activities', 'bike_mass_kg', 'REAL');
+  addColumnIfMissing(db, 'activities', 'laps_json', 'TEXT');
   addColumnIfMissing(db, 'activities', 'normalized_power', 'REAL');
   addColumnIfMissing(db, 'activities', 'training_stress_score', 'REAL');
   addColumnIfMissing(db, 'activities', 'intensity_factor', 'REAL');

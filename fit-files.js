@@ -25,6 +25,10 @@ async function parseFitFile(filePath) {
   });
 }
 
+function getParsedLaps(data) {
+  return Array.isArray(data?.laps) ? data.laps : [];
+}
+
 async function getFitUris(baseDir, useWorkspaceIndex) {
   if (useWorkspaceIndex && vscode.workspace.workspaceFolders?.length) {
     const pattern = new vscode.RelativePattern(baseDir, '**/*.fit');
@@ -77,5 +81,6 @@ module.exports = {
   fileExists,
   findFitFilesInDirectory,
   getFitUris,
+  getParsedLaps,
   parseFitFile,
 };
