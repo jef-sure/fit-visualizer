@@ -1498,6 +1498,76 @@ test('Copilot analysis accepts a configured language-model vendor and defaults b
   assert.deepEqual(selectors, [{ vendor: 'example-provider' }, { vendor: 'copilot' }]);
 });
 
+test('Copilot analysis prefers an Auto model family when preferCheapModel is set', async () => {
+  const selectors = [];
+  const vscode = {
+    lm: {
+      selectChatModels: async (selector) => {
+        selectors.push(selector);
+        if (selector.family === 'auto') {
+          return [{ id: 'auto-router', sendRequest: async () => ({ text: asyncChunks(['auto']) }) }];
+        }
+        return [{ id: 'gpt-expensive', sendRequest: async () => ({ text: asyncChunks(['default']) }) }];
+      },
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+
+  const logged = [];
+  const result = await requestCopilotAnalysis(vscode, 'test', {
+    preferCheapModel: true,
+    onCompleted: (entry) => logged.push(entry),
+  });
+
+  assert.equal(result, 'auto');
+  assert.deepEqual(selectors, [{ vendor: 'copilot' }, { vendor: 'copilot', family: 'auto' }]);
+  assert.equal(logged[0].modelId, 'auto-router');
+});
+
+test('Copilot analysis falls back to a name-marker heuristic when Auto is unavailable', async () => {
+  const vscode = {
+    lm: {
+      selectChatModels: async (selector) => {
+        if (selector.family === 'auto') {
+          return [];
+        }
+        return [
+          { id: 'gpt-5-expensive', sendRequest: async () => ({ text: asyncChunks(['expensive']) }) },
+          { id: 'claude-haiku-4.5', sendRequest: async () => ({ text: asyncChunks(['cheap']) }) },
+        ];
+      },
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+
+  const result = await requestCopilotAnalysis(vscode, 'test', { preferCheapModel: true });
+  assert.equal(result, 'cheap');
+});
+
+test('Copilot analysis keeps the default model when preferCheapModel is off or no marker matches', async () => {
+  const vscode = {
+    lm: {
+      selectChatModels: async () => [
+        { id: 'gpt-5-expensive', sendRequest: async () => ({ text: asyncChunks(['default']) }) },
+        { id: 'gpt-5-also-expensive', sendRequest: async () => ({ text: asyncChunks(['also default']) }) },
+      ],
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+
+  assert.equal(await requestCopilotAnalysis(vscode, 'test'), 'default');
+
+  const vscodeAutoDisabled = {
+    lm: {
+      selectChatModels: async (selector) => (selector.family === 'auto' ? [] : [
+        { id: 'gpt-5-expensive', sendRequest: async () => ({ text: asyncChunks(['default']) }) },
+      ]),
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+  assert.equal(await requestCopilotAnalysis(vscodeAutoDisabled, 'test', { preferCheapModel: true }), 'default');
+});
+
 test('Copilot analysis reports unavailable and empty models', async () => {
   const noModel = {
     lm: { selectChatModels: async () => [] },
@@ -1611,6 +1681,27 @@ test('LLM request logging is configurable and wired into both call sites', () =>
   assert.match(source, /kind: 'analysis',/);
   assert.match(source, /kind: 'chat', \.\.\.result/);
   assert.match(source, /path\.join\(path\.dirname\(dbPath\), 'logs'\)/);
+});
+
+test('cheap analysis model preference is configurable and applied only to one-off analysis', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const properties = manifest.contributes.configuration.properties;
+  assert.equal(properties['fitVisualizer.preferCheapAnalysisModel'].default, false);
+  assert.deepEqual(properties['fitVisualizer.cheapModelMarkers'].default, ['haiku', 'mini', 'flash', 'nano', 'lite', 'small']);
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /function getPreferCheapAnalysisModel\(\)/);
+  assert.match(source, /function getCheapModelMarkers\(\)/);
+
+  // Only the one-off analysis call site should read the cheap-model preference; chat keeps the picker's model.
+  const analysisCallIndex = source.indexOf('kind: \'analysis\',');
+  const chatCallIndex = source.indexOf('kind: \'chat\', ...result');
+  const analysisCallStart = source.lastIndexOf('requestCopilotAnalysis(vscode, prompt, {', analysisCallIndex);
+  const chatCallStart = source.lastIndexOf('requestCopilotAnalysis(vscode, prompt, {', chatCallIndex);
+  const analysisCallSource = source.slice(analysisCallStart, analysisCallIndex);
+  const chatCallSource = source.slice(chatCallStart, chatCallIndex);
+  assert.match(analysisCallSource, /preferCheapModel: getPreferCheapAnalysisModel\(\)/);
+  assert.doesNotMatch(chatCallSource, /preferCheapModel/);
 });
 
 test('Copilot analysis retries once when rate limited and then succeeds', async () => {

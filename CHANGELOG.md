@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.0 - 2026-09-01
+
+### Added
+
+- Added `fitVisualizer.preferCheapAnalysisModel` to prefer a cheaper/smaller language model for one-off activity analysis (not the follow-up chat), trying an `Auto` model family first, then a configurable model-name heuristic (`fitVisualizer.cheapModelMarkers`), then falling back to the default model.
+
 ## 0.10.1 - 2026-09-01
 
 ### Changed

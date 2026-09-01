@@ -145,6 +145,8 @@ By default, analysis uses the VS Code `copilot` language-model vendor. Configure
 
 Analysis and follow-up responses default to the language of the VS Code interface. A question written in another language takes precedence for that reply.
 
+One-off activity analysis (not the follow-up chat) can prefer a cheaper/smaller language model instead of whichever model the Copilot picker currently uses — enable `fitVisualizer.preferCheapAnalysisModel`. It tries an `Auto` model family first, then a model-name heuristic (`fitVisualizer.cheapModelMarkers`, e.g. `haiku`, `mini`, `flash`), then falls back to the default model if neither is available. Neither path is officially guaranteed by the VS Code language-model API.
+
 When no packaged UI translation exists for the VS Code interface language, FIT Visualizer offers an explicit action to generate one. It sends only the fixed UI and glossary string catalog to the selected language-model provider, never activity, location, health, or analysis data. The generated bundle is validated and saved locally in VS Code extension storage.
 
 ## Heart-Rate Zones
