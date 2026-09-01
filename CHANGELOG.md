@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.14 - 2026-09-01
+
+### Fixed
+
+- Restored adaptive chart tick labels while keeping SVG text readable during resize.
+
 ## 0.1.13 - 2026-09-01
 
 ### Fixed
