@@ -2131,10 +2131,12 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
         if (window.ResizeObserver) {
           var lastWidth = 0;
+          var lastHeight = 0;
           var observer = new ResizeObserver(function (entries) {
             var rect = entries[0].contentRect;
-            if (Math.abs(rect.width - lastWidth) < 1) return;
+            if (Math.abs(rect.width - lastWidth) < 1 && Math.abs(rect.height - lastHeight) < 1) return;
             lastWidth = rect.width;
+            lastHeight = rect.height;
             var plotWidthPx = (payload.plotRight - payload.plotLeft) * (rect.width / payload.width);
             var plotHeightPx = (payload.plotBottom - payload.plotTop) * (rect.height / payload.height);
             redrawTicks(svg, payload, clampCount(plotWidthPx / 90, 3, 15), clampCount(plotHeightPx / 50, 3, 15));
