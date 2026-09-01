@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 - 2026-09-01
+
+### Added
+
+- AI analysis and follow-up chat now respond in the VS Code interface language by default.
+
 ## 0.2.0 - 2026-09-01
 
 ### Added

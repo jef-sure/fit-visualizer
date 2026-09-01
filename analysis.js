@@ -276,7 +276,20 @@ function delay(ms) {
   });
 }
 
-function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previousAnalysis, followUpHistory, recentHistory) {
+function responseLanguageInstruction(locale) {
+  const languages = {
+    cs: 'Czech', de: 'German', en: 'English', es: 'Spanish', fr: 'French', hu: 'Hungarian',
+    it: 'Italian', ja: 'Japanese', ko: 'Korean', pl: 'Polish', 'pt-br': 'Brazilian Portuguese',
+    ru: 'Russian', tr: 'Turkish', 'zh-cn': 'Simplified Chinese', 'zh-tw': 'Traditional Chinese',
+  };
+  const normalized = String(locale || '').trim().toLowerCase().replace(/_/g, '-');
+  const language = languages[normalized] || languages[normalized.split('-')[0]];
+  return language
+    ? `Respond in ${language}, unless the user's own message is written in a different language; then respond in that language instead.`
+    : '';
+}
+
+function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previousAnalysis, followUpHistory, recentHistory, locale) {
   const session = fitData.sessions?.[0] || {};
   const activityDateTime = formatActivityDateTime(session.start_time);
   const powerSource = session.power_source === 'estimated'
@@ -424,10 +437,11 @@ ${evidenceRules}
 3. **Heart Rate & Recovery**: Describe only what the supplied HR summary shows and what cannot be inferred from it.
 4. **Recommendations**: What should I focus on for the next rides?
 
-Provide a concise, actionable analysis with 2-3 sentences per question. Do not repeat the input data verbatim.`;
+Provide a concise, actionable analysis with 2-3 sentences per question. Do not repeat the input data verbatim.
+${responseLanguageInstruction(locale)}`;
 }
 
-function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, baseAnalysis, history, userQuestion) {
+function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, baseAnalysis, history, userQuestion, locale) {
   const session = fitData.sessions?.[0] || {};
   const activityDateTime = formatActivityDateTime(session.start_time);
   const priorActivityCount = Number(progressSummary?.total_activities || 0);
@@ -498,7 +512,8 @@ Rules:
 - Be specific and concise.
 - If the data is insufficient for a claim, say so and ask one clarifying follow-up.
 
-Respond in 4-8 sentences.`;
+Respond in 4-8 sentences.
+${responseLanguageInstruction(locale)}`;
 }
 
 function formatActivityDateTime(value) {
@@ -532,5 +547,6 @@ module.exports = {
   generateAnalysisPrompt,
   generateAnalysisChatPrompt,
   requestCopilotAnalysis,
+  responseLanguageInstruction,
   summarizePromptBlocks,
 };

@@ -130,6 +130,8 @@ Prompts and responses are logged locally (see **Settings**) so you can review ex
 
 By default, analysis uses the VS Code `copilot` language-model vendor. Configure a different registered provider with `fitVisualizer.lmVendor`.
 
+Analysis and follow-up responses default to the language of the VS Code interface. A question written in another language takes precedence for that reply.
+
 ## Heart-Rate Zones
 
 - Supports dated zone profiles
