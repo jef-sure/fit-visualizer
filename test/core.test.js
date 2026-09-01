@@ -2224,14 +2224,30 @@ test('comparison feature is wired: DB functions, message handlers and cheap-mode
   assert.doesNotMatch(comparisonCallSource, /preferCheapModel/);
 });
 
+test('segment context always returns display rows, even with nothing to show', () => {
+  // The webview iterates displayRows straight away, so omitting it crashed the whole panel
+  // for any activity that produced no segments.
+  for (const empty of [[], null, undefined]) {
+    const context = buildSegmentContext(empty);
+    assert.deepEqual(context.displayRows, [], `expected display rows for ${JSON.stringify(empty)}`);
+    assert.equal(context.text, '');
+  }
+});
+
 test('comparison UI renders only alongside a selected comparison activity and wires Compare/Remove buttons', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
-  assert.match(source, /\$\{hasOverlay \? `/);
+  assert.match(source, /const comparisonSection = hasOverlay \? `/);
   assert.match(source, /id="compareBtn"/);
   assert.match(source, /id="removeComparisonBtn"/);
   assert.match(source, /type: 'compareActivitiesAI'/);
   assert.match(source, /type: 'removeComparison'/);
   assert.match(source, /msg\.type === 'comparisonResult'/);
   assert.match(source, /msg\.type === 'comparisonRemoved'/);
+
+  // It belongs next to the numeric comparison, not stranded at the end of a very long page.
+  assert.ok(source.indexOf('${compStatsRow}\n    ${comparisonSection}') > 0,
+    'the AI comparison must follow the comparison table');
+  assert.ok(source.indexOf('${comparisonSection}') < source.indexOf('escapeHtml(ui.aiAnalysis)'),
+    'the AI comparison must come before the analysis and chat sections');
 });
 

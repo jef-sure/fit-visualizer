@@ -85,7 +85,7 @@ function describeRepeat(row) {
 function buildSegmentContext(segments, options = {}) {
   const list = Array.isArray(segments) ? segments : [];
   if (!list.length) {
-    return { text: '', lines: 0, maxLines: 0, exceeded: false };
+    return { text: '', lines: 0, maxLines: 0, exceeded: false, displayRows: [] };
   }
 
   const notableStopSeconds = Number(options.notableStopSeconds) || 300;
