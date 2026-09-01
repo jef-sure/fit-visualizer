@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.17 - 2026-09-01
+
+### Added
+
+- Show the selected speed or heart-rate value when hovering a route segment on the map.
+
 ## 0.9.16 - 2026-09-01
 
 ### Changed
