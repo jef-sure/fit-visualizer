@@ -205,6 +205,7 @@ test('adaptive chart ticks recompute when only height changes', () => {
   assert.match(source, /var lastWidth = 0;\s*var lastHeight = 0;/);
   assert.match(source, /Math\.abs\(rect\.width - lastWidth\) < 1 && Math\.abs\(rect\.height - lastHeight\) < 1/);
   assert.match(source, /lastWidth = rect\.width;\s*lastHeight = rect\.height;/);
+  assert.match(source, /var labelY = Math\.max\(payload\.plotTop \+ 10, Math\.min\(payload\.plotBottom - 4, parseFloat\(py\) \+ 4\)\)\.toFixed\(1\);/);
   assert.match(source, /clampCount\(plotWidthPx \/ 72, 4, 18\)/);
   assert.match(source, /clampCount\(plotHeightPx \/ 30, 6, 18\)/);
 });
@@ -263,8 +264,11 @@ test('chart text labels adapt to the rendered SVG scale', () => {
   assert.match(source, /setReadableFont\('\.crosshairLabel', 13, 3\);/);
   assert.match(source, /class="axisLabel axisLabelX"/);
   assert.match(source, /var axisX = svg\.querySelector\('\.axisLabelX'\);/);
+  assert.match(source, /var axisXx = parseFloat\(axisX\.getAttribute\('x'\)\);/);
+  assert.match(source, /var axisXy = parseFloat\(axisX\.getAttribute\('y'\)\);/);
   assert.match(source, /axisX\.style\.fontSize = '11px';/);
-  assert.doesNotMatch(source, /axisX\.setAttribute\('transform'/);
+  assert.match(source, /axisX\.setAttribute\('transform', 'translate\(' \+ axisXx \+ ' ' \+ axisXy \+ '\) scale\('/);
+  assert.match(source, /\+ \(-axisXx\) \+ ' ' \+ \(-axisXy\) \+ '\)'/);
   assert.match(source, /if \(instance\.lastRect\) updateChartTextScale\(svg, payload, instance\.lastRect\);/);
   assert.match(source, /redrawTicks\(svg, payload,[\s\S]*?updateChartTextScale\(svg, payload, rect\);/);
 });
