@@ -195,6 +195,7 @@ test('map can color route segments from the existing activity segmentation', () 
   assert.match(webviewSource, /displayColor: presentationByIndex\.get\(segment\.index\)\?\.color/);
   assert.match(webviewSource, /matchedSegment\?\.displayColor/);
   assert.match(webviewSource, /seenSegmentIndexes/);
+  assert.doesNotMatch(webviewSource, /value="none"|singleColor|Single Color/);
 });
 
 test('rendered map initializer draws segment route polylines', () => {

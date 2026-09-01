@@ -563,7 +563,6 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             <option value="speed">${escapeHtml(ui.speed)}</option>
             <option value="heart_rate">${escapeHtml(ui.heartRate)}</option>
             <option value="segment" selected>${escapeHtml(ui.segment)}</option>
-            <option value="none">${escapeHtml(ui.singleColor)}</option>
           </select>
         </div>
         <div id="${mapId}SegmentLegend" class="segmentLegend" style="display:none"></div>
@@ -1029,7 +1028,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             });
             const color = mode === 'segment'
               ? (matchedSegment?.displayColor || '#7f8c8d')
-              : (mode !== 'none' ? colorForValue(value, mn, mx) : '#2f6db3');
+              : colorForValue(value, mn, mx);
             const line = L.polyline([[a.lat,a.lon],[b.lat,b.lon]], { color, weight:4, opacity:0.92, lineCap:'round' }).addTo(map);
             const tooltip = mode === 'segment'
               ? (matchedSegment ? window.formatSegmentDetails(matchedSegment) : '')

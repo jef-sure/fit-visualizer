@@ -34,7 +34,6 @@ const UI_STRINGS = {
   colorRouteBy: 'Color route by',
   speed: 'Speed',
   heartRate: 'Heart Rate',
-  singleColor: 'Single Color',
   segment: 'Segment',
   terrainLegend: 'Terrain segments',
   terrain: 'Terrain',
