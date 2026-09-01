@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.15 - 2026-09-01
+
+### Fixed
+
+- Restored map route rendering by providing localized UI text to its client script.
+
 ## 0.9.14 - 2026-09-01
 
 ### Fixed

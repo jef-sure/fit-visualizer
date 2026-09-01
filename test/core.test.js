@@ -196,6 +196,69 @@ test('map can color route segments from the existing activity segmentation', () 
   assert.match(webviewSource, /SegmentLegend/);
 });
 
+test('rendered map initializer draws segment route polylines', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const records = straightGpsRecords(4, 18);
+  const html = renderActivityContentHtml({}, {}, { records, sessions: [], laps: [] }, null, 'test-nonce', false, null, {}, null, [], null, UI_STRINGS, GLOSSARY, false, 'en', [{
+    index: 0, type: 'flat', startElapsed: 0, endElapsed: 3,
+  }], null);
+  const mapIife = html.match(/<script nonce="test-nonce">\s*(\(function \(\) \{\s*const routePoints =[\s\S]*?\n    \}\(\)\);)\s*<\/script>/)?.[1];
+  assert.ok(mapIife, 'rendered HTML must contain the map initializer');
+
+  const elements = new Map();
+  const listeners = new Map();
+  const mapElement = {
+    style: {},
+    appendChild() {},
+    addEventListener(type, listener) { listeners.set(type, listener); },
+  };
+  const modeSelect = {
+    value: 'segment',
+    addEventListener(type, listener) { listeners.set(type, listener); },
+  };
+  elements.set('fitMap', mapElement);
+  elements.set('fitMapMode', modeSelect);
+  elements.set('fitMapSegmentLegend', { style: {}, innerHTML: '' });
+  elements.set('fitMapRouteSection', { style: {} });
+  const polylines = [];
+  const map = {
+    removeLayer() {},
+    fitBounds() {},
+    whenReady(callback) { callback(); },
+    invalidateSize() {},
+    getContainer() { return mapElement; },
+    getZoom() { return 10; },
+    getMinZoom() { return 0; },
+    getMaxZoom() { return 20; },
+    mouseEventToContainerPoint() { return {}; },
+    setZoomAround() {},
+  };
+  const leaflet = {
+    map() { return map; },
+    tileLayer() { return { addTo() {} }; },
+    latLngBounds() { return { pad() { return {}; } }; },
+    circleMarker() { return { addTo() {} }; },
+    polyline(points) {
+      const line = { points, addTo() { polylines.push(line); return line; }, bindTooltip() {} };
+      return line;
+    },
+    TileLayer: function TileLayer() {},
+  };
+  const context = {
+    window: { L: leaflet }, L: leaflet,
+    document: {
+      getElementById(id) { return elements.get(id) || null; },
+      createElement() { return { classList: { add() {}, remove() {} }, style: {}, textContent: '' }; },
+    },
+    navigator: { platform: 'Linux', userAgent: 'node' },
+    setupResizablePanels() {}, setTimeout(callback) { callback(); }, clearTimeout() {},
+    Number, Math, String, Array, Object, Map, NaN,
+  };
+  require('node:vm').runInNewContext(mapIife, context);
+  assert.equal(polylines.length, records.length - 1);
+  assert.equal(polylines.every((line) => line.points.length === 2), true);
+});
+
 test('chart and map segment hover reuse grouped AI presentation details', () => {
   const webviewSource = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   const svgSource = fs.readFileSync(path.join(__dirname, '..', 'chart-svg.js'), 'utf8');

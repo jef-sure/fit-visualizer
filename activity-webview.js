@@ -896,6 +896,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     (function () {
       const routePoints = ${mapPayload};
       const activitySegments = ${segmentPayload};
+      const ui = ${safeJson(ui)};
       const mapEl = document.getElementById('${mapId}');
       const gpsRouteSection = document.getElementById('${mapId}RouteSection');
 
