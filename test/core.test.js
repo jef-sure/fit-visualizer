@@ -812,6 +812,18 @@ test('activity segments combine terrain, effort basis and aggregates', () => {
   assert.deepEqual(buildActivitySegments([], {}), []);
 });
 
+test('short continuous climbs are not fragmented into effort micro-segments', () => {
+  const records = terrainRecords([[0.2, 80], [5, 330], [0.2, 80]], {
+    speedKmh: 14,
+    powerFor: (elapsed) => 100 + (Math.floor(elapsed / 50) % 4) * 35,
+  });
+  const climbs = buildActivitySegments(records, { sport: 'cycling', powerSource: 'estimated' })
+    .filter((segment) => segment.type === 'climb');
+
+  assert.equal(climbs.length, 1);
+  assert.ok(climbs[0].durationS > 300);
+});
+
 test('segments drop meaningless aggregates and drift', () => {
   const records = terrainRecords([[0.2, 120], [0.2, 120], [0.2, 120]], {
     powerFor: () => 150,
@@ -842,6 +854,7 @@ test('segmentation thresholds are exposed as settings', () => {
     'fitVisualizer.segmentation.minSegmentSeconds',
     'fitVisualizer.segmentation.technicalGradePct',
     'fitVisualizer.segmentation.effortWindowSeconds',
+    'fitVisualizer.segmentation.minEffortMacroSeconds',
     'fitVisualizer.segmentation.effortCostThreshold',
     'fitVisualizer.segmentation.stopSpeedKmh',
     'fitVisualizer.segmentation.stopMinSeconds',
