@@ -19,6 +19,7 @@ const { padYAxisRange } = require('../chart-geometry');
 const { computeStats, extractXYPoints } = require('../chart-data');
 const { buildChartClientPayload, buildOverlayOptions } = require('../chart-overlays');
 const { buildSummary } = require('../activity-summary');
+const { buildLineChart } = require('../chart-model');
 const { GLOSSARY, localizeGlossary } = require('../glossary');
 const { UI_STRINGS, formatUi, localizeUi } = require('../ui-strings');
 const {
@@ -246,6 +247,18 @@ test('activity summary falls back to records and preserves unavailable workload 
   assert.equal(summary.avgHr, 130);
   assert.equal(summary.normalizedPower, null);
   assert.equal(summary.trainingStressScore, null);
+});
+
+test('chart model builds a shared geometry for primary and comparison series', () => {
+  const chart = buildLineChart(
+    [{ distance: 0, speed: 10 }, { distance: 2, speed: 20 }],
+    'distance', 'speed', 200, 100, 10,
+    { compRecords: [{ distance: 0, speed: 12 }, { distance: 2, speed: 22 }] }
+  );
+  assert.equal(chart.points.length, 2);
+  assert.equal(chart.compStats.max, 22);
+  assert.match(chart.pathData, /,/);
+  assert.match(chart.compPathData, /,/);
 });
 
 test('client tick rounding keeps the server step at powers of ten', () => {

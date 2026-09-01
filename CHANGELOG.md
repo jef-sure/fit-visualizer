@@ -1,34 +1,10 @@
 # Changelog
 
-## 0.5.5 - 2026-09-01
-
-### Changed
-
-- Extracted chart overlay data and client payload preparation into a reusable module.
-
-## 0.5.4 - 2026-09-01
-
-### Changed
-
-- Moved Cartesian chart layout and initial tick generation into the chart geometry module.
-
-## 0.5.3 - 2026-09-01
-
-### Changed
-
-- Extracted activity summary calculation into a reusable module.
-
-## 0.5.2 - 2026-09-01
-
-### Changed
-
-- Extracted chart series, GPS, elevation, and statistics helpers from the extension host module.
-
 ## 0.5.1 - 2026-09-01
 
 ### Changed
 
-- Extracted reusable chart geometry and tick helpers from the extension host module.
+- Refactored chart geometry, chart data, chart models, activity summaries, and overlays into focused modules.
 
 ## 0.5.0 - 2026-09-01
 
