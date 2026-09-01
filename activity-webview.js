@@ -215,7 +215,12 @@ function formatActivityLabel(a) {
 }
 
 function renderActivityTable(segments, laps, ui) {
-  const segmentContext = buildSegmentContext(segments).text;
+  const segmentContext = buildSegmentContext(segments);
+  const segmentRows = segmentContext.displayRows.map((row, index) => ({
+    segment: row.time ? String(index + 1) : '',
+    time: row.time,
+    details: row.details,
+  }));
   const lapRows = (Array.isArray(laps) ? laps : []).map((lap, index) => ({
     label: String(index + 1),
     time: formatDuration(lap.total_timer_time ?? lap.total_elapsed_time),
@@ -225,15 +230,16 @@ function renderActivityTable(segments, laps, ui) {
     grade: displayNumber(lap.avg_grade, '%', 1),
     elevation: Number(lap.total_ascent) > 0 ? displayNumber(lap.total_ascent, ' m', 0, '+') : '',
   }));
+  const segmentColumns = [['segment', ui.segment], ['time', ui.time], ['details', ui.segmentDetails]];
   const lapColumns = [['label', ui.lap], ['time', ui.time], ['distance', ui.distance], ['heartRate', ui.heartRate], ['power', ui.power], ['grade', ui.grade], ['elevation', ui.elevation]];
   const renderRows = (rows, name, hidden, columns) => {
     const visible = columns.filter(([key]) => rows.some((row) => row[key]));
     return `<div class="activityTableWrap" data-activity-table="${name}"${hidden ? ' hidden' : ''}><table class="activityTable"><thead><tr>${visible.map(([, heading]) => `<th>${escapeHtml(heading)}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${visible.map(([key]) => `<td>${escapeHtml(row[key] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   };
 
-  if (!segmentContext) return '';
+  if (!segmentRows.length) return '';
   const tabs = lapRows.length ? `<div class="activityTableTabs"><button type="button" data-activity-table-tab="segments" aria-pressed="true">${escapeHtml(ui.segments)}</button><button type="button" data-activity-table-tab="laps" aria-pressed="false">${escapeHtml(ui.laps)}</button></div>` : '';
-  const segmentView = `<div class="activityTableWrap" data-activity-table="segments"><pre class="segmentContext">${escapeHtml(segmentContext)}</pre></div>`;
+  const segmentView = renderRows(segmentRows, 'segments', false, segmentColumns);
   return `<section class="chart"><h2>${escapeHtml(lapRows.length ? ui.segments : ui.segment)}</h2>${tabs}${segmentView}${lapRows.length ? renderRows(lapRows, 'laps', true, lapColumns) : ''}</section>`;
 }
 
@@ -1384,7 +1390,6 @@ function sharedCss() {
     .activityTableTabs button { border:1px solid var(--border); border-radius:4px; padding:5px 9px; background:var(--input-bg); color:var(--input-fg); cursor:pointer; }
     .activityTableTabs button[aria-pressed="true"] { background:var(--accent); color:var(--bg); }
     .activityTableWrap { overflow:auto; }
-    .segmentContext { margin:0; white-space:pre-wrap; font:0.86rem/1.5 var(--vscode-editor-font-family,monospace); color:var(--ink); }
     .activityTable { width:100%; border-collapse:collapse; font-size:.84rem; white-space:nowrap; }
     .activityTable th, .activityTable td { padding:6px 8px; border-bottom:1px solid var(--border); text-align:right; }
     .activityTable th:first-child, .activityTable td:first-child { text-align:left; }

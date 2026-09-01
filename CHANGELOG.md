@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.10 - 2026-09-01
+
+### Changed
+
+- Presented grouped segment analysis as a table using the same rows sent to AI.
+
 ## 0.9.9 - 2026-09-01
 
 ### Changed

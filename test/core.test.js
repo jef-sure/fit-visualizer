@@ -965,9 +965,9 @@ test('activity webview renderer executes its complete server-side render path', 
   );
   assert.match(html, /fitMapSpeedSvg/);
   assert.match(html, /Interactive Map/);
-  const displayedSegments = /<pre class="segmentContext">([\s\S]*?)<\/pre>/.exec(html)?.[1] || '';
-  assert.match(displayedSegments, /Segment Breakdown/);
-  assert.doesNotMatch(displayedSegments, /vPower 86 W|Power 86 W|\+2 m|0\.00 km/);
+  assert.match(html, /<th>Segment<\/th><th>Time<\/th><th>Segment details<\/th>/);
+  assert.match(html, /descent, avg grade -4\.4%, avg HR 130/);
+  assert.doesNotMatch(html, /vPower 86 W|Power 86 W|\+2 m|0\.00 km/);
 });
 
 test('localized webview UI uses one complete string catalog', () => {
@@ -1655,6 +1655,11 @@ test('segment breakdown lists segments, collapses repeats and folds short stops'
   // A 23-second stop is folded into a summary line rather than spending a line of its own.
   assert.match(context.text, /Plus 1 short stops, 0:23 total/);
   assert.doesNotMatch(context.text, /\d\. .*stopped/);
+  assert.deepEqual(context.displayRows[0], {
+    time: '00:00:00-00:05:00 (5:00)',
+    details: 'climb, avg grade 6.2%, vpower ~215 W, avg HR 148, HR drift +3%, +90 m',
+  });
+  assert.equal(context.displayRows.at(-1).time, '');
 
   const intervals = [];
   for (let i = 0; i < 8; i += 1) {
