@@ -63,6 +63,7 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 ## Requirements
 
 - GitHub Copilot Chat, installed and signed in, for AI analysis. Everything else (charts, map, segmentation, zones, calibration) works without it.
+- VS Code may ask you to authorize FIT Visualizer before the first Copilot-backed analysis request; if permission is denied, the extension reports that separately from missing sign-in or policy blocks.
 
 ## What's a FIT File, and How Do I Get One?
 
@@ -111,7 +112,7 @@ Thresholds (grade cutoff, minimum segment length, stop detection, GPS trust wind
 
 ## Wheel Calibration
 
-If your bike uses a wheel speed sensor, its distance depends on a configured wheel circumference — which drifts if tire pressure changes or was mismeasured to begin with. FIT Visualizer compares the sensor's distance against GPS on long, straight, well-tracked stretches across your recent rides, and — only once there's enough trustworthy distance accumulated and the deviation is real, not GPS noise — suggests a corrected circumference. It stays silent otherwise; there's no partial progress indicator to watch.
+If your bike uses a wheel speed sensor, its distance depends on a configured wheel circumference — which drifts if tire pressure changes or was mismeasured to begin with. FIT Visualizer compares the sensor's distance against GPS on long, straight, well-tracked stretches across your recent rides, and — only once there's enough trustworthy distance accumulated and the deviation is real, not GPS noise — suggests a corrected circumference. Stable large mismatches are treated as calibration evidence rather than discarded just because they are far from 1:1. It stays silent otherwise; there's no partial progress indicator to watch.
 
 ## AI-Assisted Analysis
 

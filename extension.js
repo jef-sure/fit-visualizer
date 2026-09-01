@@ -1901,7 +1901,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         var span = Math.abs(max - min);
         if (!isFinite(span) || span === 0) return { values: [min], step: 1 };
         var rough = span / Math.max(2, targetCount - 1);
-        var magnitude = Math.pow(10, Math.floor(Math.log(rough) / Math.LN10));
+        var magnitude = Math.pow(10, Math.floor(Math.log10(rough)));
         var residual = rough / magnitude;
         var nice = 1;
         if (residual > 5) nice = 10; else if (residual > 2) nice = 5; else if (residual > 1) nice = 2;

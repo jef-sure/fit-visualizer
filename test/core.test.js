@@ -193,10 +193,24 @@ test('chart svg exposes tick groups and a crosshair capture rect for the client 
 test('chart interactions script ports buildTicks, syncs a shared crosshair and adapts tick density', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /function buildTicksClient\(min, max, targetCount\)/);
+  assert.match(source, /Math\.floor\(Math\.log10\(rough\)\)/);
   assert.match(source, /var payloads = \$\{chartClientPayloads\};/);
   assert.match(source, /new ResizeObserver\(function \(entries\) \{/);
   assert.match(source, /svgIds\.forEach\(function \(id\) \{\s*var target = instances\[id\];/);
   assert.match(source, /getScreenCTM\(\)/);
+});
+
+test('client tick rounding keeps the server step at powers of ten', () => {
+  const span = 2000;
+  const targetCount = 3;
+  const rough = span / Math.max(2, targetCount - 1);
+
+  const oldMagnitude = Math.pow(10, Math.floor(Math.log(rough) / Math.LN10));
+  const clientMagnitude = Math.pow(10, Math.floor(Math.log10(rough)));
+
+  assert.equal(rough, 1000);
+  assert.equal(oldMagnitude, 100);
+  assert.equal(clientMagnitude, 1000);
 });
 
 test('crosshair shows a text label with the actual X/Y values at the hovered point', () => {
@@ -431,13 +445,27 @@ test('haversine distance matches a known one-degree separation', () => {
 
 test('wheel calibration ratio compares the wheel distance channel against GPS distance on trusted windows', () => {
   const base = straightGpsRecords(400, 30);
-  // A miscalibrated wheel circumference scales the recorded distance channel; GPS positions stay honest.
-  const miscalibrated = base.map((record) => ({ ...record, distance: record.distance * 1.05 }));
+  // A miscalibrated wheel circumference scales both recorded speed and distance; GPS positions stay honest.
+  const miscalibrated = base.map((record) => ({
+    ...record,
+    speed: record.speed * 1.05,
+    distance: record.distance * 1.05,
+  }));
 
   const result = estimateWheelCalibrationRatio(miscalibrated);
   assert.ok(result, 'a long straight trusted stretch should produce a calibration sample');
   assert.ok(Math.abs(result.ratio - 1.05) < 0.01, `expected ratio near 1.05, got ${result.ratio}`);
   assert.ok(result.trustedDistanceKm > 1);
+
+  const badlyMiscalibrated = base.map((record) => ({
+    ...record,
+    speed: record.speed * 1.15,
+    distance: record.distance * 1.15,
+  }));
+  const largeError = estimateWheelCalibrationRatio(badlyMiscalibrated);
+  assert.ok(largeError, 'a large but stable wheel/GPS mismatch is exactly what calibration should detect');
+  assert.ok(Math.abs(largeError.ratio - 1.15) < 0.01, `expected ratio near 1.15, got ${largeError.ratio}`);
+  assert.ok(!estimateSpeedConfidence(badlyMiscalibrated).includes('high'), 'speed confidence still requires absolute agreement');
 
   assert.equal(estimateWheelCalibrationRatio(straightGpsRecords(20, 30)), null, 'a 150 m stretch is too short to trust');
   assert.equal(estimateWheelCalibrationRatio([]), null);
@@ -999,7 +1027,7 @@ test('Copilot analysis reports unavailable and empty models', async () => {
     lm: { selectChatModels: async () => [] },
     LanguageModelChatMessage: { User: (content) => content },
   };
-  await assert.rejects(() => requestCopilotAnalysis(noModel, 'test'), /No Copilot language model/);
+  await assert.rejects(() => requestCopilotAnalysis(noModel, 'test'), /not installed or you are not signed in/);
 
   const emptyResponse = {
     lm: {
@@ -1010,6 +1038,29 @@ test('Copilot analysis reports unavailable and empty models', async () => {
     LanguageModelChatMessage: { User: (content) => content },
   };
   await assert.rejects(() => requestCopilotAnalysis(emptyResponse, 'test'), /empty analysis/);
+});
+
+test('Copilot analysis explains language model permission and policy failures', async () => {
+  class LanguageModelError extends Error {
+    constructor(code) {
+      super(code);
+      this.code = code;
+    }
+  }
+
+  const vscode = (code) => ({
+    lm: {
+      selectChatModels: async () => [{
+        sendRequest: async () => { throw new LanguageModelError(code); },
+      }],
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+    LanguageModelError,
+  });
+
+  await assert.rejects(() => requestCopilotAnalysis(vscode('NoPermissions'), 'test'), /not authorized/);
+  await assert.rejects(() => requestCopilotAnalysis(vscode('Blocked'), 'test'), /blocked this analysis request/);
+  await assert.rejects(() => requestCopilotAnalysis(vscode('NotFound'), 'test'), /model was not found/);
 });
 
 test('Copilot request logging captures the model, the prompt and the reply', async () => {

@@ -454,10 +454,17 @@ function findTrustedSpeedWindows(records, options = {}) {
   const windowSeconds = Number.isFinite(asNumber(options.windowSeconds)) ? asNumber(options.windowSeconds) : 180;
   const minWindowKm = Number.isFinite(asNumber(options.minWindowKm)) ? asNumber(options.minWindowKm) : 1;
   const tolerancePct = Number.isFinite(asNumber(options.tolerancePct)) ? asNumber(options.tolerancePct) : 5;
+  const ratioSpreadTolerancePct = Number.isFinite(asNumber(options.ratioSpreadTolerancePct))
+    ? asNumber(options.ratioSpreadTolerancePct) : tolerancePct;
   const minStraightness = Number.isFinite(asNumber(options.minStraightness)) ? asNumber(options.minStraightness) : 0.9;
   const minCoverage = Number.isFinite(asNumber(options.minCoverage)) ? asNumber(options.minCoverage) : 0.9;
   const maxAccelerationMs2 = Number.isFinite(asNumber(options.maxAccelerationMs2))
     ? asNumber(options.maxAccelerationMs2) : 4;
+  const requireAbsoluteAgreement = options.requireAbsoluteAgreement !== false;
+  const minCalibrationRatio = Number.isFinite(asNumber(options.minCalibrationRatio))
+    ? asNumber(options.minCalibrationRatio) : 0.7;
+  const maxCalibrationRatio = Number.isFinite(asNumber(options.maxCalibrationRatio))
+    ? asNumber(options.maxCalibrationRatio) : 1.4;
 
   const gpsSpeeds = computeGpsDerivedSpeed(records);
   const windows = [];
@@ -480,7 +487,15 @@ function findTrustedSpeedWindows(records, options = {}) {
     }
 
     const evaluation = evaluateSpeedWindow(records, gpsSpeeds, windowStart, windowEnd, {
-      minWindowKm, tolerancePct, minStraightness, minCoverage, maxAccelerationMs2,
+      minWindowKm,
+      tolerancePct,
+      ratioSpreadTolerancePct,
+      minStraightness,
+      minCoverage,
+      maxAccelerationMs2,
+      requireAbsoluteAgreement,
+      minCalibrationRatio,
+      maxCalibrationRatio,
     });
     if (evaluation) {
       windows.push({ startIndex: windowStart, endIndex: windowEnd, pathKm: evaluation.pathKm });
@@ -528,19 +543,38 @@ function evaluateSpeedWindow(records, gpsSpeeds, startIndex, endIndex, limits) {
   }
 
   const deviations = [];
+  const ratios = [];
   for (const fix of fixes) {
     const sensorSpeed = asNumber(records[fix.index]?.speed);
     const gpsSpeed = asNumber(gpsSpeeds[fix.index]);
-    if (Number.isFinite(sensorSpeed) && Number.isFinite(gpsSpeed)) {
+    if (Number.isFinite(sensorSpeed) && sensorSpeed > 0 && Number.isFinite(gpsSpeed) && gpsSpeed > 0) {
       deviations.push(Math.abs(gpsSpeed - sensorSpeed) / Math.max(sensorSpeed, 1));
+      ratios.push(gpsSpeed / sensorSpeed);
     }
   }
 
-  if (deviations.length < fixes.length * limits.minCoverage) {
+  if (ratios.length < fixes.length * limits.minCoverage) {
     return false;
   }
 
-  return median(deviations) * 100 <= limits.tolerancePct ? { pathKm } : false;
+  const sortedRatios = ratios.sort((left, right) => left - right);
+  const p10 = sortedRatios[Math.floor((sortedRatios.length - 1) * 0.1)];
+  const p90 = sortedRatios[Math.ceil((sortedRatios.length - 1) * 0.9)];
+  const medianRatio = median(sortedRatios);
+  if (!Number.isFinite(medianRatio) || medianRatio <= 0) {
+    return false;
+  }
+
+  const ratioSpreadPct = ((p90 - p10) / medianRatio) * 100;
+  if (!Number.isFinite(ratioSpreadPct) || ratioSpreadPct > limits.ratioSpreadTolerancePct) {
+    return false;
+  }
+
+  if (limits.requireAbsoluteAgreement) {
+    return median(deviations) * 100 <= limits.tolerancePct ? { pathKm } : false;
+  }
+
+  return medianRatio >= limits.minCalibrationRatio && medianRatio <= limits.maxCalibrationRatio ? { pathKm } : false;
 }
 
 // Compares the wheel sensor's own distance channel against the GPS path on trusted windows only,
@@ -553,7 +587,7 @@ function estimateWheelCalibrationRatio(records, options = {}) {
   let weightedRatioSum = 0;
   let trustedDistanceKm = 0;
 
-  for (const window of findTrustedSpeedWindows(records, options)) {
+  for (const window of findTrustedSpeedWindows(records, { ...options, requireAbsoluteAgreement: false })) {
     const wheelDistanceKm = asNumber(records[window.endIndex]?.distance) - asNumber(records[window.startIndex]?.distance);
     if (!Number.isFinite(wheelDistanceKm) || wheelDistanceKm <= 0 || !(window.pathKm > 0)) {
       continue;
