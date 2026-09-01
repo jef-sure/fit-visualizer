@@ -977,6 +977,11 @@ function summarizeSegmentRange(records, range, shared, options) {
     && speedSpread >= optionNumber(options, 'technicalSpeedSpread', 0.25);
   // A stop spans either idle samples or a recording gap; averaging across it says nothing.
   const moving = type !== 'stopped';
+  const startDistanceKm = asNumber(records[startIndex]?.distance);
+  const endDistanceKm = asNumber(records[endIndex]?.distance);
+  const distanceKm = Number.isFinite(startDistanceKm) && Number.isFinite(endDistanceKm)
+    ? Math.max(0, endDistanceKm - startDistanceKm)
+    : Number.NaN;
 
   return {
     startIndex,
@@ -987,6 +992,7 @@ function summarizeSegmentRange(records, range, shared, options) {
     durationS: rangeDurationSeconds(records, startIndex, endIndex),
     avgGrade: moving && Number.isFinite(avgGrade) ? roundTo(avgGrade, 1) : null,
     elevGainM: moving ? roundTo(elevGainM, 0) : null,
+    distanceKm: Number.isFinite(distanceKm) ? roundTo(distanceKm, 1) : null,
     avgSpeedKmh: moving && Number.isFinite(avgSpeedKmh) ? roundTo(avgSpeedKmh, 1) : null,
     avgHr: heartRates.length ? roundTo(average(heartRates), 0) : null,
     avgPower: moving && powers.length ? roundTo(average(powers), 0) : null,

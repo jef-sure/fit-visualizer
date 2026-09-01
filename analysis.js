@@ -44,7 +44,7 @@ function segmentEffortText(segment) {
 
 function describeSegment(segment) {
   if (segment.type === 'stopped') {
-    return 'stopped';
+    return joinNonEmpty(['stopped', segment.distanceKm != null ? `${segment.distanceKm} km` : null]);
   }
   // The basis is implied by which metric is quoted, so it is explained once per block instead of per line.
   return joinNonEmpty([
@@ -55,6 +55,7 @@ function describeSegment(segment) {
     segment.avgHr != null && segment.effortBasis !== 'hr' ? `avg HR ${segment.avgHr}` : null,
     segment.hrDriftPct != null ? `HR drift ${segment.hrDriftPct > 0 ? '+' : ''}${segment.hrDriftPct}%` : null,
     segment.avgSpeedKmh != null ? `${segment.avgSpeedKmh} km/h` : null,
+    segment.distanceKm != null ? `${segment.distanceKm} km` : null,
     segment.type === 'climb' && segment.elevGainM ? `+${segment.elevGainM} m` : null,
   ]);
 }
@@ -373,7 +374,7 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
     ], '\n\n')
     : '**Comparable Training History:** No earlier activities within 75%-125% of this workout\'s distance are available. This workout establishes the initial baseline for rides of this distance.';
   const priorAnalysisContext = String(previousAnalysis || '').trim()
-    ? `**Previous Analysis:**\n${String(previousAnalysis).trim()}`
+    ? `**Previous Workout Analysis:**\n${String(previousAnalysis).trim()}`
     : '';
   const safeFollowUpHistory = Array.isArray(followUpHistory)
     ? followUpHistory
@@ -392,7 +393,7 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
 
   // Data first, interpretation rules last: without a system role, closeness to the question is the only lever.
   const body = joinNonEmpty([
-    `**This Workout:**\n${workoutFields}`,
+    joinNonEmpty([`**This Workout:**\n${workoutFields}`, segmentContext], '\n\n'),
     powerSource === 'estimated from motion data'
       ? '**Data Quality Note:** Power metrics are motion-estimated (from speed, altitude, and mass) and may be physiologically implausible, especially peak values. These figures and derived metrics (NP, IF, TSS, xPower, RI, BikeStress, Decoupling) should be disregarded for training-load decisions. Use heart-rate trends and effort perception instead.'
       : null,
@@ -400,7 +401,6 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
     heartRateProfileContext,
     zoneContext,
     historyContext,
-    segmentContext,
     priorAnalysisContext,
     followUpContext,
   ], '\n\n');
