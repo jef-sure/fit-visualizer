@@ -62,6 +62,21 @@ async function loadGeneratedTranslationBundle(storagePath, locale) {
   }
 }
 
+async function loadBundledTranslationBundle(extensionPath, locale) {
+  const normalized = normalizeLocale(locale);
+  if (!normalized || !extensionPath) return null;
+  const candidates = [...new Set([normalized, normalized.split('-')[0]])];
+  for (const candidate of candidates) {
+    try {
+      const filePath = path.join(extensionPath, 'l10n', `bundle.l10n.${candidate}.json`);
+      return validateTranslationBundle(JSON.parse(await fs.readFile(filePath, 'utf8')));
+    } catch {
+      // Try the language-only fallback when a regional bundle is unavailable.
+    }
+  }
+  return null;
+}
+
 async function saveGeneratedTranslationBundle(storagePath, locale, bundle) {
   const filePath = bundlePath(storagePath, locale);
   if (!filePath) throw new Error('The VS Code interface language is not a supported locale tag.');
@@ -71,6 +86,7 @@ async function saveGeneratedTranslationBundle(storagePath, locale, bundle) {
 }
 
 module.exports = {
+  loadBundledTranslationBundle,
   loadGeneratedTranslationBundle,
   normalizeLocale,
   parseGeneratedBundle,

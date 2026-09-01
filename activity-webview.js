@@ -368,9 +368,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const hrChart = buildLineChartFromModule(records, 'distance', 'heart_rate', 1400, 380, chartPointBudget, { compRecords: hasOverlay ? compRecords : [] });
   const altitudeChart = buildLineChartFromModule(records, 'distance', 'altitude', 1400, 380, chartPointBudget, { yTransform: (v) => v * 1000, compRecords: hasOverlay ? compRecords : [] });
   const overlayMetrics = buildOverlayMetricsFromModule(records, chartPointBudget);
-  const speedOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'speed');
-  const hrOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'heart_rate');
-  const altitudeOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'altitude');
+  const overlayLabels = { grade: ui.grade, altitude: ui.altitude, speed: ui.speed, heart_rate: ui.heartRate };
+  const overlayUnits = { speed: ui.kilometersPerHour, heart_rate: ui.beatsPerMinute };
+  const speedOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'speed', overlayLabels, overlayUnits);
+  const hrOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'heart_rate', overlayLabels, overlayUnits);
+  const altitudeOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'altitude', overlayLabels, overlayUnits);
   const segmentPresentation = buildSegmentContext(segments);
   const presentationByIndex = new Map();
   segmentPresentation.displayRows.forEach((row, index) => row.members.forEach((segment) => {
@@ -387,8 +389,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const segmentTooltipPayload = safeJson(chartSegments);
   const activityTable = renderActivityTable(chartSegments, fitData.laps, ui);
   const chartClientPayloads = safeJson({
-    [mapId + 'SpeedSvg']: buildChartClientPayloadFromModule(speedChart, 'km', 'km/h', speedOverlays),
-    [mapId + 'HrSvg']: buildChartClientPayloadFromModule(hrChart, 'km', 'bpm', hrOverlays),
+    [mapId + 'SpeedSvg']: buildChartClientPayloadFromModule(speedChart, 'km', ui.kilometersPerHour, speedOverlays),
+    [mapId + 'HrSvg']: buildChartClientPayloadFromModule(hrChart, 'km', ui.beatsPerMinute, hrOverlays),
     [mapId + 'AltSvg']: buildChartClientPayloadFromModule(altitudeChart, 'km', 'm', altitudeOverlays),
   });
   const hrZones = computeHeartRateZones(records, hrConfig?.maxHeartRate, hrConfig?.thresholds);
@@ -463,31 +465,31 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     ${shouldOfferTranslations ? `<section class="calibrationHint"><span>${escapeHtml(formatUi(ui.translationsAvailable, language))}</span><button type="button" id="generateTranslationsBtn">${escapeHtml(formatUi(ui.generateTranslations, language))}</button><span id="translationStatus"></span></section>` : ''}
     ${compStatsRow}
     <section class="grid">
-      ${metric('Records', summary.records, 'records', glossary)}
-      ${metric('Sessions', sessions.length, 'sessions', glossary)}
-      ${metric('Distance (km)', summary.distanceKm.toFixed(2), 'distance', glossary)}
-      ${metric('Duration (h:m:s)', summary.durationText, 'duration', glossary)}
-      ${metric('Avg Speed (km/h)', summary.avgSpeed.toFixed(2), 'averageSpeed', glossary)}
-      ${metric('Max Speed (km/h)', summary.maxSpeed.toFixed(2), 'maximumSpeed', glossary)}
-      ${metric('Avg Power (W)' + powerMetricSuffix, summary.avgPower.toFixed(0), 'averagePower', glossary)}
-      ${metric('Max Power (W)' + powerMetricSuffix, summary.maxPower.toFixed(0), 'maximumPower', glossary)}
-      ${metric('Normalized Power (W)' + powerMetricSuffix, summary.normalizedPower?.toFixed(0) ?? 'n/a', 'normalizedPower', glossary)}
-      ${metric('Intensity Factor (IF)' + powerMetricSuffix, summary.intensityFactor > 0 ? summary.intensityFactor.toFixed(2) : 'n/a', 'intensityFactor', glossary)}
-      ${metric('TSS' + powerMetricSuffix, summary.trainingStressScore > 0 ? summary.trainingStressScore.toFixed(1) : 'n/a', 'trainingStressScore', glossary)}
-      ${metric('xPower (GC) (W)' + powerMetricSuffix, summary.xPower > 0 ? summary.xPower.toFixed(0) : 'n/a', 'xpower', glossary)}
-      ${metric('RI (GC)' + powerMetricSuffix, summary.relativeIntensityGc > 0 ? summary.relativeIntensityGc.toFixed(2) : 'n/a', 'relativeIntensity', glossary)}
-      ${metric('BikeStress (GC)' + powerMetricSuffix, summary.bikeStressScore > 0 ? summary.bikeStressScore.toFixed(1) : 'n/a', 'bikeStress', glossary)}
-      ${metric('Decoupling % (Intervals)' + powerMetricSuffix, Number.isFinite(summary.decouplingPct) ? summary.decouplingPct.toFixed(1) + '%' : 'n/a', 'decoupling', glossary)}
-      ${metric('TRIMP', Number.isFinite(summary.trimp) ? summary.trimp.toFixed(1) : 'n/a', 'trimp', glossary)}
-      ${metric('hrTSS', summary.hrTss > 0 ? summary.hrTss.toFixed(1) : 'n/a', 'hrTss', glossary)}
-      ${metric('Avg HR (bpm)', summary.avgHr.toFixed(0), 'averageHeartRate', glossary)}
-      ${metric('Max HR (bpm)', summary.maxHr.toFixed(0), 'maximumHeartRate', glossary)}
-      ${metric('Elevation Gain (m)', summary.elevationGainM.toFixed(0), 'elevationGain', glossary)}
-      ${metric('Elevation Loss (m)', summary.elevationLossM.toFixed(0), 'elevationLoss', glossary)}
-      ${metric('GPS Points', gpsRoute.pointCount, 'gpsPoints', glossary)}
+      ${metric(ui.recordsLabel, summary.records, 'records', glossary)}
+      ${metric(ui.sessionsLabel, sessions.length, 'sessions', glossary)}
+      ${metric(ui.distanceKm, summary.distanceKm.toFixed(2), 'distance', glossary)}
+      ${metric(ui.durationHms, summary.durationText, 'duration', glossary)}
+      ${metric(ui.avgSpeedKmh, summary.avgSpeed.toFixed(2), 'averageSpeed', glossary)}
+      ${metric(ui.maxSpeedKmh, summary.maxSpeed.toFixed(2), 'maximumSpeed', glossary)}
+      ${metric(ui.avgPowerW + powerMetricSuffix, summary.avgPower.toFixed(0), 'averagePower', glossary)}
+      ${metric(ui.maxPowerW + powerMetricSuffix, summary.maxPower.toFixed(0), 'maximumPower', glossary)}
+      ${metric(ui.normalizedPowerW + powerMetricSuffix, summary.normalizedPower?.toFixed(0) ?? 'n/a', 'normalizedPower', glossary)}
+      ${metric(ui.intensityFactorIf + powerMetricSuffix, summary.intensityFactor > 0 ? summary.intensityFactor.toFixed(2) : 'n/a', 'intensityFactor', glossary)}
+      ${metric(ui.tssScore + powerMetricSuffix, summary.trainingStressScore > 0 ? summary.trainingStressScore.toFixed(1) : 'n/a', 'trainingStressScore', glossary)}
+      ${metric(ui.xPowerGcW + powerMetricSuffix, summary.xPower > 0 ? summary.xPower.toFixed(0) : 'n/a', 'xpower', glossary)}
+      ${metric(ui.riGc + powerMetricSuffix, summary.relativeIntensityGc > 0 ? summary.relativeIntensityGc.toFixed(2) : 'n/a', 'relativeIntensity', glossary)}
+      ${metric(ui.bikeStressGc + powerMetricSuffix, summary.bikeStressScore > 0 ? summary.bikeStressScore.toFixed(1) : 'n/a', 'bikeStress', glossary)}
+      ${metric(ui.decouplingIntervals + powerMetricSuffix, Number.isFinite(summary.decouplingPct) ? summary.decouplingPct.toFixed(1) + '%' : 'n/a', 'decoupling', glossary)}
+      ${metric(ui.trimp, Number.isFinite(summary.trimp) ? summary.trimp.toFixed(1) : 'n/a', 'trimp', glossary)}
+      ${metric(ui.hrTss, summary.hrTss > 0 ? summary.hrTss.toFixed(1) : 'n/a', 'hrTss', glossary)}
+      ${metric(ui.avgHrBpm, summary.avgHr.toFixed(0), 'averageHeartRate', glossary)}
+      ${metric(ui.maxHrBpm, summary.maxHr.toFixed(0), 'maximumHeartRate', glossary)}
+      ${metric(ui.elevationGainM, summary.elevationGainM.toFixed(0), 'elevationGain', glossary)}
+      ${metric(ui.elevationLossM, summary.elevationLossM.toFixed(0), 'elevationLoss', glossary)}
+      ${metric(ui.gpsPointsLabel, gpsRoute.pointCount, 'gpsPoints', glossary)}
     </section>
     ${primaryPower.source === 'estimated' ? `<section style="padding:12px;margin-bottom:16px;background:rgba(255,193,7,0.1);border-left:4px solid #ffc107;color:var(--ink);font-size:0.95rem;line-height:1.5;">
-      <strong>⚠ Data Quality Note:</strong> Power metrics are motion-estimated (from speed, altitude, and mass) and may be physiologically implausible, especially peak values. These figures and derived metrics (NP, IF, TSS, xPower, RI, BikeStress, Decoupling) should be disregarded for training-load decisions. Use heart-rate trends and effort perception instead.
+      <strong>${escapeHtml(ui.dataQualityNoteTitle)}</strong> ${escapeHtml(ui.dataQualityNote)}
     </section>` : ''}
     <section class="chart manualData">
       <h2>${escapeHtml(ui.manualActivityData)}</h2>
@@ -503,7 +505,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <button type="submit">${escapeHtml(ui.saveHeartRate)}</button>
         <span id="${mapId}ManualDataStatus" class="manualDataStatus"></span>
       </form>
-      <div class="mapHint">Manual summary values are used in metrics and analysis. A heart-rate chart requires time-series samples.</div>
+      <div class="mapHint">${escapeHtml(ui.manualSummaryHint)}</div>
     </section>
     <section class="chart manualData">
       <h2>${escapeHtml(ui.heartRateZoneProfile)}</h2>
@@ -513,20 +515,20 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           <input id="${mapId}HrEffectiveDate" type="date" value="${escapeHtml(activityDate)}" required>
         </label>
         <label>
-          <span>Maximum HR</span>
+          <span>${escapeHtml(ui.maximumHeartRate)}</span>
           <input id="${mapId}ProfileMaxHr" type="number" min="100" max="240" step="1" value="${profileMaxHr}" required>
         </label>
         ${[2, 3, 4, 5].map((zone, index) => `<label>
-          <span>Zone ${zone} starts</span>
+          <span>${escapeHtml(formatUi(ui.zoneStarts, zone))}</span>
           <input id="${mapId}Zone${zone}Start" type="number" min="30" max="240" step="1" value="${positiveNumberOrBlank(profileThresholds[index])}" placeholder="${escapeHtml(ui.auto)}">
         </label>`).join('')}
         <label>
-          <span>Sex</span>
+          <span>${escapeHtml(ui.sex)}</span>
           <select id="${mapId}AthleteSex">
             <option value=""${athleteSexValue ? '' : ' selected'}>${escapeHtml(ui.select)}</option>
-            <option value="male"${athleteSexValue === 'male' ? ' selected' : ''}>Male</option>
-            <option value="female"${athleteSexValue === 'female' ? ' selected' : ''}>Female</option>
-            <option value="other"${athleteSexValue === 'other' ? ' selected' : ''}>Other</option>
+            <option value="male"${athleteSexValue === 'male' ? ' selected' : ''}>${escapeHtml(ui.male)}</option>
+            <option value="female"${athleteSexValue === 'female' ? ' selected' : ''}>${escapeHtml(ui.female)}</option>
+            <option value="other"${athleteSexValue === 'other' ? ' selected' : ''}>${escapeHtml(ui.other)}</option>
           </select>
         </label>
         <label>
@@ -538,7 +540,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           <input id="${mapId}AthleteRestingHr" type="number" min="30" max="120" step="1" value="${athleteRestingHr}" placeholder="bpm">
         </label>
         <label>
-          <span>FTP</span>
+          <span>${escapeHtml(ui.ftp)}</span>
           <input id="${mapId}AthleteFtp" type="number" min="80" max="500" step="1" value="${athleteFtpValue}" placeholder="${escapeHtml(ui.watts)}">
         </label>
         <label>
@@ -558,31 +560,31 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <span id="${mapId}HrProfileStatus" class="manualDataStatus"></span>
       </form>
       ${wheelCalibrationHint}
-      <div class="mapHint">Auto-calc estimates power from the saved rider and bike mass, speed, GPS altitude, and distance when power-meter data is unavailable. The last saved masses are reused for the next ride. FTP is used for IF/TSS on activity summaries. The latest profile effective on an activity date is used.${hrConfig?.effectiveDate ? ` Currently applied: ${escapeHtml(hrConfig.effectiveDate)}.` : ''}</div>
+      <div class="mapHint">${escapeHtml(ui.autoCalcInfo)}${hrConfig?.effectiveDate ? ` ${escapeHtml(ui.currentlyApplied)} ${escapeHtml(hrConfig.effectiveDate)}.` : ''}</div>
     </section>
     <section class="chart resizable" data-resize-target="${mapId}SpeedSvg" data-resize-key="fitviz_speed_height" data-min-height="200" data-max-height="1200">
       <h2>${escapeHtml(ui.speedVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
       <label class="segmentBandControls"><input id="${mapId}SegmentBands" type="checkbox" checked> ${escapeHtml(ui.showTerrainBands)}</label>
-      ${renderStatsRow(speedChart.stats, 'km/h')}${hasOverlay && speedChart.compStats ? renderStatsRow(speedChart.compStats, 'km/h', true) : ''}
+      ${renderStatsRow(speedChart.stats, ui.kilometersPerHour, false, ui)}${hasOverlay && speedChart.compStats ? renderStatsRow(speedChart.compStats, ui.kilometersPerHour, true, ui) : ''}
       ${renderOverlayControls(mapId + 'SpeedSvg', speedOverlays)}
-      ${renderScaledLineChartSvg(speedChart, 'lineA', 'Distance (km)', 'Speed (km/h)', true, { svgId: mapId + 'SpeedSvg', segmentBands: chartSegments })}
+      ${renderScaledLineChartSvg(speedChart, 'lineA', ui.distanceKm, ui.avgSpeedKmh, true, { svgId: mapId + 'SpeedSvg', segmentBands: chartSegments })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
     <section class="chart resizable" data-resize-target="${mapId}HrSvg" data-resize-key="fitviz_hr_height" data-min-height="200" data-max-height="1200">
       <h2>${escapeHtml(ui.heartRateVsDistance)}</h2>
-      ${renderStatsRow(hrChart.stats, 'bpm')}
-      ${renderHeartRateZones(hrZones)}
+      ${renderStatsRow(hrChart.stats, ui.beatsPerMinute, false, ui)}
+      ${renderHeartRateZones(hrZones, ui)}
       ${renderOverlayControls(mapId + 'HrSvg', hrOverlays)}
-      ${renderScaledLineChartSvg(hrChart, 'lineB', 'Distance (km)', 'Heart rate (bpm)', true, { svgId: mapId + 'HrSvg', zoneThresholds: hrZones.enabled ? hrZones.thresholds : null, segmentBands: chartSegments })}
+      ${renderScaledLineChartSvg(hrChart, 'lineB', ui.distanceKm, ui.avgHrBpm, true, { svgId: mapId + 'HrSvg', zoneThresholds: hrZones.enabled ? hrZones.thresholds : null, segmentBands: chartSegments })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
     <section class="chart resizable" data-resize-target="${mapId}AltSvg" data-resize-key="fitviz_alt_height" data-min-height="200" data-max-height="1200">
       <h2>${escapeHtml(ui.altitudeVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
-      ${renderStatsRow(altitudeChart.stats, 'm')}${hasOverlay && altitudeChart.compStats ? renderStatsRow(altitudeChart.compStats, 'm', true) : ''}
+      ${renderStatsRow(altitudeChart.stats, 'm', false, ui)}${hasOverlay && altitudeChart.compStats ? renderStatsRow(altitudeChart.compStats, 'm', true, ui) : ''}
       ${renderOverlayControls(mapId + 'AltSvg', altitudeOverlays)}
-      ${renderScaledLineChartSvg(altitudeChart, 'lineC', 'Distance (km)', 'Altitude (m)', true, { svgId: mapId + 'AltSvg', segmentBands: chartSegments })}
+      ${renderScaledLineChartSvg(altitudeChart, 'lineC', ui.distanceKm, ui.elevationGainM, true, { svgId: mapId + 'AltSvg', segmentBands: chartSegments })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
@@ -595,7 +597,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     </section>
     <section class="chart resizable" data-resize-target="${mapId}" data-resize-key="fitviz_map_height" data-min-height="260" data-max-height="1400" data-target-type="map">
       <h2>${escapeHtml(ui.interactiveMap)}</h2>
-      ${renderMapStats(gpsRoute)}
+      ${renderMapStats(gpsRoute, ui)}
       <div class="mapWrap">
         <div class="mapControls">
           <label for="${mapId}Mode">${escapeHtml(ui.colorRouteBy)}</label>
@@ -1187,6 +1189,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   <script nonce="${nonce}">
     (function () {
       var payloads = ${chartClientPayloads};
+      var decimalSeparator = ${safeJson(ui.decimalSeparator)};
       var chartSegments = ${segmentTooltipPayload};
       var segmentTooltip = document.getElementById('${mapId}SegmentTooltip');
       document.querySelectorAll('[data-activity-table-tab]').forEach(function (button) {
@@ -1318,7 +1321,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
       function formatCrosshairValue(value, unit) {
         var digits = Math.abs(value) >= 100 ? 0 : Math.abs(value) >= 10 ? 1 : 2;
-        return value.toFixed(digits) + (unit ? ' ' + unit : '');
+        return value.toFixed(digits).replace('.', decimalSeparator) + (unit ? ' ' + unit : '');
       }
 
       // Max 2 at once: more than that on top of the main line becomes unreadable.
@@ -1650,77 +1653,89 @@ function renderTerm(label, term, glossary) {
 }
 
 
-function renderStatsRow(stats, unit, isComp) {
+function renderStatsRow(stats, unit, isComp, ui) {
   if (!stats || !stats.count) {
     return '';
   }
   const style = isComp ? ' style="opacity:0.72"' : '';
   const prefix = isComp ? 'comp · ' : '';
+  const formatStatNumber = (value) => formatLocalizedNumber(value, ui);
   return `<div class="statRow"${style}>
-    ${statChip(prefix + 'Samples', stats.count)}
-    ${statChip(prefix + 'Min', `${formatNumber(stats.min)} ${unit}`)}
-    ${statChip(prefix + 'Avg', `${formatNumber(stats.avg)} ${unit}`)}
-    ${statChip(prefix + 'Median', `${formatNumber(stats.median)} ${unit}`)}
-    ${statChip(prefix + 'P95', `${formatNumber(stats.p95)} ${unit}`)}
-    ${statChip(prefix + 'Max', `${formatNumber(stats.max)} ${unit}`)}
+    ${statChip(prefix + ui.samples, stats.count)}
+    ${statChip(prefix + ui.min, `${formatStatNumber(stats.min)} ${unit}`)}
+    ${statChip(prefix + ui.avg, `${formatStatNumber(stats.avg)} ${unit}`)}
+    ${statChip(prefix + ui.median, `${formatStatNumber(stats.median)} ${unit}`)}
+    ${statChip(prefix + ui.p95, `${formatStatNumber(stats.p95)} ${unit}`)}
+    ${statChip(prefix + ui.max, `${formatStatNumber(stats.max)} ${unit}`)}
   </div>`;
 }
 
-function renderComparisonTable(a, b, aName, bName, glossary) {
+function renderComparisonTable(a, b, aName, bName, glossary, ui) {
   const rows = [
-    ['Distance (km)', a.distanceKm.toFixed(2), b.distanceKm.toFixed(2), 'distance'],
-    ['Duration', a.durationText, b.durationText, 'duration'],
-    ['Avg Speed (km/h)', a.avgSpeed.toFixed(2), b.avgSpeed.toFixed(2), 'averageSpeed'],
-    ['Max Speed (km/h)', a.maxSpeed.toFixed(2), b.maxSpeed.toFixed(2), 'maximumSpeed'],
-    ['Avg Power (W)', a.avgPower.toFixed(0), b.avgPower.toFixed(0), 'averagePower'],
-    ['Max Power (W)', a.maxPower.toFixed(0), b.maxPower.toFixed(0), 'maximumPower'],
-    ['Normalized Power (W)', a.normalizedPower?.toFixed(0) ?? 'n/a', b.normalizedPower?.toFixed(0) ?? 'n/a', 'normalizedPower'],
-    ['Intensity Factor (IF)', a.intensityFactor > 0 ? a.intensityFactor.toFixed(2) : 'n/a', b.intensityFactor > 0 ? b.intensityFactor.toFixed(2) : 'n/a', 'intensityFactor'],
-    ['TSS', a.trainingStressScore > 0 ? a.trainingStressScore.toFixed(1) : 'n/a', b.trainingStressScore > 0 ? b.trainingStressScore.toFixed(1) : 'n/a', 'trainingStressScore'],
-    ['xPower (GC) (W)', a.xPower > 0 ? a.xPower.toFixed(0) : 'n/a', b.xPower > 0 ? b.xPower.toFixed(0) : 'n/a', 'xpower'],
-    ['RI (GC)', a.relativeIntensityGc > 0 ? a.relativeIntensityGc.toFixed(2) : 'n/a', b.relativeIntensityGc > 0 ? b.relativeIntensityGc.toFixed(2) : 'n/a', 'relativeIntensity'],
-    ['BikeStress (GC)', a.bikeStressScore > 0 ? a.bikeStressScore.toFixed(1) : 'n/a', b.bikeStressScore > 0 ? b.bikeStressScore.toFixed(1) : 'n/a', 'bikeStress'],
-    ['Decoupling % (Intervals)', Number.isFinite(a.decouplingPct) ? `${a.decouplingPct.toFixed(1)}%` : 'n/a', Number.isFinite(b.decouplingPct) ? `${b.decouplingPct.toFixed(1)}%` : 'n/a', 'decoupling'],
-    ['TRIMP', Number.isFinite(a.trimp) ? a.trimp.toFixed(1) : 'n/a', Number.isFinite(b.trimp) ? b.trimp.toFixed(1) : 'n/a', 'trimp'],
-    ['hrTSS', a.hrTss > 0 ? a.hrTss.toFixed(1) : 'n/a', b.hrTss > 0 ? b.hrTss.toFixed(1) : 'n/a', 'hrTss'],
-    ['Avg HR (bpm)', a.avgHr.toFixed(0), b.avgHr.toFixed(0), 'averageHeartRate'],
-    ['Max HR (bpm)', a.maxHr.toFixed(0), b.maxHr.toFixed(0), 'maximumHeartRate'],
-    ['Elevation Gain (m)', a.elevationGainM.toFixed(0), b.elevationGainM.toFixed(0), 'elevationGain'],
-    ['Elevation Loss (m)', a.elevationLossM.toFixed(0), b.elevationLossM.toFixed(0), 'elevationLoss'],
+    [ui.distanceKm, a.distanceKm.toFixed(2), b.distanceKm.toFixed(2), 'distance'],
+    [ui.duration, a.durationText, b.durationText, 'duration'],
+    [ui.avgSpeedKmh, a.avgSpeed.toFixed(2), b.avgSpeed.toFixed(2), 'averageSpeed'],
+    [ui.maxSpeedKmh, a.maxSpeed.toFixed(2), b.maxSpeed.toFixed(2), 'maximumSpeed'],
+    [ui.avgPowerW, a.avgPower.toFixed(0), b.avgPower.toFixed(0), 'averagePower'],
+    [ui.maxPowerW, a.maxPower.toFixed(0), b.maxPower.toFixed(0), 'maximumPower'],
+    [ui.normalizedPowerW, a.normalizedPower?.toFixed(0) ?? 'n/a', b.normalizedPower?.toFixed(0) ?? 'n/a', 'normalizedPower'],
+    [ui.intensityFactorIf, a.intensityFactor > 0 ? a.intensityFactor.toFixed(2) : 'n/a', b.intensityFactor > 0 ? b.intensityFactor.toFixed(2) : 'n/a', 'intensityFactor'],
+    [ui.tssScore, a.trainingStressScore > 0 ? a.trainingStressScore.toFixed(1) : 'n/a', b.trainingStressScore > 0 ? b.trainingStressScore.toFixed(1) : 'n/a', 'trainingStressScore'],
+    [ui.xPowerGcW, a.xPower > 0 ? a.xPower.toFixed(0) : 'n/a', b.xPower > 0 ? b.xPower.toFixed(0) : 'n/a', 'xpower'],
+    [ui.riGc, a.relativeIntensityGc > 0 ? a.relativeIntensityGc.toFixed(2) : 'n/a', b.relativeIntensityGc > 0 ? b.relativeIntensityGc.toFixed(2) : 'n/a', 'relativeIntensity'],
+    [ui.bikeStressGc, a.bikeStressScore > 0 ? a.bikeStressScore.toFixed(1) : 'n/a', b.bikeStressScore > 0 ? b.bikeStressScore.toFixed(1) : 'n/a', 'bikeStress'],
+    [ui.decouplingIntervals, Number.isFinite(a.decouplingPct) ? `${a.decouplingPct.toFixed(1)}%` : 'n/a', Number.isFinite(b.decouplingPct) ? `${b.decouplingPct.toFixed(1)}%` : 'n/a', 'decoupling'],
+    [ui.trimp, Number.isFinite(a.trimp) ? a.trimp.toFixed(1) : 'n/a', Number.isFinite(b.trimp) ? b.trimp.toFixed(1) : 'n/a', 'trimp'],
+    [ui.hrTss, a.hrTss > 0 ? a.hrTss.toFixed(1) : 'n/a', b.hrTss > 0 ? b.hrTss.toFixed(1) : 'n/a', 'hrTss'],
+    [ui.avgHrBpm, a.avgHr.toFixed(0), b.avgHr.toFixed(0), 'averageHeartRate'],
+    [ui.maxHrBpm, a.maxHr.toFixed(0), b.maxHr.toFixed(0), 'maximumHeartRate'],
+    [ui.elevationGainM, a.elevationGainM.toFixed(0), b.elevationGainM.toFixed(0), 'elevationGain'],
+    [ui.elevationLossM, a.elevationLossM.toFixed(0), b.elevationLossM.toFixed(0), 'elevationLoss'],
   ].map(([label, va, vb, term]) => `<tr><td class="cmpLabel">${renderTerm(label, term, glossary)}</td><td class="cmpA">${escapeHtml(va)}</td><td class="cmpB">${escapeHtml(vb)}</td></tr>`).join('');
-  return `<section class="chart"><h2>Comparison</h2><table class="cmpTable">
-    <thead><tr><th></th><th>${escapeHtml(aName || 'Activity')}</th><th>${escapeHtml(bName || 'Comparison')}</th></tr></thead>
+  return `<section class="chart"><h2>${escapeHtml(ui.comparison)}</h2><table class="cmpTable">
+    <thead><tr><th></th><th>${escapeHtml(aName || ui.activity)}</th><th>${escapeHtml(bName || ui.comparison)}</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></section>`;
 }
 
-function renderMapStats(route) {
+function renderMapStats(route, ui) {
   if (!route || !route.pointCount) {
-    return '<div class="muted">No GPS stats available.</div>';
+    return `<div class="muted">${escapeHtml(ui.noGpsStatsAvailable)}</div>`;
   }
 
   const speed = route.speedStats || {};
   const hr = route.hrStats || {};
 
   return `<div class="statRow">
-    ${statChip('Points', route.pointCount)}
-    ${statChip('Route Dist', `${formatNumber(route.routeDistanceKm)} km`)}
-    ${statChip('Avg Speed', speed.count ? `${formatNumber(speed.avg)} km/h` : 'n/a')}
-    ${statChip('Max Speed', speed.count ? `${formatNumber(speed.max)} km/h` : 'n/a')}
-    ${statChip('Avg HR', hr.count ? `${formatNumber(hr.avg)} bpm` : 'n/a')}
-    ${statChip('Max HR', hr.count ? `${formatNumber(hr.max)} bpm` : 'n/a')}
+    ${statChip(ui.gpsPointsLabel, route.pointCount)}
+    ${statChip(ui.distance, `${formatLocalizedNumber(route.routeDistanceKm, ui)} km`)}
+    ${statChip(`${ui.avg} ${ui.speed}`, speed.count ? `${formatLocalizedNumber(speed.avg, ui)} ${ui.kilometersPerHour}` : 'n/a')}
+    ${statChip(`${ui.max} ${ui.speed}`, speed.count ? `${formatLocalizedNumber(speed.max, ui)} ${ui.kilometersPerHour}` : 'n/a')}
+    ${statChip(`${ui.avg} ${ui.heartRate}`, hr.count ? `${formatLocalizedNumber(hr.avg, ui)} ${ui.beatsPerMinute}` : 'n/a')}
+    ${statChip(`${ui.max} ${ui.heartRate}`, hr.count ? `${formatLocalizedNumber(hr.max, ui)} ${ui.beatsPerMinute}` : 'n/a')}
   </div>`;
+}
+
+function formatLocalizedNumber(value, ui) {
+  return formatNumber(value).replace('.', ui.decimalSeparator);
 }
 
 function statChip(label, value) {
   return `<div class="stat"><div class="statK">${escapeHtml(String(label))}</div><div class="statV">${escapeHtml(String(value))}</div></div>`;
 }
 
-function renderHeartRateZones(zoneData) {
+function renderHeartRateZones(zoneData, ui) {
   if (!zoneData.enabled) {
-    return `<div class="zones"><div class="zonesHead">Heart-rate zones are disabled. Enter a dated profile above to enable zone analysis.</div></div>`;
+    return `<div class="zones"><div class="zonesHead">${escapeHtml(ui.heartRateZonesDisabled)}</div></div>`;
   }
 
+  const zoneLabels = {
+    Recovery: ui.recovery,
+    Endurance: ui.endurance,
+    Aerobic: ui.aerobic,
+    Anaerobic: ui.anaerobic,
+    Max: ui.maxZone,
+  };
   const rows = zoneData.zones.map((zone, colorIndex) => ({ zone, colorIndex })).reverse().map(({ zone: z, colorIndex: idx }) => {
     const fill = Math.max(0, Math.min(100, z.percent));
     const colors = [
@@ -1732,14 +1747,14 @@ function renderHeartRateZones(zoneData) {
     ];
     const color = colors[idx] || 'var(--accent)';
     return `<div class="zoneRow">
-      <div class="zoneLabel">${escapeHtml(z.name)}</div>
+      <div class="zoneLabel">${escapeHtml(zoneLabels[z.name] || z.name)}</div>
       <div class="zoneBar"><div class="zoneFill" style="width:${fill.toFixed(1)}%; background:${color};"></div></div>
-      <div class="zoneMeta">${escapeHtml(z.range)} | ${escapeHtml(formatHms(z.seconds))} (${escapeHtml(formatNumber(z.percent))}%)</div>
+      <div class="zoneMeta">${escapeHtml(z.range.replace('bpm', ui.beatsPerMinute))} | ${escapeHtml(formatHms(z.seconds))} (${escapeHtml(formatLocalizedNumber(z.percent, ui))}%)</div>
     </div>`;
   }).join('');
 
   return `<div class="zones">
-    <div class="zonesHead">Zones based on ${zoneData.customThresholds ? 'custom watch thresholds and ' : ''}max HR ${escapeHtml(String(zoneData.maxHeartRate))} bpm. Time is estimated from elapsed record deltas.</div>
+    <div class="zonesHead">${escapeHtml(formatUi(zoneData.customThresholds ? ui.heartRateZonesCustomInfo : ui.heartRateZonesInfo, zoneData.maxHeartRate).replace('bpm', ui.beatsPerMinute))}</div>
     ${rows}
   </div>`;
 }
