@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.4 - 2026-09-01
+
+### Changed
+
+- Moved Cartesian chart layout and initial tick generation into the chart geometry module.
+
 ## 0.5.3 - 2026-09-01
 
 ### Changed

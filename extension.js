@@ -4,7 +4,7 @@ const path = require('node:path');
 const { generateAnalysisPrompt, generateAnalysisChatPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('./analysis');
 const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
-const { buildDistanceMarkers, buildTicks, formatTick, padRange, padYAxisRange } = require('./chart-geometry');
+const { buildCartesianGeometry, buildDistanceMarkers, buildTicks, formatTick, padRange, padYAxisRange } = require('./chart-geometry');
 const { computeElevationGainLoss, computeRouteDistanceKm, computeStats, extractGpsPoints, extractXYPoints } = require('./chart-data');
 const { buildSummary } = require('./activity-summary');
 const {
@@ -2717,82 +2717,6 @@ function renderGpsRouteSvg(route, width, height) {
     <text class="axisLabel" x="${(route.plotLeft + route.plotRight) / 2}" y="${height - 4}" text-anchor="middle">Longitude</text>
     <text class="axisLabel" transform="translate(14 ${(route.plotTop + route.plotBottom) / 2}) rotate(-90)" text-anchor="middle">Latitude</text>
   </svg>`;
-}
-
-function buildCartesianGeometry(points, width, height, margin) {
-  if (points.length < 2) {
-    return {
-      points,
-      pathPoints: [],
-      pathData: '',
-      width,
-      height,
-      plotLeft: margin.left,
-      plotRight: width - margin.right,
-      plotTop: margin.top + 8,
-      plotBottom: height - margin.bottom,
-      xTicks: [],
-      yTicks: [],
-      xStep: 1,
-      yStep: 1,
-      xMin: 0,
-      xMax: 0,
-      yMin: 0,
-      yMax: 0,
-    };
-  }
-
-  const xMin = Math.min(...points.map((p) => p.x));
-  const xMax = Math.max(...points.map((p) => p.x));
-  const yMin = Math.min(...points.map((p) => p.y));
-  const yMax = Math.max(...points.map((p) => p.y));
-
-  const safeX = padRange(xMin, xMax);
-  const safeY = padYAxisRange(yMin, yMax);
-
-  const plotLeft = margin.left;
-  const plotRight = width - margin.right;
-  const plotTop = margin.top + 8;
-  const plotBottom = height - margin.bottom;
-  const plotWidth = plotRight - plotLeft;
-  const plotHeight = plotBottom - plotTop;
-
-  const scaleX = (x) => plotLeft + ((x - safeX.min) / (safeX.max - safeX.min)) * plotWidth;
-  const scaleY = (y) => plotBottom - ((y - safeY.min) / (safeY.max - safeY.min)) * plotHeight;
-
-  const pathPoints = points.map((p) => ({
-    x: scaleX(p.x),
-    y: scaleY(p.y),
-    source: p,
-  }));
-
-  const pathData = pathPoints.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
-
-  const xTickInfo = buildTicks(safeX.min, safeX.max, 6);
-  const yTickInfo = buildTicks(safeY.min, safeY.max, 6);
-
-  const xTicks = xTickInfo.values.map((v) => ({ value: v, px: scaleX(v) }));
-  const yTicks = yTickInfo.values.map((v) => ({ value: v, py: scaleY(v) }));
-
-  return {
-    points,
-    pathPoints,
-    pathData,
-    width,
-    height,
-    plotLeft,
-    plotRight,
-    plotTop,
-    plotBottom,
-    xTicks,
-    yTicks,
-    xStep: xTickInfo.step,
-    yStep: yTickInfo.step,
-    xMin: safeX.min,
-    xMax: safeX.max,
-    yMin: safeY.min,
-    yMax: safeY.max,
-  };
 }
 
 async function generateActivityAnalysis(dbPath, activityId, force = false) {

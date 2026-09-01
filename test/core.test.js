@@ -215,12 +215,13 @@ test('chart interactions script ports buildTicks, syncs a shared crosshair and a
 
 test('adaptive chart ticks recompute when only height changes', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const geometrySource = fs.readFileSync(path.join(__dirname, '..', 'chart-geometry.js'), 'utf8');
   assert.match(source, /var lastWidth = 0;\s*var lastHeight = 0;/);
   assert.match(source, /Math\.abs\(rect\.width - lastWidth\) < 1 && Math\.abs\(rect\.height - lastHeight\) < 1/);
   assert.match(source, /lastWidth = rect\.width;\s*lastHeight = rect\.height;/);
   assert.match(source, /var labelY = Math\.max\(payload\.plotTop \+ 12, Math\.min\(payload\.plotBottom - 4, parseFloat\(py\) \+ 4\)\)\.toFixed\(1\);/);
-  assert.match(source, /const plotTop = margin\.top \+ 8;/);
-  assert.match(source, /const safeY = padYAxisRange\(yMin, yMax\);/);
+  assert.match(geometrySource, /const plotTop = margin\.top \+ 8;/);
+  assert.match(geometrySource, /const safeY = padYAxisRange\(yMin, yMax\);/);
   assert.match(source, /clampCount\(plotWidthPx \/ 72, 4, 18\)/);
   assert.match(source, /clampCount\(plotHeightPx \/ 30, 6, 18\)/);
 });
