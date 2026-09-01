@@ -4,6 +4,13 @@ const path = require('node:path');
 const { generateAnalysisPrompt, generateAnalysisChatPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('./analysis');
 const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
+const {
+  loadGeneratedTranslationBundle,
+  parseGeneratedBundle,
+  saveGeneratedTranslationBundle,
+  translationMessages,
+  validateTranslationBundle,
+} = require('./dynamic-localization');
 const { registerCommands } = require('./commands');
 const { ensureDatabaseSchema } = require('./database-schema');
 const { fileExists, getFitUris, parseFitFile } = require('./fit-files');
@@ -478,9 +485,12 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const hrConfig = data
       ? await getHeartRateConfigForActivity(dbPath, data.sessions?.[0]?.start_time)
       : getHeartRateConfig();
+    const generatedTranslations = await loadGeneratedTranslationBundle(
+      extensionContextRef?.globalStorageUri?.fsPath, vscode.env.language
+    );
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations
     );
     if (selId) {
       panel.webview.postMessage({ type: 'analysisChatState', id: Number(selId), messages: analysisChat });
@@ -490,6 +500,26 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
   panel.webview.onDidReceiveMessage(async (msg) => {
     if (msg.type === 'selectActivity') {
       await render(msg.id ? Number(msg.id) : null, msg.compId ? Number(msg.compId) : null);
+    } else if (msg.type === 'generateTranslations') {
+      const locale = String(vscode.env.language || '').replace(/_/g, '-');
+      const language = displayLanguage(locale);
+      const ui = localizeUi(vscode.l10n.t);
+      const confirmed = await vscode.window.showInformationMessage(
+        formatUi(ui.generateTranslationsConfirm, language), { modal: true }, ui.generate
+      );
+      if (confirmed !== ui.generate) {
+        return;
+      }
+      try {
+        const response = await requestCopilotAnalysis(vscode, buildTranslationPrompt(locale), { vendor: getLanguageModelVendor() });
+        const bundle = validateTranslationBundle(parseGeneratedBundle(response));
+        await saveGeneratedTranslationBundle(extensionContextRef?.globalStorageUri?.fsPath, locale, bundle);
+        await render(msg.id ? Number(msg.id) : selectedId, msg.compId ? Number(msg.compId) : null);
+        vscode.window.showInformationMessage(formatUi(ui.translationGenerated, language));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        panel.webview.postMessage({ type: 'translationError', error: message });
+      }
     } else if (msg.type === 'analyzeActivity') {
       try {
         const requestedActivityId = Number(msg.id);
@@ -1055,9 +1085,12 @@ function toDateOnly(value) {
   return match ? match[0] : null;
 }
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration) {
-  const ui = localizeUi(vscode.l10n.t);
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations) {
+  const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
+  const ui = localizeUi(translate);
+  const glossary = localizeGlossary(translate);
   const locale = String(vscode.env.language || 'en').replace(/_/g, '-');
+  const shouldOfferTranslations = !generatedTranslations && !locale.startsWith('en') && ui.activity === 'Activity';
   const hasData = fitData && Array.isArray(fitData.records) && fitData.records.length > 0;
   const hasComp = compData && Array.isArray(compData.records) && compData.records.length > 0;
 
@@ -1095,7 +1128,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale))
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -1243,6 +1276,18 @@ function parseActivityTime(value) {
   return null;
 }
 
+function displayLanguage(locale) {
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'language' }).of(locale) || locale;
+  } catch {
+    return locale;
+  }
+}
+
+function buildTranslationPrompt(locale) {
+  return `Translate the following FIT Visualizer UI string catalog into the language identified by locale "${locale}". Return only one valid JSON object: the exact English source strings must remain keys, every key must be present exactly once, placeholders such as {0} and {1} must remain unchanged, and values must be plain text without markdown, HTML, or commentary. This catalog contains application UI text and glossary definitions only; it contains no activity, location, or user data.\n\n${JSON.stringify(Object.fromEntries(translationMessages().map((message) => [message, ''])))} `;
+}
+
 function buildWebviewAssets(webview, extensionUri, nonce) {
   const leafletCss = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'leaflet', 'dist', 'leaflet.css')).toString();
   const leafletJs = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'leaflet', 'dist', 'leaflet.js')).toString();
@@ -1257,8 +1302,7 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui) {
-  const glossary = localizeGlossary(vscode.l10n.t);
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -1340,6 +1384,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <h1>${escapeHtml(ui.fitActivity)}</h1>
       <div class="muted">${safeFile}</div>
     </section>
+    ${shouldOfferTranslations ? `<section class="calibrationHint"><span>${escapeHtml(formatUi(ui.translationsAvailable, language))}</span><button type="button" id="generateTranslationsBtn">${escapeHtml(formatUi(ui.generateTranslations, language))}</button><span id="translationStatus"></span></section>` : ''}
     ${compStatsRow}
     <section class="grid">
       ${metric('Records', summary.records, 'records', glossary)}
@@ -1527,6 +1572,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       const analysisChatInput = document.getElementById('analysisChatInput');
       const analysisChatSendBtn = document.getElementById('analysisChatSendBtn');
       const analysisChatStatus = document.getElementById('analysisChatStatus');
+      const generateTranslationsBtn = document.getElementById('generateTranslationsBtn');
+      const translationStatus = document.getElementById('translationStatus');
       const manualDataForm = document.getElementById('${mapId}ManualDataForm');
       const manualDataStatus = document.getElementById('${mapId}ManualDataStatus');
       const hrProfileForm = document.getElementById('${mapId}HrProfileForm');
@@ -1612,6 +1659,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           analysisChatSendBtn.disabled = false;
           analysisChatStatus.textContent = formatMessage(ui.error, String(msg.error || ui.chatFailed));
           analysisChatStatus.style.color = '#ff6b6b';
+        } else if (msg.type === 'translationError') {
+          if (translationStatus) translationStatus.textContent = formatMessage(ui.error, String(msg.error || ''));
+          if (generateTranslationsBtn) generateTranslationsBtn.disabled = false;
         } else if (msg.type === 'manualDataError') {
           manualDataStatus.textContent = msg.error;
           manualDataStatus.classList.add('error');
@@ -1755,6 +1805,16 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           vscode.postMessage({ type: 'analyzeActivity', id: window.currentActivityId, force: hasAnalysis });
         });
       }
+
+      generateTranslationsBtn?.addEventListener('click', () => {
+        generateTranslationsBtn.disabled = true;
+        if (translationStatus) translationStatus.textContent = ui.translationGenerating;
+        vscode.postMessage({
+          type: 'generateTranslations',
+          id: window.currentActivityId,
+          compId: document.getElementById('compSel')?.value || null,
+        });
+      });
 
       function sendChatTurn() {
         if (!window.currentActivityId || window.currentActivityId === 'null') {

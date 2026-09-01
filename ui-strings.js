@@ -3,7 +3,7 @@ const UI_STRINGS = {
   compareWith: 'Compare with',
   noComparison: 'No comparison',
   primary: 'primary',
-  comparison: 'comparison',
+  comparisonLegend: 'comparison',
   noDataForActivity: 'No data for this activity.',
   fitActivity: 'FIT Activity',
   comparison: 'Comparison',
@@ -68,6 +68,12 @@ const UI_STRINGS = {
   mapZoomHint: '{0} + scroll to zoom',
   mapLoadFailed: 'Map library failed to load. Run npm install in fit-visualizer.',
   noGpsPoints: 'No GPS points found in this FIT file.',
+  generateTranslations: 'Generate {0} translations with Copilot',
+  translationsAvailable: 'Translations for {0} are not installed.',
+  generateTranslationsConfirm: 'Send the FIT Visualizer UI text to the selected language model to generate a local {0} translation bundle?',
+  generate: 'Generate',
+  translationGenerating: 'Generating translations...',
+  translationGenerated: 'Translations for {0} were generated and saved locally.',
 };
 
 function localizeUi(localize) {

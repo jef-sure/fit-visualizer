@@ -43,6 +43,7 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 - Shared crosshair across all three charts: hover one, see the exact value at that point on all of them
 - Hover over activity and training-load terms, including power, speed, heart rate, elevation, TSS, Normalized Power, xPower, and TRIMP, for localized explanations
 - Activity controls, forms, map actions, and analysis status messages follow the VS Code interface language
+- For an interface language without a packaged translation, generate a local UI translation bundle on demand with the selected Copilot model
 - Render GPS track on an interactive map, with Ctrl/Cmd + scroll to zoom so scrolling the page doesn't fight the map
 - Automatic ride segmentation — splits a ride into climbs, descents, flats, and stops, and estimates effort with a physics-based power model on climbs or heart rate elsewhere, honestly labeling which one applies to each segment
 - Wheel-circumference calibration hint — compares your wheel sensor's distance against GPS on trustworthy straight stretches and suggests a correction when there's enough evidence, silent otherwise
@@ -133,6 +134,8 @@ Prompts and responses are logged locally (see **Settings**) so you can review ex
 By default, analysis uses the VS Code `copilot` language-model vendor. Configure a different registered provider with `fitVisualizer.lmVendor`.
 
 Analysis and follow-up responses default to the language of the VS Code interface. A question written in another language takes precedence for that reply.
+
+When no packaged UI translation exists for the VS Code interface language, FIT Visualizer offers an explicit action to generate one. It sends only the fixed UI and glossary string catalog to the selected language-model provider, never activity, location, health, or analysis data. The generated bundle is validated and saved locally in VS Code extension storage.
 
 ## Heart-Rate Zones
 
