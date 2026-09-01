@@ -908,23 +908,29 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       let map = null;
       const hasRoute = Array.isArray(routePoints) && routePoints.length >= 2;
 
+      function escapeSegmentHtml(text) {
+        return String(text)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      }
+
       window.formatSegmentDetails = function formatSegmentDetails(segment) {
         if (!segment) return '';
         if (segment.displayDetails) {
-          return (segment.displayTime ? '<strong>' + escapeHtmlClient(segment.displayTime) + '</strong><br>' : '')
-            + escapeHtmlClient(segment.displayDetails);
+          return (segment.displayTime ? '<strong>' + escapeSegmentHtml(segment.displayTime) + '</strong><br>' : '')
+            + escapeSegmentHtml(segment.displayDetails);
         }
         const fields = [];
         const type = segment.technical ? ui.technical : ui[segment.type];
-        if (type) fields.push('<strong>' + escapeHtmlClient(type) + '</strong>');
-        if (Number.isFinite(Number(segment.durationS))) fields.push(escapeHtmlClient(ui.duration) + ': ' + Math.round(Number(segment.durationS) / 60) + ':' + String(Math.round(Number(segment.durationS)) % 60).padStart(2, '0'));
-        if (Number.isFinite(Number(segment.startDistanceKm)) && Number.isFinite(Number(segment.endDistanceKm))) fields.push(escapeHtmlClient(ui.distance) + ': ' + Math.max(0, Number(segment.endDistanceKm) - Number(segment.startDistanceKm)).toFixed(2) + ' km');
-        if (Number.isFinite(Number(segment.avgGrade))) fields.push(escapeHtmlClient(ui.grade) + ': ' + Number(segment.avgGrade).toFixed(1) + '%');
-        if (Number.isFinite(Number(segment.avgSpeedKmh))) fields.push(escapeHtmlClient(ui.speed) + ': ' + Number(segment.avgSpeedKmh).toFixed(1) + ' km/h');
-        if (Number.isFinite(Number(segment.avgHr))) fields.push(escapeHtmlClient(ui.heartRate) + ': ' + Math.round(Number(segment.avgHr)) + ' bpm');
-        if (Number.isFinite(Number(segment.avgPower))) fields.push(escapeHtmlClient(ui.effort) + ': ' + Math.round(Number(segment.avgPower)) + ' W');
-        if (Number.isFinite(Number(segment.elevGainM)) && Number(segment.elevGainM) > 0) fields.push(escapeHtmlClient(ui.elevation) + ': +' + Math.round(Number(segment.elevGainM)) + ' m');
-        if (segment.technical && type !== ui.technical) fields.push(escapeHtmlClient(ui.technical));
+        if (type) fields.push('<strong>' + escapeSegmentHtml(type) + '</strong>');
+        if (Number.isFinite(Number(segment.durationS))) fields.push(escapeSegmentHtml(ui.duration) + ': ' + Math.round(Number(segment.durationS) / 60) + ':' + String(Math.round(Number(segment.durationS)) % 60).padStart(2, '0'));
+        if (Number.isFinite(Number(segment.startDistanceKm)) && Number.isFinite(Number(segment.endDistanceKm))) fields.push(escapeSegmentHtml(ui.distance) + ': ' + Math.max(0, Number(segment.endDistanceKm) - Number(segment.startDistanceKm)).toFixed(2) + ' km');
+        if (Number.isFinite(Number(segment.avgGrade))) fields.push(escapeSegmentHtml(ui.grade) + ': ' + Number(segment.avgGrade).toFixed(1) + '%');
+        if (Number.isFinite(Number(segment.avgSpeedKmh))) fields.push(escapeSegmentHtml(ui.speed) + ': ' + Number(segment.avgSpeedKmh).toFixed(1) + ' km/h');
+        if (Number.isFinite(Number(segment.avgHr))) fields.push(escapeSegmentHtml(ui.heartRate) + ': ' + Math.round(Number(segment.avgHr)) + ' bpm');
+        if (Number.isFinite(Number(segment.avgPower))) fields.push(escapeSegmentHtml(ui.effort) + ': ' + Math.round(Number(segment.avgPower)) + ' W');
+        if (Number.isFinite(Number(segment.elevGainM)) && Number(segment.elevGainM) > 0) fields.push(escapeSegmentHtml(ui.elevation) + ': +' + Math.round(Number(segment.elevGainM)) + ' m');
+        if (segment.technical && type !== ui.technical) fields.push(escapeSegmentHtml(ui.technical));
         return fields.join('<br>');
       };
 

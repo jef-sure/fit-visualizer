@@ -209,6 +209,9 @@ test('segment map and chart hover tooltips reuse existing details without unavai
   const webviewSource = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   const svgSource = fs.readFileSync(path.join(__dirname, '..', 'chart-svg.js'), 'utf8');
   assert.match(webviewSource, /window\.formatSegmentDetails = function formatSegmentDetails/);
+  assert.match(webviewSource, /function escapeSegmentHtml\(text\)/);
+  const mapFormatter = webviewSource.match(/window\.formatSegmentDetails = function formatSegmentDetails\(segment\) \{([\s\S]*?)\n      \};/)?.[1] || '';
+  assert.doesNotMatch(mapFormatter, /escapeHtmlClient/);
   assert.match(webviewSource, /line\.bindTooltip\(window\.formatSegmentDetails\(matchedSegment\)/);
   assert.match(webviewSource, /id="\$\{mapId\}SegmentTooltip"/);
   assert.match(webviewSource, /chartSegments\.find/);
