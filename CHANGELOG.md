@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.13.0 - 2026-09-01
+
+### Added
+
+- Added `fitVisualizer.powerModel.dragArea` and `fitVisualizer.powerModel.rollingResistance` so the estimated-power model can be matched to your riding position and tyres.
+
+### Changed
+
+- Estimated power now includes the work of accelerating rider and bike. Leaving it out made stop-and-go riding read as far easier than it was, because only steady-state forces were counted.
+- The default frontal area used for estimated power moved from 0.25 to 0.32 m². The old value describes a tucked time-trial position and understated aerodynamic drag for normal riding. Re-index to recalculate stored estimates.
+
+### Fixed
+
+- Wheel calibration no longer measures the GPS path by summing raw distances between fixes, which always overstates it because position noise adds length but never removes it. The noise is now estimated from the scatter across the direction of travel and removed. Under the current trust thresholds this is a small correction, since windows noisy enough to matter are already rejected; it keeps the measurement honest if those thresholds are ever relaxed.
+
 ## 0.12.3 - 2026-09-01
 
 ### Fixed

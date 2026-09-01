@@ -719,6 +719,7 @@ function buildDisplaySegments(fitData, athleteProfile, heartRateConfig) {
   const powerData = addEstimatedPowerWhenMissing(records, {
     riderMassKg: athleteProfile?.riderMassKg,
     bikeMassKg: athleteProfile?.bikeMassKg,
+    ...getPowerModelOptions(),
   });
   const session = fitData.sessions?.[0] || {};
   return buildActivitySegments(powerData.records, {
@@ -1165,6 +1166,19 @@ function getSegmentationOptions() {
   };
 }
 
+function getPowerModelOptions() {
+  const config = vscode.workspace.getConfiguration('fitVisualizer.powerModel');
+  const read = (key) => {
+    const value = Number(config.get(key));
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  };
+
+  return {
+    dragArea: read('dragArea'),
+    rollingCoefficient: read('rollingResistance'),
+  };
+}
+
 function getHeartRateConfig() {
   const config = vscode.workspace.getConfiguration('fitVisualizer');
   const maxHeartRateRaw = Number(config.get('maxHeartRate'));
@@ -1570,6 +1584,7 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
   const powerData = addEstimatedPowerWhenMissing(normalizedRecords, {
     riderMassKg: athleteProfile.riderMassKg,
     bikeMassKg: athleteProfile.bikeMassKg,
+    ...getPowerModelOptions(),
   });
   const summary = buildSummary(powerData.records, fitData.sessions, {
     ftp: athleteProfile.ftp,

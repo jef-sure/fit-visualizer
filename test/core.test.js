@@ -647,15 +647,44 @@ test('bulk re-analysis runs one Copilot request at a time', () => {
 });
 
 test('extracting computeGrade keeps estimatePowerFromMotion output identical', () => {
-  // Snapshot captured from the pre-refactor implementation.
+  // Snapshot captured from the pre-refactor implementation. The acceleration term and the
+  // wider default CdA arrived later, so they are switched off here to keep guarding the refactor.
   const expected = [
     [1, 654.331735], [2, 579.278761], [5, 247.575428], [6, 0],
     [7, 0], [8, 0], [9, 0], [11, 0],
   ];
-  const actual = estimatePowerFromMotion(gradeFixtureRecords(), { riderMassKg: 75, bikeMassKg: 10 })
-    .map((entry) => [entry.elapsed_time, Number(entry.power.toFixed(6))]);
+  const actual = estimatePowerFromMotion(gradeFixtureRecords(), {
+    riderMassKg: 75, bikeMassKg: 10, dragArea: 0.25, includeAcceleration: false,
+  }).map((entry) => [entry.elapsed_time, Number(entry.power.toFixed(6))]);
 
   assert.deepEqual(actual, expected);
+});
+
+test('motion power charges for accelerating the rider and bike', () => {
+  // Same flat ground, same speed, but one rider is accelerating into it.
+  const steady = [];
+  const accelerating = [];
+  let steadyKm = 0;
+  let acceleratingKm = 0;
+  for (let elapsed = 0; elapsed <= 10; elapsed += 1) {
+    const acceleratingKmh = 10 + elapsed;
+    steadyKm += 20 / 3600;
+    acceleratingKm += acceleratingKmh / 3600;
+    const shared = { elapsed_time: elapsed, altitude: 0.1, position_lat: 50 + elapsed * 1e-5, position_long: 30 };
+    steady.push({ ...shared, speed: 20, distance: steadyKm });
+    accelerating.push({ ...shared, speed: acceleratingKmh, distance: acceleratingKm });
+  }
+
+  const mass = { riderMassKg: 80, bikeMassKg: 12 };
+  const steadyAt20 = estimatePowerFromMotion(steady, mass).at(-1).power;
+  const acceleratingAt20 = estimatePowerFromMotion(accelerating, mass).find((entry) => entry.elapsed_time === 10).power;
+
+  assert.ok(acceleratingAt20 > steadyAt20 * 1.5,
+    `accelerating must cost clearly more than holding speed: ${acceleratingAt20} vs ${steadyAt20}`);
+
+  const withoutTerm = estimatePowerFromMotion(accelerating, { ...mass, includeAcceleration: false })
+    .find((entry) => entry.elapsed_time === 10).power;
+  assert.ok(withoutTerm < acceleratingAt20, 'switching the term off must drop the estimate back down');
 });
 
 test('computeGrade aligns with input records and reports slope as a fraction', () => {
@@ -787,6 +816,33 @@ test('wheel calibration ratio compares the wheel distance channel against GPS di
 
   assert.equal(estimateWheelCalibrationRatio(straightGpsRecords(20, 30)), null, 'a 150 m stretch is too short to trust');
   assert.equal(estimateWheelCalibrationRatio([]), null);
+});
+
+test('wheel calibration stays accurate on noisy GPS and rejects windows it cannot trust', () => {
+  const mPerDegLat = 111320;
+  let seed = 42;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648 - 0.5;
+  };
+  const scatter = (noiseM) => {
+    seed = 42;
+    return straightGpsRecords(400, 30).map((record) => ({
+      ...record,
+      position_lat: record.position_lat + (random() * 2 * noiseM) / mPerDegLat,
+      position_long: record.position_long
+        + (random() * 2 * noiseM) / (mPerDegLat * Math.cos((record.position_lat * Math.PI) / 180)),
+    }));
+  };
+
+  // The wheel is honest here, so any drift away from 1.0 is the measurement method's own error.
+  const usable = estimateWheelCalibrationRatio(scatter(0.6));
+  assert.ok(usable, 'mild scatter on a straight stretch is still usable');
+  assert.ok(Math.abs(usable.ratio - 1) < 0.005, `expected a ratio near 1.0, got ${usable.ratio}`);
+
+  // Once the scatter is large enough to matter, the window is dropped rather than mis-measured:
+  // summing raw chords there would understate the ratio and hide a real wheel error.
+  assert.equal(estimateWheelCalibrationRatio(scatter(2)), null);
 });
 
 test('wheel calibration integration: sample storage, recommendation gating and profile wiring', () => {
@@ -969,6 +1025,21 @@ test('segmentation thresholds are exposed as settings', () => {
 
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /thresholds: getSegmentationOptions\(\)/);
+});
+
+test('power model coefficients are configurable and reach every estimation call site', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const properties = manifest.contributes.configuration.properties;
+  assert.equal(properties['fitVisualizer.powerModel.dragArea'].default, 0.32);
+  assert.equal(properties['fitVisualizer.powerModel.rollingResistance'].default, 0.004);
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /function getPowerModelOptions\(\)/);
+  const callSites = source.match(/addEstimatedPowerWhenMissing\([\s\S]*?\}\);/g) || [];
+  assert.equal(callSites.length, 2);
+  for (const callSite of callSites) {
+    assert.match(callSite, /\.\.\.getPowerModelOptions\(\)/);
+  }
 });
 
 test('heart-rate zones use semantic order and stable boundaries', () => {

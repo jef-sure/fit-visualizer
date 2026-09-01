@@ -113,6 +113,8 @@ Each ride is split into segments by terrain (climb, descent, flat) and by effort
 - **Everywhere else** — flats, descents, technical sections — use heart rate, since virtual power isn't reliable where aerodynamic drag and wind matter more than grade.
 - Segments where speed data itself is unreliable (technical descents, poor GPS reception) are marked as such, with no effort number attached rather than a misleading one.
 
+The virtual power model accounts for gravity, rolling resistance, aerodynamic drag, and the work of accelerating you and the bike. Its two most rider-specific coefficients — frontal area and rolling resistance — are settings, since the defaults assume road tyres and riding on the hoods. Wind is not modelled at all, which is the main reason virtual power is only trusted on climbs.
+
 This segmentation also feeds the AI analysis, so it can reason about specific intervals rather than only ride-wide averages.
 
 Hover a terrain-colored route section or its matching chart band to inspect the characteristics recorded for that segment. Fields that are not available for a segment are left out.
@@ -206,6 +208,8 @@ Most settings can be left at their defaults. Segmentation thresholds are mainly 
 | `fitVisualizer.logLlmRequests`                   | `true`  | Write each Copilot prompt/response to `.fit-visualizer/logs`.                                                      |
 | `fitVisualizer.llmLogRetentionDays`              | `30`    | Delete request logs older than this; `0` keeps them indefinitely.                                                  |
 | `fitVisualizer.lmVendor`                          | `copilot` | VS Code language-model vendor ID used for activity analysis and chat.                                            |
+| `fitVisualizer.powerModel.dragArea`              | `0.32`  | Effective frontal area CdA (m²) for estimated power: ~0.25 tucked on a TT bike, ~0.32 on the hoods, 0.40+ upright. |
+| `fitVisualizer.powerModel.rollingResistance`     | `0.004` | Rolling resistance Crr for estimated power; raise it for wider or knobbly tyres.                                   |
 | `fitVisualizer.segmentation.gradeThresholdPct`   | `2.5`   | Grade (%) separating climbs/descents from flat terrain.                                                            |
 | `fitVisualizer.segmentation.gradeHysteresisPct`  | `0.5`   | Extra margin required to switch terrain type, to stop flapping right at the threshold.                             |
 | `fitVisualizer.segmentation.minSegmentSeconds`   | `45`    | Shorter segments get merged into a neighbor.                                                                       |
