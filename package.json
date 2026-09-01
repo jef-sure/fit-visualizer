@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.12.3",
+  "version": "0.13.0",
   "description": "Visualize cycling and running FIT files and get AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
@@ -112,6 +112,20 @@
           "items": { "type": "string" },
           "default": ["haiku", "mini", "flash", "nano", "lite", "small"],
           "description": "Model name substrings (case-insensitive) used to pick a cheaper model when fitVisualizer.preferCheapAnalysisModel is enabled and no Auto model family is available."
+        },
+        "fitVisualizer.powerModel.dragArea": {
+          "type": "number",
+          "default": 0.32,
+          "minimum": 0.15,
+          "maximum": 0.8,
+          "description": "Effective frontal area CdA in m² used when power is estimated from motion. Roughly 0.25 tucked on a time-trial bike, 0.32 on the hoods, 0.40 or more sitting upright."
+        },
+        "fitVisualizer.powerModel.rollingResistance": {
+          "type": "number",
+          "default": 0.004,
+          "minimum": 0.002,
+          "maximum": 0.015,
+          "description": "Rolling resistance coefficient Crr used when power is estimated from motion. Roughly 0.004 for road tyres on asphalt, higher for wider or knobbly tyres."
         },
         "fitVisualizer.segmentation.gradeThresholdPct": {
           "type": "number",

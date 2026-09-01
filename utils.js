@@ -265,6 +265,9 @@ function computeGrade(records) {
   return grades;
 }
 
+// Upright riding on the hoods. The old 0.25 belonged to a tucked time-trial position.
+const DEFAULT_DRAG_AREA = 0.32;
+
 function estimatePowerFromMotion(records, input = {}) {
   const riderMassKg = asNumber(input.riderMassKg);
   const bikeMassKg = asNumber(input.bikeMassKg);
@@ -279,21 +282,25 @@ function estimatePowerFromMotion(records, input = {}) {
   const airDensity = Number.isFinite(asNumber(input.airDensity)) ? asNumber(input.airDensity) : 1.225;
   const rollingCoefficient = Number.isFinite(asNumber(input.rollingCoefficient))
     ? asNumber(input.rollingCoefficient) : 0.004;
-  const dragArea = Number.isFinite(asNumber(input.dragArea)) ? asNumber(input.dragArea) : 0.25;
+  const dragArea = Number.isFinite(asNumber(input.dragArea)) ? asNumber(input.dragArea) : DEFAULT_DRAG_AREA;
   const drivetrainEfficiency = Number.isFinite(asNumber(input.drivetrainEfficiency))
     ? asNumber(input.drivetrainEfficiency) : 0.97;
+  const includeAcceleration = input.includeAcceleration !== false;
   const maxPhysiologicalPower = 1200;
 
   const result = [];
+  let previousSpeed = null;
 
   for (const sample of computeGrade(records)) {
     if (!sample) {
+      previousSpeed = null;
       continue;
     }
 
     const { dt, speed, grade } = sample;
     // Beyond +-18% the motion model is dominated by altitude noise rather than real slope.
     if (dt <= 0 || dt > 5 || speed < 0.5 || Math.abs(grade) > 0.18) {
+      previousSpeed = null;
       continue;
     }
 
@@ -301,9 +308,14 @@ function estimatePowerFromMotion(records, input = {}) {
     const gravityPower = totalMassKg * gravity * Math.sin(angle) * speed;
     const rollingPower = totalMassKg * gravity * rollingCoefficient * Math.cos(angle) * speed;
     const aerodynamicPower = 0.5 * airDensity * dragArea * speed ** 3;
-    const wheelPower = Math.max(0, gravityPower + rollingPower + aerodynamicPower);
+    // Accelerating a 90 kg system is real work; without it stop-and-go riding reads far too easy.
+    const accelerationPower = includeAcceleration && previousSpeed !== null
+      ? totalMassKg * ((speed - previousSpeed) / dt) * speed
+      : 0;
+    const wheelPower = Math.max(0, gravityPower + rollingPower + aerodynamicPower + accelerationPower);
     const estimatedPower = Math.min(maxPhysiologicalPower, wheelPower / drivetrainEfficiency);
 
+    previousSpeed = speed;
     result.push({ elapsed_time: sample.elapsed_time, power: estimatedPower });
   }
 
@@ -512,6 +524,66 @@ function findTrustedSpeedWindows(records, options = {}) {
   return windows;
 }
 
+// Summing raw chords between fixes always overstates distance: position noise is zero-mean but
+// its contribution to a length never is. On a window already required to be near-straight, the
+// scatter perpendicular to the direction of travel measures that noise, so it can be removed:
+// project onto the travel direction (killing cross-track noise outright) and subtract the
+// remaining along-track variance. Never returns less than the straight end-to-end distance.
+function debiasedPathKm(fixes, rawPathKm) {
+  if (!Array.isArray(fixes) || fixes.length < 3) {
+    return rawPathKm;
+  }
+
+  const latRad = (fixes[0].lat * Math.PI) / 180;
+  const mPerDegLat = 111320;
+  const mPerDegLon = mPerDegLat * Math.cos(latRad);
+  const meanLat = average(fixes.map((fix) => fix.lat));
+  const meanLon = average(fixes.map((fix) => fix.lon));
+  const points = fixes.map((fix) => ({
+    x: (fix.lon - meanLon) * mPerDegLon,
+    y: (fix.lat - meanLat) * mPerDegLat,
+  }));
+
+  // Principal direction of the window via the 2x2 scatter matrix.
+  let sxx = 0; let syy = 0; let sxy = 0;
+  for (const point of points) {
+    sxx += point.x * point.x;
+    syy += point.y * point.y;
+    sxy += point.x * point.y;
+  }
+  const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const ux = Math.cos(theta);
+  const uy = Math.sin(theta);
+
+  const along = points.map((point) => point.x * ux + point.y * uy);
+  const across = points.map((point) => -point.x * uy + point.y * ux);
+
+  // Noise from the second difference of the cross-track series: white noise shows up there
+  // (Var = 6 sigma^2) while a genuine bend in the road, being smooth, barely does. Using the
+  // raw scatter instead would read a curve as noise and subtract real distance away.
+  const secondDifferences = [];
+  for (let index = 1; index < across.length - 1; index += 1) {
+    secondDifferences.push(across[index + 1] - 2 * across[index] + across[index - 1]);
+  }
+  if (secondDifferences.length < 2) {
+    return rawPathKm;
+  }
+  const meanSecond = average(secondDifferences);
+  const noiseVariance = average(secondDifferences.map((value) => (value - meanSecond) ** 2)) / 6;
+
+  let pathM = 0;
+  for (let index = 1; index < along.length; index += 1) {
+    const step = along[index] - along[index - 1];
+    // E[measured^2] = true^2 + 2 * noiseVariance for two independent fixes.
+    pathM += Math.sqrt(Math.max(0, step * step - 2 * noiseVariance));
+  }
+
+  const straightKm = haversineKm(
+    fixes[0].lat, fixes[0].lon, fixes[fixes.length - 1].lat, fixes[fixes.length - 1].lon
+  );
+  return Math.min(rawPathKm, Math.max(pathM / 1000, straightKm));
+}
+
 function evaluateSpeedWindow(records, gpsSpeeds, startIndex, endIndex, limits) {
   const fixes = [];
   for (let index = startIndex; index <= endIndex; index += 1) {
@@ -575,11 +647,15 @@ function evaluateSpeedWindow(records, gpsSpeeds, startIndex, endIndex, limits) {
     return false;
   }
 
+  const pathKmForCalibration = debiasedPathKm(fixes, pathKm);
+
   if (limits.requireAbsoluteAgreement) {
-    return median(deviations) * 100 <= limits.tolerancePct ? { pathKm } : false;
+    return median(deviations) * 100 <= limits.tolerancePct ? { pathKm: pathKmForCalibration } : false;
   }
 
-  return medianRatio >= limits.minCalibrationRatio && medianRatio <= limits.maxCalibrationRatio ? { pathKm } : false;
+  return medianRatio >= limits.minCalibrationRatio && medianRatio <= limits.maxCalibrationRatio
+    ? { pathKm: pathKmForCalibration }
+    : false;
 }
 
 // Compares the wheel sensor's own distance channel against the GPS path on trusted windows only,
