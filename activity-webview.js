@@ -993,8 +993,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           const legend = document.getElementById('${mapId}SegmentLegend');
           if (legend) {
             legend.style.display = mode === 'segment' ? '' : 'none';
-            if (mode === 'segment') legend.innerHTML = '<span>' + escapeHtmlClient(ui.terrainLegend) + ':</span> ' + Object.keys(segmentColors).map(function (type) {
-              return '<span class="segmentLegendItem"><i style="background:' + segmentColors[type] + '"></i>' + escapeHtmlClient(segmentLabels[type]) + '</span>';
+            if (mode === 'segment') legend.innerHTML = '<span>' + escapeSegmentHtml(ui.terrainLegend) + ':</span> ' + Object.keys(segmentColors).map(function (type) {
+              return '<span class="segmentLegendItem"><i style="background:' + segmentColors[type] + '"></i>' + escapeSegmentHtml(segmentLabels[type]) + '</span>';
             }).join('');
           }
           const vals = routePoints
@@ -1290,6 +1290,20 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           if (label) label.style.display = 'none';
         };
 
+        function showSegmentTooltip(event, local) {
+          if (!segmentTooltip || local.y < payload.plotBottom - 9) return;
+          var segment = chartSegments.find(function (candidate) {
+            return local.x >= scaleX(payload, candidate.startDistanceKm) && local.x <= scaleX(payload, candidate.endDistanceKm);
+          });
+          if (!segment) return;
+          segmentTooltip.innerHTML = window.formatSegmentDetails(segment);
+          segmentTooltip.hidden = false;
+          var maxLeft = Math.max(8, window.innerWidth - segmentTooltip.offsetWidth - 8);
+          var maxTop = Math.max(8, window.innerHeight - segmentTooltip.offsetHeight - 8);
+          segmentTooltip.style.left = Math.max(8, Math.min(maxLeft, event.clientX + 14)) + 'px';
+          segmentTooltip.style.top = Math.max(8, Math.min(maxTop, event.clientY + 14)) + 'px';
+        }
+
         if (capture) {
           capture.addEventListener('mousemove', function (evt) {
             var pt = svg.createSVGPoint();
@@ -1297,6 +1311,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             var ctm = svg.getScreenCTM();
             if (!ctm) return;
             var local = pt.matrixTransform(ctm.inverse());
+            showSegmentTooltip(evt, local);
             var hoveredIdx = nearestIndex(pxXs, local.x);
             var dataX = payload.points[hoveredIdx][0];
             // All three charts share the distance axis, so one hover moves every crosshair.
@@ -1308,6 +1323,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             });
           });
           capture.addEventListener('mouseleave', function () {
+            if (segmentTooltip) segmentTooltip.hidden = true;
             svgIds.forEach(function (id) {
               if (instances[id]) instances[id].hide();
             });
