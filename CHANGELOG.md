@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.11 - 2026-09-01
+
+### Fixed
+
+- Fixed adaptive chart ticks when resizing a chart vertically; Y-axis ticks now recompute when only the rendered height changes.
+
 ## 0.1.10 - 2026-09-01
 
 ### Fixed

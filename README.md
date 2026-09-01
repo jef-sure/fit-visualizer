@@ -38,7 +38,7 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 - Open FIT files in an interactive visual editor
 - Auto-index activities into local SQLite storage
 - Compare two activities in one view
-- Speed, heart rate, and altitude charts by distance — with adaptive axis labels that add detail as you resize
+- Speed, heart rate, and altitude charts by distance — with adaptive axis labels that add detail as you resize width or height
 - Overlay any two extra metrics (grade, altitude, speed, heart rate) on top of a chart
 - Shared crosshair across all three charts: hover one, see the exact value at that point on all of them
 - Render GPS track on an interactive map, with Ctrl/Cmd + scroll to zoom so scrolling the page doesn't fight the map

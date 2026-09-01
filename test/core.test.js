@@ -200,6 +200,14 @@ test('chart interactions script ports buildTicks, syncs a shared crosshair and a
   assert.match(source, /getScreenCTM\(\)/);
 });
 
+test('adaptive chart ticks recompute when only height changes', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /var lastWidth = 0;\s*var lastHeight = 0;/);
+  assert.match(source, /Math\.abs\(rect\.width - lastWidth\) < 1 && Math\.abs\(rect\.height - lastHeight\) < 1/);
+  assert.match(source, /lastWidth = rect\.width;\s*lastHeight = rect\.height;/);
+  assert.match(source, /clampCount\(plotHeightPx \/ 50, 3, 15\)/);
+});
+
 test('client tick rounding keeps the server step at powers of ten', () => {
   const span = 2000;
   const targetCount = 3;
