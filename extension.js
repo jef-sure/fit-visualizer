@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { generateAnalysisPrompt, generateAnalysisChatPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('./analysis');
 const { localizeGlossary } = require('./glossary');
+const { formatUi, localizeUi } = require('./ui-strings');
 const { registerCommands } = require('./commands');
 const { ensureDatabaseSchema } = require('./database-schema');
 const { fileExists, getFitUris, parseFitFile } = require('./fit-files');
@@ -1055,6 +1056,8 @@ function toDateOnly(value) {
 }
 
 function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration) {
+  const ui = localizeUi(vscode.l10n.t);
+  const locale = String(vscode.env.language || 'en').replace(/_/g, '-');
   const hasData = fitData && Array.isArray(fitData.records) && fitData.records.length > 0;
   const hasComp = compData && Array.isArray(compData.records) && compData.records.length > 0;
 
@@ -1065,7 +1068,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   }).join('');
 
   const compOptions = [
-    `<option value="">— no comparison —</option>`,
+    `<option value="">- ${escapeHtml(ui.noComparison)} -</option>`,
     ...activities.filter((a) => Number(a.id) !== Number(selectedId)).map((a) => {
       const label = escapeHtml(formatActivityLabel(a));
       const sel = Number(a.id) === Number(compId) ? ' selected' : '';
@@ -1092,13 +1095,13 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration)
-    : `<div style="padding:24px;color:var(--muted)">No data for this activity.</div>`;
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui)
+    : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="${escapeHtml(locale)}">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -1157,11 +1160,11 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
 <body>
   <nav class="toolbar">
     <div class="selectorGroup">
-      <label class="selLabel" for="actSel">Activity</label>
+      <label class="selLabel" for="actSel">${escapeHtml(ui.activity)}</label>
       <select id="actSel" class="actSelector">${actOptions}</select>
     </div>
     <div class="selectorGroup">
-      <label class="selLabel" for="compSel">Compare with</label>
+      <label class="selLabel" for="compSel">${escapeHtml(ui.compareWith)}</label>
       <select id="compSel" class="actSelector">${compOptions}</select>
     </div>
   </nav>
@@ -1224,7 +1227,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
 
 function formatActivityLabel(a) {
   const dt = parseActivityTime(a.start_time || a.file_name);
-  const dateStr = dt ? dt.toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' }) : (a.file_name || String(a.id));
+  const dateStr = dt ? dt.toLocaleString(vscode.env.language || 'en', { dateStyle: 'short', timeStyle: 'short' }) : (a.file_name || String(a.id));
   const sport = a.sport || '';
   const dist = a.total_distance_km ? `${Number(a.total_distance_km).toFixed(1)} km` : '';
   const dur = a.total_timer_s ? formatHms(Number(a.total_timer_s)) : '';
@@ -1254,7 +1257,7 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui) {
   const glossary = localizeGlossary(vscode.l10n.t);
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
@@ -1320,9 +1323,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const wheelCircumferenceValue = escapeHtml(athleteProfile?.wheelCircumferenceMm || '');
   // Recomputed live from whatever is typed in the field below (client script), not only after Save Zones -
   // waiting for a round trip to see a number was the confusing part.
-  const wheelCalibrationHint = wheelCalibration ? `<div class="calibrationHint" id="${mapId}WheelHint" data-ratio="${wheelCalibration.ratio}">
-      Based on recent rides (${wheelCalibration.trustedDistanceKm} km of trusted GPS distance), the recorded distance looks
-      ${wheelCalibration.deviationPct > 0 ? 'about ' + wheelCalibration.deviationPct + '% long' : 'about ' + Math.abs(wheelCalibration.deviationPct) + '% short'}.
+    const wheelCalibrationHint = wheelCalibration ? `<div class="calibrationHint" id="${mapId}WheelHint" data-ratio="${wheelCalibration.ratio}">
+      ${escapeHtml(formatUi(ui.wheelCalibrationEvidence, wheelCalibration.trustedDistanceKm, wheelCalibration.deviationPct))}
       <span id="${mapId}WheelSuggestion"></span>
       <button type="button" id="${mapId}ApplyWheelHint" style="display:none"></button>
       <button type="button" id="${mapId}DismissWheelHint">Dismiss</button>
@@ -1330,12 +1332,12 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const powerMetricSuffix = primaryPower.source === 'estimated' ? ' (estimated)' : '';
 
   const compStatsRow = hasOverlay && compSummary
-    ? renderComparisonTable(summary, compSummary, fitData._fileName, compData._fileName, glossary)
+    ? renderComparisonTable(summary, compSummary, fitData._fileName, compData._fileName, glossary, ui)
     : '';
 
   return `<main class="wrap">
     <section class="hero">
-      <h1>FIT Activity</h1>
+      <h1>${escapeHtml(ui.fitActivity)}</h1>
       <div class="muted">${safeFile}</div>
     </section>
     ${compStatsRow}
@@ -1367,26 +1369,26 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <strong>⚠ Data Quality Note:</strong> Power metrics are motion-estimated (from speed, altitude, and mass) and may be physiologically implausible, especially peak values. These figures and derived metrics (NP, IF, TSS, xPower, RI, BikeStress, Decoupling) should be disregarded for training-load decisions. Use heart-rate trends and effort perception instead.
     </section>` : ''}
     <section class="chart manualData">
-      <h2>Manual Activity Data</h2>
+      <h2>${escapeHtml(ui.manualActivityData)}</h2>
       <form id="${mapId}ManualDataForm" class="manualDataForm">
         <label>
-          <span>Average HR (bpm)</span>
-          <input id="${mapId}ManualAvgHr" type="number" min="30" max="240" step="1" value="${avgHrValue}" placeholder="Not available">
+          <span>${escapeHtml(ui.averageHeartRate)}</span>
+          <input id="${mapId}ManualAvgHr" type="number" min="30" max="240" step="1" value="${avgHrValue}" placeholder="${escapeHtml(ui.notAvailable)}">
         </label>
         <label>
-          <span>Maximum HR (bpm)</span>
-          <input id="${mapId}ManualMaxHr" type="number" min="30" max="240" step="1" value="${maxHrValue}" placeholder="Not available">
+          <span>${escapeHtml(ui.maximumHeartRate)}</span>
+          <input id="${mapId}ManualMaxHr" type="number" min="30" max="240" step="1" value="${maxHrValue}" placeholder="${escapeHtml(ui.notAvailable)}">
         </label>
-        <button type="submit">Save HR</button>
+        <button type="submit">${escapeHtml(ui.saveHeartRate)}</button>
         <span id="${mapId}ManualDataStatus" class="manualDataStatus"></span>
       </form>
       <div class="mapHint">Manual summary values are used in metrics and analysis. A heart-rate chart requires time-series samples.</div>
     </section>
     <section class="chart manualData">
-      <h2>Heart Rate Zone Profile</h2>
+      <h2>${escapeHtml(ui.heartRateZoneProfile)}</h2>
       <form id="${mapId}HrProfileForm" class="manualDataForm">
         <label>
-          <span>Effective from</span>
+          <span>${escapeHtml(ui.effectiveFrom)}</span>
           <input id="${mapId}HrEffectiveDate" type="date" value="${escapeHtml(activityDate)}" required>
         </label>
         <label>
@@ -1395,50 +1397,50 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         </label>
         ${[2, 3, 4, 5].map((zone, index) => `<label>
           <span>Zone ${zone} starts</span>
-          <input id="${mapId}Zone${zone}Start" type="number" min="30" max="240" step="1" value="${positiveNumberOrBlank(profileThresholds[index])}" placeholder="Auto">
+          <input id="${mapId}Zone${zone}Start" type="number" min="30" max="240" step="1" value="${positiveNumberOrBlank(profileThresholds[index])}" placeholder="${escapeHtml(ui.auto)}">
         </label>`).join('')}
         <label>
           <span>Sex</span>
           <select id="${mapId}AthleteSex">
-            <option value=""${athleteSexValue ? '' : ' selected'}>Select</option>
+            <option value=""${athleteSexValue ? '' : ' selected'}>${escapeHtml(ui.select)}</option>
             <option value="male"${athleteSexValue === 'male' ? ' selected' : ''}>Male</option>
             <option value="female"${athleteSexValue === 'female' ? ' selected' : ''}>Female</option>
             <option value="other"${athleteSexValue === 'other' ? ' selected' : ''}>Other</option>
           </select>
         </label>
         <label>
-          <span>Age</span>
-          <input id="${mapId}AthleteAge" type="number" min="10" max="100" step="1" value="${athleteAge}" placeholder="years">
+          <span>${escapeHtml(ui.age)}</span>
+          <input id="${mapId}AthleteAge" type="number" min="10" max="100" step="1" value="${athleteAge}" placeholder="${escapeHtml(ui.years)}">
         </label>
         <label>
-          <span>Resting HR</span>
+          <span>${escapeHtml(ui.restingHeartRate)}</span>
           <input id="${mapId}AthleteRestingHr" type="number" min="30" max="120" step="1" value="${athleteRestingHr}" placeholder="bpm">
         </label>
         <label>
           <span>FTP</span>
-          <input id="${mapId}AthleteFtp" type="number" min="80" max="500" step="1" value="${athleteFtpValue}" placeholder="watts">
+          <input id="${mapId}AthleteFtp" type="number" min="80" max="500" step="1" value="${athleteFtpValue}" placeholder="${escapeHtml(ui.watts)}">
         </label>
         <label>
-          <span>Rider mass (kg)</span>
-          <input id="${mapId}RiderMass" type="number" min="30" max="250" step="0.1" value="${riderMassValue}" placeholder="required for estimated power">
+          <span>${escapeHtml(ui.riderMass)}</span>
+          <input id="${mapId}RiderMass" type="number" min="30" max="250" step="0.1" value="${riderMassValue}" placeholder="${escapeHtml(ui.requiredForEstimatedPower)}">
         </label>
         <label>
-          <span>Bike mass (kg)</span>
-          <input id="${mapId}BikeMass" type="number" min="3" max="50" step="0.1" value="${bikeMassValue}" placeholder="required for estimated power">
+          <span>${escapeHtml(ui.bikeMass)}</span>
+          <input id="${mapId}BikeMass" type="number" min="3" max="50" step="0.1" value="${bikeMassValue}" placeholder="${escapeHtml(ui.requiredForEstimatedPower)}">
         </label>
         <label>
-          <span>Wheel circumference (mm)</span>
+          <span>${escapeHtml(ui.wheelCircumference)}</span>
           <input id="${mapId}WheelCircumference" type="number" min="1000" max="2500" step="0.1" value="${wheelCircumferenceValue}" placeholder="e.g. 2105">
         </label>
-        <button type="button" id="${mapId}AutoCalcZonesBtn">Auto-calc</button>
-        <button type="submit">Save Zones</button>
+        <button type="button" id="${mapId}AutoCalcZonesBtn">${escapeHtml(ui.autoCalculate)}</button>
+        <button type="submit">${escapeHtml(ui.saveZones)}</button>
         <span id="${mapId}HrProfileStatus" class="manualDataStatus"></span>
       </form>
       ${wheelCalibrationHint}
       <div class="mapHint">Auto-calc estimates power from the saved rider and bike mass, speed, GPS altitude, and distance when power-meter data is unavailable. The last saved masses are reused for the next ride. FTP is used for IF/TSS on activity summaries. The latest profile effective on an activity date is used.${hrConfig?.effectiveDate ? ` Currently applied: ${escapeHtml(hrConfig.effectiveDate)}.` : ''}</div>
     </section>
     <section class="chart resizable" data-resize-target="${mapId}SpeedSvg" data-resize-key="fitviz_speed_height" data-min-height="200" data-max-height="1200">
-      <h2>Speed vs Distance${hasOverlay ? ' <span class="compLegend">— primary &nbsp;– – comparison</span>' : ''}</h2>
+      <h2>${escapeHtml(ui.speedVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
       ${renderStatsRow(speedChart.stats, 'km/h')}${hasOverlay && speedChart.compStats ? renderStatsRow(speedChart.compStats, 'km/h', true) : ''}
       ${renderOverlayControls(mapId + 'SpeedSvg', speedOverlays)}
       ${renderScaledLineChartSvg(speedChart, 'lineA', 'Distance (km)', 'Speed (km/h)', true, { svgId: mapId + 'SpeedSvg' })}
@@ -1446,7 +1448,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
     <section class="chart resizable" data-resize-target="${mapId}HrSvg" data-resize-key="fitviz_hr_height" data-min-height="200" data-max-height="1200">
-      <h2>Heart Rate vs Distance</h2>
+      <h2>${escapeHtml(ui.heartRateVsDistance)}</h2>
       ${renderStatsRow(hrChart.stats, 'bpm')}
       ${renderHeartRateZones(hrZones)}
       ${renderOverlayControls(mapId + 'HrSvg', hrOverlays)}
@@ -1455,7 +1457,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
     <section class="chart resizable" data-resize-target="${mapId}AltSvg" data-resize-key="fitviz_alt_height" data-min-height="200" data-max-height="1200">
-      <h2>Altitude vs Distance${hasOverlay ? ' <span class="compLegend">— primary &nbsp;– – comparison</span>' : ''}</h2>
+      <h2>${escapeHtml(ui.altitudeVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
       ${renderStatsRow(altitudeChart.stats, 'm')}${hasOverlay && altitudeChart.compStats ? renderStatsRow(altitudeChart.compStats, 'm', true) : ''}
       ${renderOverlayControls(mapId + 'AltSvg', altitudeOverlays)}
       ${renderScaledLineChartSvg(altitudeChart, 'lineC', 'Distance (km)', 'Altitude (m)', true, { svgId: mapId + 'AltSvg' })}
@@ -1463,40 +1465,40 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
     <section id="${mapId}RouteSection" class="chart">
-      <h2>GPS Route</h2>
+      <h2>${escapeHtml(ui.gpsRoute)}</h2>
       ${renderGpsRouteSvg(gpsRoute, 1400, 420)}
       <div class="legend">Route (${escapeHtml(gpsRoute.boundsText)})</div>
     </section>
     <section class="chart resizable" data-resize-target="${mapId}" data-resize-key="fitviz_map_height" data-min-height="260" data-max-height="1400" data-target-type="map">
-      <h2>Interactive Map</h2>
+      <h2>${escapeHtml(ui.interactiveMap)}</h2>
       ${renderMapStats(gpsRoute)}
       <div class="mapWrap">
         <div class="mapControls">
-          <label for="${mapId}Mode">Color route by</label>
+          <label for="${mapId}Mode">${escapeHtml(ui.colorRouteBy)}</label>
           <select id="${mapId}Mode">
-            <option value="speed" selected>Speed</option>
-            <option value="heart_rate">Heart Rate</option>
-            <option value="none">Single Color</option>
+            <option value="speed" selected>${escapeHtml(ui.speed)}</option>
+            <option value="heart_rate">${escapeHtml(ui.heartRate)}</option>
+            <option value="none">${escapeHtml(ui.singleColor)}</option>
           </select>
         </div>
         <div id="${mapId}"></div>
-        <div class="mapHint">Map tiles from OpenStreetMap.</div>
+        <div class="mapHint">${escapeHtml(ui.mapTiles)}</div>
       </div>
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
     <section class="chart">
-      <h2>AI Analysis</h2>
+      <h2>${escapeHtml(ui.aiAnalysis)}</h2>
       <div id="analysisContent" style="padding:12px;color:var(--muted);min-height:80px;line-height:1.5;">
-        <p style="margin:0;">Loading analysis...</p>
+        <p style="margin:0;">${escapeHtml(ui.loadingAnalysis)}</p>
       </div>
-      <button id="analyzeBtn" style="margin-top:10px;padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">Analyze Activity</button>
+      <button id="analyzeBtn" style="margin-top:10px;padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.analyzeActivity)}</button>
       <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
-        <h3 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--muted);">Follow-up Chat</h3>
+        <h3 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--muted);">${escapeHtml(ui.followUpChat)}</h3>
         <div id="analysisChatMessages" style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--vscode-editor-background);"></div>
         <div style="display:flex;gap:8px;margin-top:8px;align-items:flex-start;">
-          <textarea id="analysisChatInput" rows="3" placeholder="Ask a follow-up, e.g. Route was not flat. Can you re-evaluate pacing with elevation gain?" style="flex:1;min-height:62px;resize:vertical;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--input-bg);color:var(--input-fg);"></textarea>
-          <button id="analysisChatSendBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">Send</button>
+          <textarea id="analysisChatInput" rows="3" placeholder="${escapeHtml(ui.followUpPlaceholder)}" style="flex:1;min-height:62px;resize:vertical;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--input-bg);color:var(--input-fg);"></textarea>
+          <button id="analysisChatSendBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.send)}</button>
         </div>
         <div id="analysisChatStatus" style="margin-top:6px;font-size:0.85rem;color:var(--muted);"></div>
       </div>
@@ -1504,6 +1506,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   </main>
   <script nonce="${nonce}">
     (function () {
+      const ui = ${safeJson(ui)};
+      function formatMessage(template) {
+        const values = Array.prototype.slice.call(arguments, 1);
+        return String(template || '').replace(/\{(\d+)\}/g, (_, index) => String(values[Number(index)] ?? ''));
+      }
       // Helper to escape HTML
       function escapeHtml(text) {
         return String(text)
@@ -1532,13 +1539,13 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       let chatMessages = ${safeJson(Array.isArray(analysisChat) ? analysisChat : [])};
 
       function analyzeButtonLabel() {
-        if (!hasAnalysis) return 'Analyze Activity';
-        return analysisOutdated ? 'Re-analyze' : 'Analyze Again';
+        if (!hasAnalysis) return ui.analyzeActivity;
+        return analysisOutdated ? ui.reanalyze : ui.analyzeAgain;
       }
 
       function showAnalysisText(text) {
         const note = analysisOutdated
-          ? '<div style="margin:0 0 10px 0;padding:8px 10px;border-left:4px solid #ffc107;background:rgba(255,193,7,0.1);font-size:0.92rem;">Analyzed with an older version — re-analyze for updated insights.</div>'
+          ? '<div style="margin:0 0 10px 0;padding:8px 10px;border-left:4px solid #ffc107;background:rgba(255,193,7,0.1);font-size:0.92rem;">' + escapeHtml(ui.olderAnalysis) + '</div>'
           : '';
         analysisContent.innerHTML = note + '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(text) + '</div>';
       }
@@ -1546,11 +1553,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       function renderChatMessages() {
         if (!analysisChatMessagesEl) return;
         if (!Array.isArray(chatMessages) || !chatMessages.length) {
-          analysisChatMessagesEl.innerHTML = '<div style="color:var(--muted);font-size:0.9rem;">No messages yet. Ask a follow-up after analysis.</div>';
+          analysisChatMessagesEl.innerHTML = '<div style="color:var(--muted);font-size:0.9rem;">' + escapeHtml(ui.noMessages) + '</div>';
           return;
         }
         analysisChatMessagesEl.innerHTML = chatMessages.map((entry) => {
-          const role = entry.role === 'assistant' ? 'Coach' : 'You';
+          const role = entry.role === 'assistant' ? ui.coach : ui.you;
           const bg = entry.role === 'assistant' ? 'var(--vscode-editorWidget-background)' : 'var(--vscode-inputOption-activeBackground)';
           return '<div style="margin:0 0 8px 0;padding:8px;border:1px solid var(--border);border-radius:6px;background:' + bg + ';">'
             + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px;">' + role + '</div>'
@@ -1565,7 +1572,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         showAnalysisText(initialAnalysis);
         analyzeBtn.textContent = analyzeButtonLabel();
       } else {
-        analysisContent.innerHTML = '<p style="margin:0;color:var(--muted);">Click &ldquo;Analyze Activity&rdquo; to analyze this ride with Copilot.</p>';
+        analysisContent.innerHTML = '<p style="margin:0;color:var(--muted);">' + escapeHtml(ui.clickAnalyze) + '</p>';
       }
       
       window.addEventListener('message', (event) => {
@@ -1589,11 +1596,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         } else if (msg.type === 'noAnalysis') {
           hasAnalysis = false;
           analysisOutdated = false;
-          analysisContent.innerHTML = '<p style="margin:0;color:var(--muted);">Click &ldquo;Analyze Activity&rdquo; to analyze this ride with Copilot.</p>';
+          analysisContent.innerHTML = '<p style="margin:0;color:var(--muted);">' + escapeHtml(ui.clickAnalyze) + '</p>';
           analyzeBtn.disabled = false;
           analyzeBtn.textContent = analyzeButtonLabel();
         } else if (msg.type === 'analysisError') {
-          analysisContent.innerHTML = '<div style="color:#ff6b6b;">Error: ' + escapeHtml(msg.error) + '</div>';
+          analysisContent.innerHTML = '<div style="color:#ff6b6b;">' + escapeHtml(formatMessage(ui.error, msg.error)) + '</div>';
           analyzeBtn.disabled = false;
           analyzeBtn.textContent = analyzeButtonLabel();
         } else if (msg.type === 'analysisChatState') {
@@ -1603,7 +1610,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           analysisChatStatus.textContent = '';
         } else if (msg.type === 'analysisChatError') {
           analysisChatSendBtn.disabled = false;
-          analysisChatStatus.textContent = 'Error: ' + String(msg.error || 'Chat failed.');
+          analysisChatStatus.textContent = formatMessage(ui.error, String(msg.error || ui.chatFailed));
           analysisChatStatus.style.color = '#ff6b6b';
         } else if (msg.type === 'manualDataError') {
           manualDataStatus.textContent = msg.error;
@@ -1654,7 +1661,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       });
 
       autoCalcZonesBtn?.addEventListener('click', () => {
-        hrProfileStatus.textContent = 'Calculating...';
+        hrProfileStatus.textContent = ui.calculating;
         hrProfileStatus.classList.remove('error');
         vscode.postMessage({
           type: 'autoCalculateHeartRateProfile',
@@ -1671,7 +1678,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
       manualDataForm?.addEventListener('submit', (event) => {
         event.preventDefault();
-        manualDataStatus.textContent = 'Saving...';
+        manualDataStatus.textContent = ui.saving;
         manualDataStatus.classList.remove('error');
         vscode.postMessage({
           type: 'updateActivityHeartRate',
@@ -1684,7 +1691,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
       hrProfileForm?.addEventListener('submit', (event) => {
         event.preventDefault();
-        hrProfileStatus.textContent = 'Saving...';
+        hrProfileStatus.textContent = ui.saving;
         hrProfileStatus.classList.remove('error');
         vscode.postMessage({
           type: 'updateHeartRateProfile',
@@ -1716,13 +1723,13 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         function updateSuggestion() {
           const current = Number(wheelInput.value);
           if (!wheelInput.value || !Number.isFinite(current) || current <= 0) {
-            suggestionEl.textContent = 'Type your current wheel circumference above to see a suggested value.';
+            suggestionEl.textContent = ui.wheelPrompt;
             applyBtn.style.display = 'none';
             return;
           }
           const recommended = Math.round((current / ratio) * 10) / 10;
-          suggestionEl.innerHTML = 'Wheel circumference is probably closer to <strong>' + recommended + ' mm</strong> than ' + current + ' mm. Click Save Zones to keep it.';
-          applyBtn.textContent = 'Use ' + recommended + ' mm';
+          suggestionEl.textContent = formatMessage(ui.wheelSuggestion, recommended, current);
+          applyBtn.textContent = formatMessage(ui.useWheelSuggestion, recommended);
           applyBtn.dataset.recommended = String(recommended);
           applyBtn.style.display = '';
         }
@@ -1730,7 +1737,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         wheelInput?.addEventListener('input', updateSuggestion);
         applyBtn?.addEventListener('click', () => {
           if (wheelInput && applyBtn.dataset.recommended) wheelInput.value = applyBtn.dataset.recommended;
-          suggestionEl.textContent = 'Applied. Click Save Zones to keep it.';
+          suggestionEl.textContent = ui.wheelApplied;
           applyBtn.style.display = 'none';
         });
         dismissBtn?.addEventListener('click', () => hint.remove());
@@ -1740,28 +1747,28 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       if (analyzeBtn) {
         analyzeBtn.addEventListener('click', () => {
           if (!window.currentActivityId || window.currentActivityId === 'null') {
-            analysisContent.innerHTML = '<div style="color:#ff6b6b;">Error: No activity loaded. Try refreshing.</div>';
+            analysisContent.innerHTML = '<div style="color:#ff6b6b;">' + escapeHtml(formatMessage(ui.error, ui.noActivityLoaded)) + '</div>';
             return;
           }
           analyzeBtn.disabled = true;
-          analyzeBtn.textContent = 'Analyzing...';
+          analyzeBtn.textContent = ui.analyzing;
           vscode.postMessage({ type: 'analyzeActivity', id: window.currentActivityId, force: hasAnalysis });
         });
       }
 
       function sendChatTurn() {
         if (!window.currentActivityId || window.currentActivityId === 'null') {
-          analysisChatStatus.textContent = 'No activity selected.';
+          analysisChatStatus.textContent = ui.noActivitySelected;
           analysisChatStatus.style.color = '#ff6b6b';
           return;
         }
         const text = String(analysisChatInput.value || '').trim();
         if (!text) {
-          analysisChatStatus.textContent = 'Enter a follow-up question.';
+          analysisChatStatus.textContent = ui.enterFollowUp;
           analysisChatStatus.style.color = '#ff6b6b';
           return;
         }
-        analysisChatStatus.textContent = 'Thinking...';
+        analysisChatStatus.textContent = ui.thinking;
         analysisChatStatus.style.color = 'var(--muted)';
         analysisChatSendBtn.disabled = true;
         chatMessages = [...chatMessages, { role: 'user', content: text }];
@@ -1785,7 +1792,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       window.currentActivityId = ${fitData && fitData._activityId ? fitData._activityId : 'null'};
 
       if (!window.currentActivityId) {
-        analysisContent.innerHTML = '<p style="margin:0;color:#ff6b6b;">No activity data available for analysis.</p>';
+        analysisContent.innerHTML = '<p style="margin:0;color:#ff6b6b;">' + escapeHtml(ui.noActivityDataForAnalysis) + '</p>';
         analysisChatSendBtn.disabled = true;
       }
     }());

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2 - 2026-09-01
+
+### Added
+
+- Added a centralized localized UI message catalog for the activity view, controls, and live status messages.
+
 ## 0.4.1 - 2026-09-01
 
 ### Fixed
