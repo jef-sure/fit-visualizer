@@ -17,6 +17,7 @@ const {
 const { ensureDatabaseSchema } = require('../database-schema');
 const { padYAxisRange } = require('../chart-geometry');
 const { computeStats, extractXYPoints } = require('../chart-data');
+const { buildSummary } = require('../activity-summary');
 const { GLOSSARY, localizeGlossary } = require('../glossary');
 const { UI_STRINGS, formatUi, localizeUi } = require('../ui-strings');
 const {
@@ -241,6 +242,18 @@ test('chart data module filters invalid samples and preserves chart statistics',
   assert.deepEqual(series.points, [{ x: 0, y: 10 }, { x: 2, y: 30 }]);
   assert.deepEqual(series.yValues, [10, 30]);
   assert.deepEqual(computeStats(series.yValues), { count: 2, min: 10, max: 30, avg: 20, median: 20, p95: 29 });
+});
+
+test('activity summary falls back to records and preserves unavailable workload metrics', () => {
+  const summary = buildSummary([
+    { elapsed_time: 0, distance: 0, speed: 20, heart_rate: 120 },
+    { elapsed_time: 60, distance: 0.5, speed: 30, heart_rate: 140 },
+  ], [{}]);
+  assert.equal(summary.distanceKm, 0.5);
+  assert.equal(summary.durationSec, 60);
+  assert.equal(summary.avgHr, 130);
+  assert.equal(summary.normalizedPower, null);
+  assert.equal(summary.trainingStressScore, null);
 });
 
 test('client tick rounding keeps the server step at powers of ten', () => {

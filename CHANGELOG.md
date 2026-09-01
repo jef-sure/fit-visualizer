@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.3 - 2026-09-01
+
+### Changed
+
+- Extracted activity summary calculation into a reusable module.
+
 ## 0.5.2 - 2026-09-01
 
 ### Changed

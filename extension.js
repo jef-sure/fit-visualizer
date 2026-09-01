@@ -6,6 +6,7 @@ const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
 const { buildDistanceMarkers, buildTicks, formatTick, padRange, padYAxisRange } = require('./chart-geometry');
 const { computeElevationGainLoss, computeRouteDistanceKm, computeStats, extractGpsPoints, extractXYPoints } = require('./chart-data');
+const { buildSummary } = require('./activity-summary');
 const {
   loadGeneratedTranslationBundle,
   parseGeneratedBundle,
@@ -2450,109 +2451,6 @@ function renderHeartRateZones(zoneData) {
     <div class="zonesHead">Zones based on ${zoneData.customThresholds ? 'custom watch thresholds and ' : ''}max HR ${escapeHtml(String(zoneData.maxHeartRate))} bpm. Time is estimated from elapsed record deltas.</div>
     ${rows}
   </div>`;
-}
-
-function buildSummary(records, sessions, options = {}) {
-  const speeds = records.map((r) => asNumber(r.speed)).filter((v) => Number.isFinite(v));
-  const hrs = records.map((r) => asNumber(r.heart_rate)).filter((v) => Number.isFinite(v) && v > 0);
-  const powers = records.map((r) => asNumber(r.power)).filter((v) => Number.isFinite(v));
-  const distances = records.map((r) => asNumber(r.distance)).filter((v) => Number.isFinite(v));
-  const cadences = records.map((r) => asNumber(r.cadence)).filter((v) => Number.isFinite(v) && v > 0);
-  const altitudeM = records
-    .map((r) => asNumber(r.altitude))
-    .filter((v) => Number.isFinite(v))
-    .map((v) => v * 1000);
-
-  const elevation = computeElevationGainLoss(altitudeM);
-
-  const session = sessions[0] || {};
-  const sessionDistance = asNumber(session.total_distance);
-  const distanceKm = Number.isFinite(sessionDistance)
-    ? sessionDistance
-    : (distances.length ? Math.max(...distances) : 0);
-
-  const totalTimer = asNumber(session.total_timer_time);
-  const totalElapsed = asNumber(session.total_elapsed_time);
-  const durationSec = Number.isFinite(totalTimer)
-    ? totalTimer
-    : (Number.isFinite(totalElapsed) ? totalElapsed : estimateDuration(records));
-  const sessionAvgHr = asNumber(session.avg_hr);
-  const sessionMaxHr = asNumber(session.max_hr);
-  const avgHr = hrs.length ? average(hrs) : (Number.isFinite(sessionAvgHr) ? sessionAvgHr : 0);
-  const maxHr = hrs.length ? maxOrZero(hrs) : (Number.isFinite(sessionMaxHr) ? sessionMaxHr : 0);
-  const normalizedPower = calculateNormalizedPower(records);
-
-  // Prefer device session values; fall back to distance/time, then record samples.
-  const sessionAvgSpeed = [session.avg_speed, session.avg_speed_kmh]
-    .map(asNumber).find((v) => Number.isFinite(v) && v > 0) || 0;
-  const sessionMaxSpeed = [session.max_speed, session.max_speed_kmh]
-    .map(asNumber).find((v) => Number.isFinite(v) && v > 0) || 0;
-  const distanceBasedAvgSpeed = distanceKm > 0 && durationSec > 0
-    ? distanceKm / (durationSec / 3600)
-    : 0;
-  const movingSpeeds = speeds.filter((v) => v > 0);
-  const avgSpeed = sessionAvgSpeed > 0
-    ? sessionAvgSpeed
-    : (distanceBasedAvgSpeed > 0 ? distanceBasedAvgSpeed : average(movingSpeeds));
-  const maxSpeed = sessionMaxSpeed > 0
-    ? sessionMaxSpeed
-    : maxOrZero(despikeSeries(speeds, { absThreshold: 12, ratioThreshold: 0.5 }));
-
-  const ftp = asNumber(options.ftp);
-  const intensityFactor = calculateIntensityFactor(normalizedPower, ftp);
-  const trainingStressScore = calculateTrainingStressScore(durationSec, normalizedPower, intensityFactor, ftp);
-  const xPower = calculateXPower(records);
-  const relativeIntensityGc = calculateIntensityFactor(xPower, ftp);
-  const bikeStressScore = calculateBikeStressScore(durationSec, xPower, relativeIntensityGc, ftp);
-
-  const restingHeartRate = asNumber(options.restingHeartRate);
-  const maxHeartRateForHrr = Number.isFinite(asNumber(options.maxHeartRateForHrr))
-    ? asNumber(options.maxHeartRateForHrr)
-    : maxHr;
-  const trimp = calculateBanisterTrimp({
-    durationSec,
-    avgHeartRate: avgHr,
-    restingHeartRate,
-    maxHeartRate: maxHeartRateForHrr,
-    sex: options.sex,
-  });
-  const hrTss = calculateHrTss({
-    durationSec,
-    avgHeartRate: avgHr,
-    restingHeartRate,
-    maxHeartRate: maxHeartRateForHrr,
-  });
-  const decouplingPct = calculateIntervalsDecoupling(records, {
-    ftp,
-    restingHeartRate,
-    maxHeartRate: maxHeartRateForHrr,
-  });
-
-  return {
-    records: records.length,
-    distanceKm: Number.isFinite(distanceKm) ? distanceKm : 0,
-    durationText: formatHms(durationSec),
-    durationSec,
-    avgSpeed,
-    maxSpeed,
-    avgPower: average(powers),
-    maxPower: maxOrZero(powers),
-    avgCadence: average(cadences),
-    maxCadence: maxOrZero(cadences),
-    normalizedPower,
-    intensityFactor,
-    trainingStressScore,
-    xPower,
-    relativeIntensityGc,
-    bikeStressScore,
-    decouplingPct,
-    trimp,
-    hrTss,
-    avgHr,
-    maxHr,
-    elevationGainM: elevation.gain,
-    elevationLossM: elevation.loss,
-  };
 }
 
 function positiveNumberOrBlank(value) {
