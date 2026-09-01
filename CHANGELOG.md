@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.18 - 2026-09-01
+
+### Changed
+
+- Removed the unused single-color map mode.
+
 ## 0.9.17 - 2026-09-01
 
 ### Added
