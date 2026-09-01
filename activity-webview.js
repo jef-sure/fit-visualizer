@@ -993,6 +993,12 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           const t = Math.max(0, Math.min(1, (v - mn) / (mx - mn)));
           return 'rgb(' + Math.round(40+(225-40)*t) + ',' + Math.round(120+(30-120)*t) + ',' + Math.round(190+(35-190)*t) + ')';
         }
+        function formatRouteMetricTooltip(mode, value) {
+          if (!Number.isFinite(value)) return '';
+          if (mode === 'speed') return '<strong>' + escapeSegmentHtml(ui.speed) + '</strong><br>' + value.toFixed(1) + ' km/h';
+          if (mode === 'heart_rate') return '<strong>' + escapeSegmentHtml(ui.heartRate) + '</strong><br>' + Math.round(value) + ' bpm';
+          return '';
+        }
         function drawSegments(mode) {
           clearSegments();
           const legend = document.getElementById('${mapId}SegmentLegend');
@@ -1025,7 +1031,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
               ? (matchedSegment?.displayColor || '#7f8c8d')
               : (mode !== 'none' ? colorForValue(value, mn, mx) : '#2f6db3');
             const line = L.polyline([[a.lat,a.lon],[b.lat,b.lon]], { color, weight:4, opacity:0.92, lineCap:'round' }).addTo(map);
-            if (matchedSegment) line.bindTooltip(window.formatSegmentDetails(matchedSegment), { sticky: true, className: 'segmentLeafletTooltip' });
+            const tooltip = mode === 'segment'
+              ? (matchedSegment ? window.formatSegmentDetails(matchedSegment) : '')
+              : formatRouteMetricTooltip(mode, value);
+            if (tooltip) line.bindTooltip(tooltip, { sticky: true, className: 'segmentLeafletTooltip' });
             segments.push(line);
           }
         }

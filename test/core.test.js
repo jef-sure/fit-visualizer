@@ -277,11 +277,15 @@ test('segment map and chart hover tooltips reuse existing details without unavai
   const svgSource = fs.readFileSync(path.join(__dirname, '..', 'chart-svg.js'), 'utf8');
   assert.match(webviewSource, /window\.formatSegmentDetails = function formatSegmentDetails/);
   assert.match(webviewSource, /function escapeSegmentHtml\(text\)/);
+  assert.match(webviewSource, /function formatRouteMetricTooltip\(mode, value\)/);
+  assert.match(webviewSource, /mode === 'speed'.*?km\/h/);
+  assert.match(webviewSource, /mode === 'heart_rate'.*?bpm/);
   const mapFormatter = webviewSource.match(/window\.formatSegmentDetails = function formatSegmentDetails\(segment\) \{([\s\S]*?)\n      \};/)?.[1] || '';
   assert.doesNotMatch(mapFormatter, /escapeHtmlClient/);
   const mapDrawSegments = webviewSource.match(/function drawSegments\(mode\) \{([\s\S]*?)\n        \}/)?.[1] || '';
   assert.doesNotMatch(mapDrawSegments, /escapeHtmlClient/);
-  assert.match(webviewSource, /line\.bindTooltip\(window\.formatSegmentDetails\(matchedSegment\)/);
+  assert.match(webviewSource, /const tooltip = mode === 'segment'/);
+  assert.match(webviewSource, /if \(tooltip\) line\.bindTooltip\(tooltip/);
   assert.match(webviewSource, /id="\$\{mapId\}SegmentTooltip"/);
   assert.match(webviewSource, /chartSegments\.find/);
   assert.match(webviewSource, /Number\.isFinite\(Number\(segment\.avgHr\)\)/);
