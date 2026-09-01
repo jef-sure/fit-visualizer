@@ -205,7 +205,8 @@ test('adaptive chart ticks recompute when only height changes', () => {
   assert.match(source, /var lastWidth = 0;\s*var lastHeight = 0;/);
   assert.match(source, /Math\.abs\(rect\.width - lastWidth\) < 1 && Math\.abs\(rect\.height - lastHeight\) < 1/);
   assert.match(source, /lastWidth = rect\.width;\s*lastHeight = rect\.height;/);
-  assert.match(source, /clampCount\(plotHeightPx \/ 50, 3, 15\)/);
+  assert.match(source, /clampCount\(plotWidthPx \/ 80, 3, 15\)/);
+  assert.match(source, /clampCount\(plotHeightPx \/ 36, 4, 15\)/);
 });
 
 test('client tick rounding keeps the server step at powers of ten', () => {
@@ -241,10 +242,15 @@ test('chart text labels adapt to the rendered SVG scale', () => {
   assert.match(source, /var textScale = Math\.max\(0\.1, Math\.min\(xScale, yScale\)\);/);
   assert.match(source, /function setReadableFont\(selector, cssPx, strokePx\)/);
   assert.match(source, /el\.style\.fontSize = \(cssPx \/ textScale\)\.toFixed\(2\) \+ 'px';/);
-  assert.doesNotMatch(source, /setAttribute\('transform', 'translate\('/);
+  const readableFontBody = source.match(/function setReadableFont\(selector, cssPx, strokePx\) \{([\s\S]*?)\n        \}/)?.[1] || '';
+  assert.doesNotMatch(readableFontBody, /setAttribute\('transform'/);
   assert.match(source, /setReadableFont\('\.tick', 10\);/);
   assert.match(source, /setReadableFont\('\.kmLabel', 9\);/);
   assert.match(source, /setReadableFont\('\.crosshairLabel', 13, 3\);/);
+  assert.match(source, /class="axisLabel axisLabelX"/);
+  assert.match(source, /var axisX = svg\.querySelector\('\.axisLabelX'\);/);
+  assert.match(source, /axisX\.style\.fontSize = '11px';/);
+  assert.match(source, /axisX\.setAttribute\('transform', 'translate\('/);
   assert.match(source, /if \(instance\.lastRect\) updateChartTextScale\(svg, payload, instance\.lastRect\);/);
   assert.match(source, /redrawTicks\(svg, payload,[\s\S]*?updateChartTextScale\(svg, payload, rect\);/);
 });

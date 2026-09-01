@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.15 - 2026-09-01
+
+### Fixed
+
+- Increased adaptive chart tick density and stabilized the X-axis label size during resize.
+
 ## 0.1.14 - 2026-09-01
 
 ### Fixed

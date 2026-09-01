@@ -1982,6 +1982,14 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         setReadableFont('.tick', 10);
         setReadableFont('.kmLabel', 9);
         setReadableFont('.crosshairLabel', 13, 3);
+
+        var axisX = svg.querySelector('.axisLabelX');
+        if (axisX) {
+          var axisXAnchor = axisX.getAttribute('x') + ' ' + axisX.getAttribute('y');
+          axisX.style.fontSize = '11px';
+          axisX.setAttribute('transform', 'translate(' + axisXAnchor + ') scale('
+            + (1 / xScale).toFixed(4) + ' ' + (1 / yScale).toFixed(4) + ') translate(-' + axisXAnchor + ')');
+        }
       }
 
       // Nearest value in a monotonic array (px positions for the hovered chart, data x for the rest).
@@ -2151,7 +2159,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             instance.lastRect = rect;
             var plotWidthPx = (payload.plotRight - payload.plotLeft) * (rect.width / payload.width);
             var plotHeightPx = (payload.plotBottom - payload.plotTop) * (rect.height / payload.height);
-            redrawTicks(svg, payload, clampCount(plotWidthPx / 90, 3, 15), clampCount(plotHeightPx / 50, 3, 15));
+            redrawTicks(svg, payload, clampCount(plotWidthPx / 80, 3, 15), clampCount(plotHeightPx / 36, 4, 15));
             updateChartTextScale(svg, payload, rect);
           });
           observer.observe(svg);
@@ -2552,8 +2560,8 @@ function renderScaledLineChartSvg(chart, lineClass, xLabel, yLabel, addDistanceM
     <line class="axis" x1="${chart.plotLeft}" y1="${chart.plotTop}" x2="${chart.plotLeft}" y2="${chart.plotBottom}" />
     ${compLineSvg}
     ${lineSvg}
-    <text class="axisLabel" x="${(chart.plotLeft + chart.plotRight) / 2}" y="${chart.height - 4}" text-anchor="middle">${escapeHtml(xLabel)}</text>
-    <text class="axisLabel" transform="translate(14 ${(chart.plotTop + chart.plotBottom) / 2}) rotate(-90)" text-anchor="middle">${escapeHtml(yLabel)}</text>
+    <text class="axisLabel axisLabelX" x="${(chart.plotLeft + chart.plotRight) / 2}" y="${chart.height - 4}" text-anchor="middle">${escapeHtml(xLabel)}</text>
+    <text class="axisLabel axisLabelY" transform="translate(14 ${(chart.plotTop + chart.plotBottom) / 2}) rotate(-90)" text-anchor="middle">${escapeHtml(yLabel)}</text>
     ${crosshairSvg}
   </svg>`;
 }
