@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.1 - 2026-09-01
+
+### Fixed
+
+- The **Compare with AI** button was rendered at the very bottom of the activity page, below the map, the analysis and the follow-up chat, so it was effectively impossible to find after picking a comparison activity. It now sits directly under the numeric comparison table, where both rides are already shown side by side.
+- Opening an activity that produced no segments crashed the whole panel, because the segment breakdown returned no display rows for an empty list.
+
 ## 0.13.0 - 2026-09-01
 
 ### Added

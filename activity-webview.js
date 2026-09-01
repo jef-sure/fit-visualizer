@@ -415,6 +415,20 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     ? renderComparisonTable(summary, compSummary, fitData._fileName, compData._fileName, glossary, ui)
     : '';
 
+  // Sits with the numeric comparison rather than at the end of the page: this is the only place
+  // the user is already looking at both rides at once.
+  const comparisonSection = hasOverlay ? `
+    <section class="chart">
+      <h2>${escapeHtml(ui.compareWithAI)}</h2>
+      <div id="comparisonContent" style="padding:12px;color:var(--muted);min-height:60px;line-height:1.5;">
+        <p style="margin:0;">${escapeHtml(ui.clickCompare)}</p>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button id="compareBtn" style="padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.compareWithAI)}</button>
+        <button id="removeComparisonBtn" style="padding:8px 16px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;display:none;">${escapeHtml(ui.removeComparison)}</button>
+      </div>
+    </section>` : '';
+
   return `<main class="wrap">
     <section class="hero">
       <h1>${escapeHtml(ui.fitActivity)}</h1>
@@ -422,6 +436,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     </section>
     ${shouldOfferTranslations ? `<section class="calibrationHint"><span>${escapeHtml(formatUi(ui.translationsAvailable, language))}</span><button type="button" id="generateTranslationsBtn">${escapeHtml(formatUi(ui.generateTranslations, language))}</button><span id="translationStatus"></span></section>` : ''}
     ${compStatsRow}
+    ${comparisonSection}
     <section class="grid">
       ${metric('Records', summary.records, 'records', glossary)}
       ${metric('Sessions', sessions.length, 'sessions', glossary)}
@@ -588,18 +603,6 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <div id="analysisChatStatus" style="margin-top:6px;font-size:0.85rem;color:var(--muted);"></div>
       </div>
     </section>
-    ${hasOverlay ? `
-    <section class="chart">
-      <h2>${escapeHtml(ui.compareWithAI)}</h2>
-      <div id="comparisonContent" style="padding:12px;color:var(--muted);min-height:60px;line-height:1.5;">
-        <p style="margin:0;">${escapeHtml(ui.clickCompare)}</p>
-      </div>
-      <div style="display:flex;gap:8px;margin-top:10px;">
-        <button id="compareBtn" style="padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.compareWithAI)}</button>
-        <button id="removeComparisonBtn" style="padding:8px 16px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;display:none;">${escapeHtml(ui.removeComparison)}</button>
-      </div>
-    </section>
-    ` : ''}
   </main>
   <script nonce="${nonce}">
     (function () {
