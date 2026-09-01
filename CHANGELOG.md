@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.6 - 2026-09-01
+
+### Fixed
+
+- Kept short continuous terrain sections, including climbs, from being split into noisy effort micro-segments.
+
 ## 0.9.5 - 2026-09-01
 
 ### Fixed

@@ -1060,6 +1060,11 @@ function splitByEffort(records, macro, basis, windowSeconds, minSegmentSeconds, 
     ? (record) => asNumber(record?.heart_rate)
     : (record) => asNumber(record?.power);
 
+  // A short climb or descent cannot carry enough stable windows to distinguish effort changes from vPower/HR noise.
+  if (rangeDurationSeconds(records, macro.startIndex, macro.endIndex) < optionNumber(options, 'minEffortMacroSeconds', 600)) {
+    return [macro];
+  }
+
   const windows = [];
   for (let index = macro.startIndex; index <= macro.endIndex; index += 1) {
     const elapsed = asNumber(records[index]?.elapsed_time);
