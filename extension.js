@@ -503,12 +503,13 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const hrConfig = data
       ? await getHeartRateConfigForActivity(dbPath, data.sessions?.[0]?.start_time)
       : getHeartRateConfig();
+    const segments = buildDisplaySegments(data, athleteProfile, hrConfig);
     const generatedTranslations = await loadGeneratedTranslationBundle(
       extensionContextRef?.globalStorageUri?.fsPath, vscode.env.language
     );
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments
     );
     if (selId) {
       panel.webview.postMessage({ type: 'analysisChatState', id: Number(selId), messages: analysisChat });
@@ -593,6 +594,26 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
   });
 
   await render(selectedId, compId || null);
+}
+
+function buildDisplaySegments(fitData, athleteProfile, heartRateConfig) {
+  if (!fitData || !Array.isArray(fitData.records) || fitData.records.length < 2) return [];
+  const records = normalizeRecordSpeeds(fitData.records);
+  const powerData = addEstimatedPowerWhenMissing(records, {
+    riderMassKg: athleteProfile?.riderMassKg,
+    bikeMassKg: athleteProfile?.bikeMassKg,
+  });
+  const session = fitData.sessions?.[0] || {};
+  return buildActivitySegments(powerData.records, {
+    sport: session.sport,
+    powerSource: powerData.source,
+    thresholds: getSegmentationOptions(),
+    athlete: {
+      ftp: asNumber(athleteProfile?.ftp),
+      restingHeartRate: athleteProfile?.restingHeartRate,
+      maxHeartRate: asNumber(heartRateConfig?.maxHeartRate),
+    },
+  });
 }
 
 async function loadFitDataFromDb(dbPath, activityId) {

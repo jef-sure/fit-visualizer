@@ -24,7 +24,13 @@ function extractGpsPoints(records) {
     const lat = normalizeCoordinate(record.position_lat, 90);
     const lon = normalizeCoordinate(record.position_long, 180);
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) continue;
-    points.push({ x: lon, y: lat, speed: asNumber(record.speed), heart_rate: asNumber(record.heart_rate) });
+    points.push({
+      x: lon,
+      y: lat,
+      speed: asNumber(record.speed),
+      heart_rate: asNumber(record.heart_rate),
+      elapsed_time: asNumber(record.elapsed_time),
+    });
   }
   return points;
 }

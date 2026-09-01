@@ -166,6 +166,20 @@ test('map zooms only with ctrl or cmd held', () => {
   assert.match(source, /setZoomAround\(targetMap\.mouseEventToContainerPoint\(event\), next\)/);
 });
 
+test('map can color route segments from the existing activity segmentation', () => {
+  const webviewSource = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  const modelSource = fs.readFileSync(path.join(__dirname, '..', 'chart-model.js'), 'utf8');
+  const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(extensionSource, /const segments = buildDisplaySegments\(data, athleteProfile, hrConfig\);/);
+  assert.match(extensionSource, /function buildDisplaySegments\(fitData, athleteProfile, heartRateConfig\)/);
+  assert.match(modelSource, /elapsedTime: point\.elapsed_time/);
+  assert.match(webviewSource, /const activitySegments = \$\{segmentPayload\};/);
+  assert.match(webviewSource, /<option value="segment">\$\{escapeHtml\(ui\.segment\)\}<\/option>/);
+  assert.match(webviewSource, /segmentColors = \{ climb:/);
+  assert.match(webviewSource, /matchedSegment\?\.technical \? 'technical' : matchedSegment\?\.type/);
+  assert.match(webviewSource, /SegmentLegend/);
+});
+
 test('mapId is declared before it is used to build chart payloads (no TDZ crash)', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   const declarationIndex = source.indexOf("const mapId = isComparison ? 'fitMapComp' : 'fitMap';");
