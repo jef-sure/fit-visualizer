@@ -212,12 +212,16 @@ test('segment map and chart hover tooltips reuse existing details without unavai
   assert.match(webviewSource, /function escapeSegmentHtml\(text\)/);
   const mapFormatter = webviewSource.match(/window\.formatSegmentDetails = function formatSegmentDetails\(segment\) \{([\s\S]*?)\n      \};/)?.[1] || '';
   assert.doesNotMatch(mapFormatter, /escapeHtmlClient/);
+  const mapDrawSegments = webviewSource.match(/function drawSegments\(mode\) \{([\s\S]*?)\n        \}/)?.[1] || '';
+  assert.doesNotMatch(mapDrawSegments, /escapeHtmlClient/);
   assert.match(webviewSource, /line\.bindTooltip\(window\.formatSegmentDetails\(matchedSegment\)/);
   assert.match(webviewSource, /id="\$\{mapId\}SegmentTooltip"/);
   assert.match(webviewSource, /chartSegments\.find/);
   assert.match(webviewSource, /Number\.isFinite\(Number\(segment\.avgHr\)\)/);
   assert.doesNotMatch(webviewSource, /N\/A/);
   assert.match(svgSource, /data-segment-index/);
+  assert.match(webviewSource, /function showSegmentTooltip\(event, local\)/);
+  assert.match(webviewSource, /showSegmentTooltip\(evt, local\);/);
 });
 
 test('FIT parser lap lists are retained only from its documented data.laps field', () => {

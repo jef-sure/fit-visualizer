@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.14 - 2026-09-01
+
+### Fixed
+
+- Restored segment-colored map routes and terrain bar hover details in the webview.
+
 ## 0.9.13 - 2026-09-01
 
 ### Fixed
