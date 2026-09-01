@@ -16,6 +16,7 @@ const {
 } = require('../analysis');
 const { ensureDatabaseSchema } = require('../database-schema');
 const { padYAxisRange } = require('../chart-geometry');
+const { computeStats, extractXYPoints } = require('../chart-data');
 const { GLOSSARY, localizeGlossary } = require('../glossary');
 const { UI_STRINGS, formatUi, localizeUi } = require('../ui-strings');
 const {
@@ -229,6 +230,17 @@ test('Y-axis range reserves headroom above the highest data value', () => {
   assert.match(source, /require\('\.\/chart-geometry'\)/);
   assert.deepEqual(padYAxisRange(0, 50), { min: 0, max: 54 });
   assert.equal(padYAxisRange(42, 42).max > 42, true);
+});
+
+test('chart data module filters invalid samples and preserves chart statistics', () => {
+  const series = extractXYPoints([
+    { distance: 0, speed: 10 },
+    { distance: 1, speed: null },
+    { distance: 2, speed: 30 },
+  ], 'distance', 'speed', 10, {});
+  assert.deepEqual(series.points, [{ x: 0, y: 10 }, { x: 2, y: 30 }]);
+  assert.deepEqual(series.yValues, [10, 30]);
+  assert.deepEqual(computeStats(series.yValues), { count: 2, min: 10, max: 30, avg: 20, median: 20, p95: 29 });
 });
 
 test('client tick rounding keeps the server step at powers of ten', () => {

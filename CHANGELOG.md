@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2 - 2026-09-01
+
+### Changed
+
+- Extracted chart series, GPS, elevation, and statistics helpers from the extension host module.
+
 ## 0.5.1 - 2026-09-01
 
 ### Changed

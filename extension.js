@@ -5,6 +5,7 @@ const { generateAnalysisPrompt, generateAnalysisChatPrompt, requestCopilotAnalys
 const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
 const { buildDistanceMarkers, buildTicks, formatTick, padRange, padYAxisRange } = require('./chart-geometry');
+const { computeElevationGainLoss, computeRouteDistanceKm, computeStats, extractGpsPoints, extractXYPoints } = require('./chart-data');
 const {
   loadGeneratedTranslationBundle,
   parseGeneratedBundle,
@@ -2820,56 +2821,6 @@ function renderGpsRouteSvg(route, width, height) {
   </svg>`;
 }
 
-function extractXYPoints(records, xField, yField, maxPoints, transforms) {
-  const points = [];
-  const yValues = [];
-  const xTransform = transforms?.xTransform || ((v) => v);
-  const yTransform = transforms?.yTransform || ((v) => v);
-
-  for (const r of records) {
-    const xRaw = asNumber(r[xField]);
-    const yRaw = asNumber(r[yField]);
-    if (!Number.isFinite(xRaw) || !Number.isFinite(yRaw)) {
-      continue;
-    }
-
-    const x = xTransform(xRaw);
-    const y = yTransform(yRaw);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      continue;
-    }
-    points.push({ x, y });
-    yValues.push(y);
-  }
-
-  return {
-    points: downsamplePoints(points, maxPoints),
-    yValues,
-  };
-}
-
-function extractGpsPoints(records) {
-  const points = [];
-  for (const r of records) {
-    const lat = normalizeCoordinate(r.position_lat, 90);
-    const lon = normalizeCoordinate(r.position_long, 180);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-      continue;
-    }
-    // Skip (0, 0) — GPS not yet locked at recording start.
-    if (lat === 0 && lon === 0) {
-      continue;
-    }
-    points.push({
-      x: lon,
-      y: lat,
-      speed: asNumber(r.speed),
-      heart_rate: asNumber(r.heart_rate),
-    });
-  }
-  return points;
-}
-
 function buildCartesianGeometry(points, width, height, margin) {
   if (points.length < 2) {
     return {
@@ -2944,83 +2895,6 @@ function buildCartesianGeometry(points, width, height, margin) {
     yMin: safeY.min,
     yMax: safeY.max,
   };
-}
-
-function computeElevationGainLoss(altitudesM) {
-  if (!altitudesM.length) {
-    return { gain: 0, loss: 0 };
-  }
-
-  // Smooth barometric/GPS noise, then accumulate with a 3 m hysteresis.
-  const smoothed = smoothSeries(altitudesM, 5);
-  const hysteresisM = 3;
-  let gain = 0;
-  let loss = 0;
-  let reference = smoothed[0];
-  for (let i = 1; i < smoothed.length; i += 1) {
-    const delta = smoothed[i] - reference;
-    if (delta >= hysteresisM) {
-      gain += delta;
-      reference = smoothed[i];
-    } else if (delta <= -hysteresisM) {
-      loss -= delta;
-      reference = smoothed[i];
-    }
-  }
-
-  return { gain, loss };
-}
-
-function computeStats(values) {
-  if (!values.length) {
-    return {
-      count: 0,
-      min: 0,
-      max: 0,
-      avg: 0,
-      median: 0,
-      p95: 0,
-    };
-  }
-
-  const sorted = [...values].sort((a, b) => a - b);
-  const avg = values.reduce((sum, v) => sum + v, 0) / values.length;
-
-  return {
-    count: values.length,
-    min: sorted[0],
-    max: sorted[sorted.length - 1],
-    avg,
-    median: percentileFromSorted(sorted, 50),
-    p95: percentileFromSorted(sorted, 95),
-  };
-}
-
-function percentileFromSorted(sortedValues, percentile) {
-  if (!sortedValues.length) {
-    return 0;
-  }
-  const p = Math.max(0, Math.min(100, percentile));
-  const index = ((sortedValues.length - 1) * p) / 100;
-  const lo = Math.floor(index);
-  const hi = Math.ceil(index);
-  if (lo === hi) {
-    return sortedValues[lo];
-  }
-  const weight = index - lo;
-  return sortedValues[lo] * (1 - weight) + sortedValues[hi] * weight;
-}
-
-function computeRouteDistanceKm(points) {
-  if (points.length < 2) {
-    return 0;
-  }
-
-  let totalKm = 0;
-  for (let i = 1; i < points.length; i += 1) {
-    totalKm += haversineKm(points[i - 1].y, points[i - 1].x, points[i].y, points[i].x);
-  }
-  return totalKm;
 }
 
 async function generateActivityAnalysis(dbPath, activityId, force = false) {

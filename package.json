@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Visualize cycling and running FIT files and get AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
@@ -166,7 +166,7 @@
     }
   },
   "scripts": {
-    "check": "node --check extension.js && node --check analysis.js && node --check chart-geometry.js && node --check commands.js && node --check database-schema.js && node --check dynamic-localization.js && node --check fit-files.js && node --check heart-rate.js && node --check ui-strings.js && node --check utils.js && node --test test/core.test.js",
+    "check": "node --check extension.js && node --check analysis.js && node --check chart-data.js && node --check chart-geometry.js && node --check commands.js && node --check database-schema.js && node --check dynamic-localization.js && node --check fit-files.js && node --check heart-rate.js && node --check ui-strings.js && node --check utils.js && node --test test/core.test.js",
     "lint": "npm run check",
     "package": "vsce package"
   },
