@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.1 - 2026-09-01
+
+### Fixed
+
+- The migration that clears legacy zero sentinels from derived workload metrics blanked every metric on a row as soon as any single one of them was zero, discarding genuinely measured values. Each column is now cleared independently. Activities affected by earlier runs can be restored with `FIT: Index All Files`.
+
 ## 0.12.0 - 2026-09-01
 
 ### Added

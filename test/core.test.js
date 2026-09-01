@@ -1408,6 +1408,18 @@ test('database schema clears legacy zero sentinels from derived workload metrics
       FROM activities WHERE file_path = 'legacy.fit'`)[0].values[0];
 
     assert.deepEqual(row, [null, null, null, null, null, null, null]);
+
+    // A zero in one metric must not blank out genuinely measured values in the others.
+    db.run(`INSERT INTO activities (
+      file_path, normalized_power, training_stress_score, intensity_factor,
+      xpower, relative_intensity_gc, bike_stress_score, hr_tss
+    ) VALUES ('mixed.fit', 210, 95.4, 0.84, 205, 0.82, 92.1, 0)`);
+    ensureDatabaseSchema(db);
+    const mixed = db.exec(`SELECT normalized_power, training_stress_score, intensity_factor,
+      xpower, relative_intensity_gc, bike_stress_score, hr_tss
+      FROM activities WHERE file_path = 'mixed.fit'`)[0].values[0];
+
+    assert.deepEqual(mixed, [210, 95.4, 0.84, 205, 0.82, 92.1, null]);
   } finally {
     db.close();
   }

@@ -149,15 +149,16 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'activities', 'decoupling_pct', 'REAL');
   addColumnIfMissing(db, 'activities', 'hr_tss', 'REAL');
   addColumnIfMissing(db, 'activities', 'trimp', 'REAL');
+  // Per-column CASE: a zero in one metric must not blank out the others on the same row.
   db.run(`
     UPDATE activities
-    SET normalized_power = NULL,
-        training_stress_score = NULL,
-        intensity_factor = NULL,
-        xpower = NULL,
-        relative_intensity_gc = NULL,
-        bike_stress_score = NULL,
-        hr_tss = NULL
+    SET normalized_power      = CASE WHEN normalized_power = 0      THEN NULL ELSE normalized_power END,
+        training_stress_score = CASE WHEN training_stress_score = 0 THEN NULL ELSE training_stress_score END,
+        intensity_factor      = CASE WHEN intensity_factor = 0      THEN NULL ELSE intensity_factor END,
+        xpower                = CASE WHEN xpower = 0                THEN NULL ELSE xpower END,
+        relative_intensity_gc = CASE WHEN relative_intensity_gc = 0 THEN NULL ELSE relative_intensity_gc END,
+        bike_stress_score     = CASE WHEN bike_stress_score = 0     THEN NULL ELSE bike_stress_score END,
+        hr_tss                = CASE WHEN hr_tss = 0                THEN NULL ELSE hr_tss END
     WHERE normalized_power = 0
        OR training_stress_score = 0
        OR intensity_factor = 0
