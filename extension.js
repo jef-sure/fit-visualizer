@@ -1966,12 +1966,38 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         if (yGroup) yGroup.innerHTML = yHtml;
       }
 
-      function updateCrosshairLabelScale(svg, payload, rect) {
-        var label = svg.querySelector('.crosshairLabel');
-        if (!label || !rect || !(rect.height > 0) || !(payload.height > 0)) return;
+      function updateChartTextScale(svg, payload, rect) {
+        if (!rect || !(rect.width > 0) || !(rect.height > 0) || !(payload.width > 0) || !(payload.height > 0)) return;
+        var xScale = rect.width / payload.width;
         var yScale = rect.height / payload.height;
-        label.style.fontSize = (13 / yScale).toFixed(2) + 'px';
-        label.style.strokeWidth = (3 / yScale).toFixed(2) + 'px';
+
+        function textAnchor(el) {
+          var x = parseFloat(el.getAttribute('x'));
+          var y = parseFloat(el.getAttribute('y'));
+          if (!isFinite(x) || !isFinite(y)) {
+            var tspan = el.querySelector('tspan');
+            x = parseFloat(tspan && tspan.getAttribute('x'));
+            y = parseFloat(tspan && tspan.getAttribute('y'));
+          }
+          return isFinite(x) && isFinite(y) ? { x: x, y: y } : null;
+        }
+
+        function stabilizeText(selector, cssPx, strokePx) {
+          svg.querySelectorAll(selector).forEach(function (el) {
+            var anchor = textAnchor(el);
+            el.style.fontSize = cssPx + 'px';
+            if (strokePx) el.style.strokeWidth = strokePx + 'px';
+            if (anchor) {
+              el.setAttribute('transform', 'translate(' + anchor.x + ' ' + anchor.y + ') scale('
+                + (1 / xScale).toFixed(4) + ' ' + (1 / yScale).toFixed(4) + ') translate('
+                + (-anchor.x) + ' ' + (-anchor.y) + ')');
+            }
+          });
+        }
+
+        stabilizeText('.tick', 10);
+        stabilizeText('.kmLabel', 9);
+        stabilizeText('.crosshairLabel', 13, 3);
       }
 
       // Nearest value in a monotonic array (px positions for the hovered chart, data x for the rest).
@@ -2097,6 +2123,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             labelX.textContent = formatCrosshairValue(point[0], payload.xUnit);
             labelY.textContent = formatCrosshairValue(point[1], payload.yUnit);
             label.style.display = '';
+            if (instance.lastRect) updateChartTextScale(svg, payload, instance.lastRect);
           }
         };
         instance.hide = function () {
@@ -2137,10 +2164,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             if (Math.abs(rect.width - lastWidth) < 1 && Math.abs(rect.height - lastHeight) < 1) return;
             lastWidth = rect.width;
             lastHeight = rect.height;
+            instance.lastRect = rect;
             var plotWidthPx = (payload.plotRight - payload.plotLeft) * (rect.width / payload.width);
             var plotHeightPx = (payload.plotBottom - payload.plotTop) * (rect.height / payload.height);
             redrawTicks(svg, payload, clampCount(plotWidthPx / 90, 3, 15), clampCount(plotHeightPx / 50, 3, 15));
-            updateCrosshairLabelScale(svg, payload, rect);
+            updateChartTextScale(svg, payload, rect);
           });
           observer.observe(svg);
         }

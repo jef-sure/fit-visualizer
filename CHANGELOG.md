@@ -1,21 +1,27 @@
 # Changelog
 
+## 0.1.12 - 2026-09-01
+
+### Fixed
+
+- Kept chart axis and crosshair labels readable under non-uniform SVG scaling.
+
 ## 0.1.11 - 2026-09-01
 
 ### Fixed
 
-- Fixed adaptive chart ticks when resizing a chart vertically; Y-axis ticks now recompute when only the rendered height changes.
+- Recomputed Y-axis ticks during height-only chart resize.
 
 ## 0.1.10 - 2026-09-01
 
 ### Fixed
 
-- Kept crosshair value labels readable at different chart panel sizes by scaling the SVG label text from the rendered chart height.
+- Stabilized crosshair label sizing across chart sizes.
 
 ## 0.1.9 - 2026-09-01
 
 ### Fixed
 
-- Kept client-side chart tick rounding aligned with the server renderer at exact powers of ten.
-- Fixed wheel-circumference calibration so large but stable wheel/GPS mismatches are detected instead of being rejected as untrusted windows.
-- Added clearer Copilot language model errors for missing sign-in, extension authorization, blocked requests, and unavailable models.
+- Fixed chart tick rounding at exact powers of ten.
+- Fixed wheel calibration for large stable wheel/GPS mismatches.
+- Clarified Copilot model availability and permission errors.
