@@ -3,6 +3,7 @@ const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
 const { buildSummary } = require('./activity-summary');
 const { buildGpsRoute: buildGpsRouteFromModule, buildLineChart: buildLineChartFromModule } = require('./chart-model');
+const { mapSegmentsToDistanceRanges } = require('./chart-data');
 const {
   buildChartClientPayload: buildChartClientPayloadFromModule,
   buildOverlayMetrics: buildOverlayMetricsFromModule,
@@ -274,6 +275,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const speedOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'speed');
   const hrOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'heart_rate');
   const altitudeOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'altitude');
+  const chartSegments = mapSegmentsToDistanceRanges(segments, records);
   const chartClientPayloads = safeJson({
     [mapId + 'SpeedSvg']: buildChartClientPayloadFromModule(speedChart, 'km', 'km/h', speedOverlays),
     [mapId + 'HrSvg']: buildChartClientPayloadFromModule(hrChart, 'km', 'bpm', hrOverlays),
@@ -421,9 +423,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     </section>
     <section class="chart resizable" data-resize-target="${mapId}SpeedSvg" data-resize-key="fitviz_speed_height" data-min-height="200" data-max-height="1200">
       <h2>${escapeHtml(ui.speedVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
+      <label class="segmentBandControls"><input id="${mapId}SegmentBands" type="checkbox" checked> ${escapeHtml(ui.showTerrainBands)}</label>
       ${renderStatsRow(speedChart.stats, 'km/h')}${hasOverlay && speedChart.compStats ? renderStatsRow(speedChart.compStats, 'km/h', true) : ''}
       ${renderOverlayControls(mapId + 'SpeedSvg', speedOverlays)}
-      ${renderScaledLineChartSvg(speedChart, 'lineA', 'Distance (km)', 'Speed (km/h)', true, { svgId: mapId + 'SpeedSvg' })}
+      ${renderScaledLineChartSvg(speedChart, 'lineA', 'Distance (km)', 'Speed (km/h)', true, { svgId: mapId + 'SpeedSvg', segmentBands: chartSegments })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
@@ -432,7 +435,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       ${renderStatsRow(hrChart.stats, 'bpm')}
       ${renderHeartRateZones(hrZones)}
       ${renderOverlayControls(mapId + 'HrSvg', hrOverlays)}
-      ${renderScaledLineChartSvg(hrChart, 'lineB', 'Distance (km)', 'Heart rate (bpm)', true, { svgId: mapId + 'HrSvg', zoneThresholds: hrZones.enabled ? hrZones.thresholds : null })}
+      ${renderScaledLineChartSvg(hrChart, 'lineB', 'Distance (km)', 'Heart rate (bpm)', true, { svgId: mapId + 'HrSvg', zoneThresholds: hrZones.enabled ? hrZones.thresholds : null, segmentBands: chartSegments })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
@@ -440,7 +443,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <h2>${escapeHtml(ui.altitudeVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
       ${renderStatsRow(altitudeChart.stats, 'm')}${hasOverlay && altitudeChart.compStats ? renderStatsRow(altitudeChart.compStats, 'm', true) : ''}
       ${renderOverlayControls(mapId + 'AltSvg', altitudeOverlays)}
-      ${renderScaledLineChartSvg(altitudeChart, 'lineC', 'Distance (km)', 'Altitude (m)', true, { svgId: mapId + 'AltSvg' })}
+      ${renderScaledLineChartSvg(altitudeChart, 'lineC', 'Distance (km)', 'Altitude (m)', true, { svgId: mapId + 'AltSvg', segmentBands: chartSegments })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
@@ -1196,6 +1199,14 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       }
 
       svgIds.forEach(initChart);
+      var segmentBandToggle = document.getElementById('${mapId}SegmentBands');
+      if (segmentBandToggle) {
+        segmentBandToggle.addEventListener('change', function () {
+          document.querySelectorAll('.segmentBandGroup').forEach(function (group) {
+            group.style.display = segmentBandToggle.checked ? '' : 'none';
+          });
+        });
+      }
     }());
   </script>`;
 }
@@ -1258,6 +1269,11 @@ function sharedCss() {
     .routeStart { fill:var(--vscode-testing-iconPassed); } .routeEnd { fill:var(--vscode-testing-iconFailed); }
     .kmMarker { stroke:color-mix(in srgb,var(--ink) 30%,transparent); stroke-width:1; stroke-dasharray:2 5; }
     .kmLabel { fill:var(--muted); font-size:9px; }
+    .segmentBand { pointer-events:none; }
+    .segmentBandClimb { fill:#d35400; fill-opacity:0.13; } .segmentBandDescent { fill:#2980b9; fill-opacity:0.13; }
+    .segmentBandFlat { fill:#3d8b40; fill-opacity:0.11; } .segmentBandStopped { fill:#7f8c8d; fill-opacity:0.14; }
+    .segmentBandTechnical { fill:#c0392b; fill-opacity:0.14; }
+    .segmentBandControls { display:inline-flex; align-items:center; gap:4px; margin:0 0 6px; color:var(--muted); font-size:0.82rem; cursor:pointer; }
     .crosshair { stroke:color-mix(in srgb,var(--ink) 55%,transparent); stroke-width:1; pointer-events:none; }
     .crosshairDot { fill:var(--accent); stroke:var(--bg); stroke-width:1.5; pointer-events:none; }
     .crosshairLabel { font-size:11px; font-weight:700; fill:var(--ink); paint-order:stroke; stroke:var(--card); stroke-width:3px; stroke-linejoin:round; pointer-events:none; }

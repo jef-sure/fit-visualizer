@@ -16,7 +16,7 @@ const {
 } = require('../analysis');
 const { ensureDatabaseSchema } = require('../database-schema');
 const { padYAxisRange } = require('../chart-geometry');
-const { computeStats, extractXYPoints } = require('../chart-data');
+const { computeStats, extractXYPoints, mapSegmentsToDistanceRanges } = require('../chart-data');
 const { buildChartClientPayload, buildOverlayOptions } = require('../chart-overlays');
 const { buildSummary } = require('../activity-summary');
 const { buildLineChart } = require('../chart-model');
@@ -230,6 +230,32 @@ test('chart SVG renderer outputs ticks, markers, zones, and a crosshair capture 
   assert.match(svg, /class="lineAComp"/);
   assert.match(svg, /class="crosshairCapture"/);
   assert.equal(renderer.renderScaledLineChartSvg({ points: [] }, 'lineA', 'x', 'y', false), '<div class="muted">Not enough data for this chart.</div>');
+});
+
+test('chart segment bands use distance ranges and are rendered behind chart ticks', () => {
+  const renderer = createChartSvgRenderer({ buildDistanceMarkers: () => [], escapeHtml, formatTick: String, getHrZoneIndex: () => 0 });
+  const chart = {
+    points: [{ x: 0, y: 1 }, { x: 10, y: 2 }], pathPoints: [{ x: 20, y: 80 }, { x: 100, y: 30 }], pathData: '20,80 100,30',
+    xTicks: [{ px: 20, value: 0 }], yTicks: [{ py: 80, value: 1 }], xStep: 1, yStep: 1,
+    plotLeft: 20, plotRight: 100, plotTop: 10, plotBottom: 90, xMin: 0, xMax: 10, width: 120, height: 110,
+  };
+  const svg = renderer.renderScaledLineChartSvg(chart, 'lineA', 'Distance', 'Speed', false, {
+    segmentBands: [{ type: 'climb', startDistanceKm: 2, endDistanceKm: 5 }],
+  });
+  assert.match(svg, /class="segmentBandGroup"><rect class="segmentBand segmentBandClimb" x="36\.0"/);
+  assert.ok(svg.indexOf('segmentBandGroup') < svg.indexOf('class="xTicksGroup"'));
+});
+
+test('chart segment distance ranges interpolate elapsed boundaries and preserve provided distances', () => {
+  const ranges = mapSegmentsToDistanceRanges([
+    { type: 'climb', startElapsed: 5, endElapsed: 15 },
+    { type: 'flat', startElapsed: 1, endElapsed: 2, startDistanceKm: 7, endDistanceKm: 8 },
+  ], [
+    { elapsed_time: 0, distance: 0 }, { elapsed_time: 10, distance: 2 }, { elapsed_time: 20, distance: 5 },
+  ]);
+  assert.deepEqual(ranges.map(({ type, startDistanceKm, endDistanceKm }) => ({ type, startDistanceKm, endDistanceKm })), [
+    { type: 'climb', startDistanceKm: 1, endDistanceKm: 3.5 }, { type: 'flat', startDistanceKm: 7, endDistanceKm: 8 },
+  ]);
 });
 
 test('GPS SVG renderer outputs route endpoints and handles missing routes', () => {
