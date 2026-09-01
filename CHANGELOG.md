@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 - 2026-09-01
+
+### Fixed
+
+- Extended localized hover explanations to all core activity summary and comparison metrics.
+
 ## 0.4.0 - 2026-09-01
 
 ### Added

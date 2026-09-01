@@ -736,12 +736,16 @@ test('shared formatting utilities preserve display behavior', () => {
 test('activity glossary localizes visible metric descriptions from one source', () => {
   const translated = localizeGlossary((text) => text === GLOSSARY.trainingStressScore ? 'TSS: показатель тренировочной нагрузки.' : text);
   assert.equal(translated.trainingStressScore, 'TSS: показатель тренировочной нагрузки.');
+  assert.match(translated.averagePower, /Average power/);
+  assert.match(translated.maximumHeartRate, /Maximum heart rate/);
   assert.match(translated.normalizedPower, /Normalized Power/);
   assert.match(GLOSSARY.technical, /Technical/);
 
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /const glossary = localizeGlossary\(vscode\.l10n\.t\);/);
   assert.match(source, /class="term" title="\$\{escapeHtml\(description\)\}"/);
+  assert.match(source, /metric\('Avg Power \(W\)' \+ powerMetricSuffix, summary\.avgPower\.toFixed\(0\), 'averagePower', glossary\)/);
+  assert.match(source, /\['Max HR \(bpm\)', a\.maxHr\.toFixed\(0\), b\.maxHr\.toFixed\(0\), 'maximumHeartRate'\]/);
   assert.match(source, /metric\('TSS' \+ powerMetricSuffix,[\s\S]*?'trainingStressScore', glossary\)/);
 });
 
