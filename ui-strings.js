@@ -48,6 +48,8 @@ const UI_STRINGS = {
   segments: 'Segments',
   time: 'Time',
   power: 'Power',
+  virtualPower: 'vPower',
+  lap: 'Lap',
   climb: 'Climb',
   descent: 'Descent',
   flat: 'Flat',

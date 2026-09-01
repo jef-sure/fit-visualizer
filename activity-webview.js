@@ -219,9 +219,9 @@ function renderActivityTable(segments, laps, ui) {
     time: formatDuration(segment.durationS),
     distance: rangeDistance(segment),
     heartRate: displayNumber(segment.avgHr, ' bpm', 0),
-    power: displayNumber(segment.avgPower, ' W', 0),
+    effort: displaySegmentEffort(segment, ui),
     grade: displayNumber(segment.avgGrade, '%', 1),
-    elevation: Number(segment.elevGainM) > 0 ? displayNumber(segment.elevGainM, ' m', 0, '+') : '',
+    elevation: segment.type === 'climb' && Number(segment.elevGainM) > 0 ? displayNumber(segment.elevGainM, ' m', 0, '+') : '',
   }));
   const lapRows = (Array.isArray(laps) ? laps : []).map((lap, index) => ({
     label: String(index + 1),
@@ -232,15 +232,23 @@ function renderActivityTable(segments, laps, ui) {
     grade: displayNumber(lap.avg_grade, '%', 1),
     elevation: Number(lap.total_ascent) > 0 ? displayNumber(lap.total_ascent, ' m', 0, '+') : '',
   }));
-  const columns = [['label', ui.segment], ['time', ui.time], ['distance', ui.distance], ['heartRate', ui.heartRate], ['power', ui.power], ['grade', ui.grade], ['elevation', ui.elevation]];
-  const renderRows = (rows, name, hidden) => {
+  const segmentColumns = [['label', ui.segment], ['time', ui.time], ['distance', ui.distance], ['heartRate', ui.heartRate], ['effort', ui.effort], ['grade', ui.grade], ['elevation', ui.elevation]];
+  const lapColumns = [['label', ui.lap], ['time', ui.time], ['distance', ui.distance], ['heartRate', ui.heartRate], ['power', ui.power], ['grade', ui.grade], ['elevation', ui.elevation]];
+  const renderRows = (rows, name, hidden, columns) => {
     const visible = columns.filter(([key]) => rows.some((row) => row[key]));
     return `<div class="activityTableWrap" data-activity-table="${name}"${hidden ? ' hidden' : ''}><table class="activityTable"><thead><tr>${visible.map(([, heading]) => `<th>${escapeHtml(heading)}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${visible.map(([key]) => `<td>${escapeHtml(row[key] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   };
 
   if (!segmentRows.length) return '';
   const tabs = lapRows.length ? `<div class="activityTableTabs"><button type="button" data-activity-table-tab="segments" aria-pressed="true">${escapeHtml(ui.segments)}</button><button type="button" data-activity-table-tab="laps" aria-pressed="false">${escapeHtml(ui.laps)}</button></div>` : '';
-  return `<section class="chart"><h2>${escapeHtml(lapRows.length ? ui.segments : ui.segment)}</h2>${tabs}${renderRows(segmentRows, 'segments', false)}${lapRows.length ? renderRows(lapRows, 'laps', true) : ''}</section>`;
+  return `<section class="chart"><h2>${escapeHtml(lapRows.length ? ui.segments : ui.segment)}</h2>${tabs}${renderRows(segmentRows, 'segments', false, segmentColumns)}${lapRows.length ? renderRows(lapRows, 'laps', true, lapColumns) : ''}</section>`;
+}
+
+function displaySegmentEffort(segment, ui) {
+  if (segment.type === 'descent' || segment.type === 'stopped' || !Number.isFinite(Number(segment.avgPower))) return '';
+  if (segment.effortBasis === 'power') return `${ui.power} ${Math.round(Number(segment.avgPower))} W`;
+  if (segment.effortBasis === 'vpower') return `${ui.virtualPower} ${Math.round(Number(segment.avgPower))} W`;
+  return '';
 }
 
 function positiveNumberOrBlank(value) {

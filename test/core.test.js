@@ -932,10 +932,15 @@ test('activity webview renderer executes its complete server-side render path', 
       sessions: [{ total_distance: 0.5, total_timer_time: 60 }],
       laps: [],
     }, {}, 'nonce', false, null, {}, { text: 'Older analysis', version: 1 }, [], null,
-    localizeUi(), localizeGlossary(), false, 'English', [], 8
+    localizeUi(), localizeGlossary(), false, 'English', [{
+      index: 0, type: 'descent', effortBasis: 'hr', startElapsed: 0, endElapsed: 60,
+      durationS: 60, startDistanceKm: 0, endDistanceKm: 0.5, avgHr: 130, avgPower: 86, avgGrade: -4.4, elevGainM: 2,
+    }], 8
   );
   assert.match(html, /fitMapSpeedSvg/);
   assert.match(html, /Interactive Map/);
+  assert.doesNotMatch(html, /86 W/);
+  assert.doesNotMatch(html, /\+2 m/);
 });
 
 test('localized webview UI uses one complete string catalog', () => {
