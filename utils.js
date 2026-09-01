@@ -90,7 +90,7 @@ function calculateNormalizedPower(records) {
 
   // Coggan NP: 30s rolling average first, then 4th-power mean and 4th root.
   const rolling = trailingTimeMovingAverage(samples, 30);
-  const meanFourthPower = average(rolling.map((value) => value ** 4));
+  const meanFourthPower = weightedMean(rolling.map((value) => value ** 4), sampleDurations(samples));
   return meanFourthPower > 0 ? meanFourthPower ** 0.25 : null;
 }
 
@@ -1312,6 +1312,8 @@ function normalizeRecordSpeeds(records) {
   });
 }
 
+const STOPPED_SPEED_KMH = 1.8;
+
 function addEstimatedPowerWhenMissing(records, input = {}) {
   if (!Array.isArray(records) || records.some((record) => {
     const power = asNumber(record?.power);
@@ -1327,10 +1329,19 @@ function addEstimatedPowerWhenMissing(records, input = {}) {
 
   const estimatedPowerByElapsed = new Map(estimates.map((estimate) => [estimate.elapsed_time, estimate.power]));
   return {
-    records: records.map((record) => ({
-      ...record,
-      power: estimatedPowerByElapsed.get(asNumber(record?.elapsed_time)) ?? record?.power,
-    })),
+    records: records.map((record) => {
+      const estimated = estimatedPowerByElapsed.get(asNumber(record?.elapsed_time));
+      if (estimated !== undefined) {
+        return { ...record, power: estimated };
+      }
+      // Standing still is a measurement of zero work, not a hole in the data. Leaving it
+      // undefined would drop the stop from NP/TSS entirely and inflate them.
+      const speed = asNumber(record?.speed);
+      if (Number.isFinite(speed) && speed < STOPPED_SPEED_KMH) {
+        return { ...record, power: 0 };
+      }
+      return record;
+    }),
     source: 'estimated',
   };
 }
@@ -1434,7 +1445,7 @@ function calculateXPower(records) {
     fourthPowers.push(filtered ** 4);
   }
 
-  const meanFourthPower = average(fourthPowers);
+  const meanFourthPower = weightedMean(fourthPowers, sampleDurations(samples));
   return meanFourthPower > 0 ? meanFourthPower ** 0.25 : null;
 }
 
@@ -1531,20 +1542,50 @@ function calculateIntervalsDecoupling(records, input) {
   return ((secondAvg - firstAvg) / firstAvg) * 100;
 }
 
+// Seconds each sample stands for. Capped so that the single sample after a recording gap
+// does not outweigh the whole ride; uniform 1 Hz data comes out as all-ones.
+function sampleDurations(samples, maxGapSeconds = 5) {
+  return samples.map((sample, index) => {
+    if (index === 0) {
+      return 1;
+    }
+    const dt = sample.t - samples[index - 1].t;
+    return Number.isFinite(dt) && dt > 0 ? Math.min(dt, maxGapSeconds) : 1;
+  });
+}
+
+function weightedMean(values, weights) {
+  let weighted = 0;
+  let total = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    const weight = weights[index];
+    if (!Number.isFinite(value) || !(weight > 0)) {
+      continue;
+    }
+    weighted += value * weight;
+    total += weight;
+  }
+  return total > 0 ? weighted / total : Number.NaN;
+}
+
 function trailingTimeMovingAverage(samples, windowSeconds) {
   const result = new Array(samples.length).fill(0);
+  const durations = sampleDurations(samples);
   let start = 0;
-  let rollingSum = 0;
+  let weightedSum = 0;
+  let weightSum = 0;
 
   for (let end = 0; end < samples.length; end += 1) {
-    rollingSum += samples[end].v;
+    weightedSum += samples[end].v * durations[end];
+    weightSum += durations[end];
     const minTime = samples[end].t - windowSeconds;
     while (start < end && samples[start].t <= minTime) {
-      rollingSum -= samples[start].v;
+      weightedSum -= samples[start].v * durations[start];
+      weightSum -= durations[start];
       start += 1;
     }
-    const size = end - start + 1;
-    result[end] = size > 0 ? rollingSum / size : 0;
+    result[end] = weightSum > 0 ? weightedSum / weightSum : 0;
   }
 
   return result;

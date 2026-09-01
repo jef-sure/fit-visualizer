@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.3 - 2026-09-01
+
+### Fixed
+
+- When power is estimated from motion, time spent stopped is now recorded as zero watts instead of being left blank. Blank samples were skipped by Normalized Power, xPower and average power, which inflated them - and Intensity Factor and TSS with them - on rides with many stops.
+- Normalized Power, xPower and the rolling averages behind decoupling now weight each sample by the time it represents rather than counting samples equally, so sparsely recorded stretches no longer count for less than densely recorded ones. Evenly recorded rides are unaffected.
+
 ## 0.12.2 - 2026-09-01
 
 ### Fixed
