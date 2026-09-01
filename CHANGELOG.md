@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 - 2026-09-01
+
+### Changed
+
+- Extracted reusable chart geometry and tick helpers from the extension host module.
+
 ## 0.5.0 - 2026-09-01
 
 ### Added
