@@ -1216,6 +1216,58 @@ function segmentLineBudget(durationSeconds, options = {}) {
   return clamp(Math.round(hours * perHour), minLines, hardCeiling);
 }
 
+// A short stop (traffic light, gate) that splits one continuous stretch into two identical-type
+// segments is noise for cross-activity comparison; merge it back into a single logical segment.
+function collapseShortStops(segments, options = {}) {
+  const list = Array.isArray(segments) ? segments : [];
+  if (list.length < 3) {
+    return list.slice();
+  }
+
+  const maxPauseSeconds = optionNumber(options, 'notableStopSeconds', 300);
+  const weightedAverage = (a, b, weightA, weightB) => {
+    if (a == null && b == null) return null;
+    const totalWeight = (weightA || 0) + (weightB || 0);
+    if (!totalWeight) return a ?? b;
+    return roundTo(((a ?? 0) * weightA + (b ?? 0) * weightB) / totalWeight, 1);
+  };
+  const summedOrNull = (a, b) => (a == null && b == null ? null : roundTo((a || 0) + (b || 0), 1));
+
+  const result = [];
+  let index = 0;
+  while (index < list.length) {
+    const before = list[index];
+    const pause = list[index + 1];
+    const after = list[index + 2];
+    const canMerge = before && pause && after
+      && before.type !== 'stopped' && pause.type === 'stopped' && after.type === before.type
+      && pause.durationS < maxPauseSeconds;
+
+    if (canMerge) {
+      const weightBefore = before.durationS || 0;
+      const weightAfter = after.durationS || 0;
+      result.push({
+        ...before,
+        endIndex: after.endIndex,
+        endElapsed: after.endElapsed,
+        durationS: before.durationS + pause.durationS + after.durationS,
+        distanceKm: summedOrNull(before.distanceKm, after.distanceKm),
+        elevGainM: summedOrNull(before.elevGainM, after.elevGainM),
+        avgGrade: weightedAverage(before.avgGrade, after.avgGrade, weightBefore, weightAfter),
+        avgSpeedKmh: weightedAverage(before.avgSpeedKmh, after.avgSpeedKmh, weightBefore, weightAfter),
+        avgHr: weightedAverage(before.avgHr, after.avgHr, weightBefore, weightAfter),
+        avgPower: weightedAverage(before.avgPower, after.avgPower, weightBefore, weightAfter),
+        pausedS: pause.durationS,
+      });
+      index += 3;
+    } else {
+      result.push(before);
+      index += 1;
+    }
+  }
+  return result;
+}
+
 function normalizeRecordSpeeds(records) {
   if (!Array.isArray(records) || !records.length) {
     return [];
@@ -1622,6 +1674,7 @@ module.exports = {
   calculateNormalizedPower,
   bottomUpSegment,
   buildActivitySegments,
+  collapseShortStops,
   computeGpsDerivedSpeed,
   computeGrade,
   detectStops,

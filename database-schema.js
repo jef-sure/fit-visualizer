@@ -123,6 +123,18 @@ function ensureDatabaseSchema(db) {
     );
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS activity_comparisons (
+      id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+      activity_id          INTEGER NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+      compared_activity_id INTEGER NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+      comparison_text      TEXT NOT NULL,
+      created_at           TEXT,
+      updated_at           TEXT,
+      UNIQUE(activity_id, compared_activity_id)
+    );
+  `);
+
   addColumnIfMissing(db, 'activities', 'manual_avg_hr', 'REAL');
   addColumnIfMissing(db, 'activities', 'manual_max_hr', 'REAL');
   addColumnIfMissing(db, 'activities', 'rider_mass_kg', 'REAL');

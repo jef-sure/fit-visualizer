@@ -147,6 +147,13 @@ Analysis and follow-up responses default to the language of the VS Code interfac
 
 One-off activity analysis (not the follow-up chat) can prefer a cheaper/smaller language model instead of whichever model the Copilot picker currently uses — enable `fitVisualizer.preferCheapAnalysisModel`. It tries an `Auto` model family first, then a model-name heuristic (`fitVisualizer.cheapModelMarkers`, e.g. `haiku`, `mini`, `flash`), then falls back to the default model if neither is available. Neither path is officially guaranteed by the VS Code language-model API.
 
+### Comparing Two Activities with AI
+
+When a comparison activity is selected in the toolbar, a **Compare with AI** button appears below the regular analysis. It asks Copilot to compare the two workouts segment by segment — the primary activity ("This Workout") against the selected one ("Another Compared Activity") — without assuming their segments line up by position, since a stop can split one activity's segment into two while the other stays continuous.
+
+Comparisons accumulate per directed pair: comparing A against B and B against A are stored separately, and re-selecting a previously compared pair shows the saved result instead of asking Copilot again. Use **Remove Comparison** to delete just that pair and allow a fresh comparison.
+
+
 When no packaged UI translation exists for the VS Code interface language, FIT Visualizer offers an explicit action to generate one. It sends only the fixed UI and glossary string catalog to the selected language-model provider, never activity, location, health, or analysis data. The generated bundle is validated and saved locally in VS Code extension storage.
 
 ## Heart-Rate Zones

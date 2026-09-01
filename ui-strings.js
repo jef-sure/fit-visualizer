@@ -94,6 +94,12 @@ const UI_STRINGS = {
   generate: 'Generate',
   translationGenerating: 'Generating translations...',
   translationGenerated: 'Translations for {0} were generated and saved locally.',
+  compareWithAI: 'Compare with AI',
+  compareAgain: 'Compare Again',
+  comparing: 'Comparing...',
+  removeComparison: 'Remove Comparison',
+  removingComparison: 'Removing...',
+  clickCompare: 'Click Compare with AI to compare these two activities.',
 };
 
 function localizeUi(localize) {

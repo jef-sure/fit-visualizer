@@ -11,6 +11,7 @@ const {
   formatFieldsSkippingEmpty,
   generateAnalysisPrompt,
   generateAnalysisChatPrompt,
+  generateComparisonPrompt,
   requestCopilotAnalysis,
   responseLanguageInstruction,
   summarizePromptBlocks,
@@ -66,6 +67,7 @@ const {
   calculateNormalizedPower,
   calculateTrainingStressScore,
   calculateXPower,
+  collapseShortStops,
   computeGpsDerivedSpeed,
   computeGrade,
   deriveSpeedsFromDistance,
@@ -1421,7 +1423,7 @@ test('database schema creates only extension-owned tables', async () => {
     const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")[0]
       .values
       .flat();
-    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'athlete_profile', 'heart_rate_profiles', 'records', 'sqlite_sequence', 'wheel_calibration_samples']);
+    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'activity_comparisons', 'athlete_profile', 'heart_rate_profiles', 'records', 'sqlite_sequence', 'wheel_calibration_samples']);
   } finally {
     db.close();
   }
@@ -1863,6 +1865,34 @@ test('segment lines include distance next to speed, and for stops when known', (
   assert.match(context.text, /stopped, 0\.1 km/);
 });
 
+test('collapseShortStops merges a same-type segment interrupted by a short stop', () => {
+  const segments = [
+    { index: 0, type: 'flat', effortBasis: 'hr', startElapsed: 0, endElapsed: 300, durationS: 300, avgGrade: 0.2, avgHr: 140, avgSpeedKmh: 25, distanceKm: 2.0, elevGainM: 5 },
+    { index: 1, type: 'stopped', effortBasis: 'none', startElapsed: 300, endElapsed: 330, durationS: 30 },
+    { index: 2, type: 'flat', effortBasis: 'hr', startElapsed: 330, endElapsed: 630, durationS: 300, avgGrade: 0.2, avgHr: 150, avgSpeedKmh: 24, distanceKm: 2.1, elevGainM: 4 },
+    { index: 3, type: 'climb', effortBasis: 'vpower', startElapsed: 630, endElapsed: 900, durationS: 270, avgGrade: 5, avgPower: 210 },
+  ];
+  const collapsed = collapseShortStops(segments);
+  assert.equal(collapsed.length, 2, 'the two flat segments merge into one, the climb stays separate');
+  assert.equal(collapsed[0].type, 'flat');
+  assert.equal(collapsed[0].durationS, 630);
+  assert.equal(collapsed[0].pausedS, 30);
+  assert.equal(collapsed[0].distanceKm, 4.1);
+  assert.equal(collapsed[0].avgHr, 145);
+  assert.equal(collapsed[1].type, 'climb');
+
+  // A stop long enough to matter on its own is left as a real interruption, not merged away.
+  const withLongStop = [
+    segments[0],
+    { index: 1, type: 'stopped', effortBasis: 'none', startElapsed: 300, endElapsed: 900, durationS: 600 },
+    segments[2],
+  ];
+  assert.equal(collapseShortStops(withLongStop).length, 3);
+
+  const text = buildSegmentContext(collapsed).text;
+  assert.match(text, /interrupted by a 0:30 stop/);
+});
+
 test('segment line budget scales with duration and never truncates', () => {
   assert.equal(segmentLineBudget(0), 10);
   assert.equal(segmentLineBudget(3600), 10);
@@ -1976,3 +2006,84 @@ test('recent-history lookup reads earlier activities and falls back to the last 
 async function* asyncChunks(chunks) {
   yield* chunks;
 }
+
+test('comparison prompt is directed and instructs against index-based segment alignment', () => {
+  const fitData = {
+    sessions: [{ total_distance_km: 20, start_time: '2026-08-01T10:00:00.000Z' }],
+    records: [],
+    segments: [{ index: 0, type: 'climb', effortBasis: 'vpower', startElapsed: 0, endElapsed: 300, durationS: 300, avgGrade: 6, avgPower: 210 }],
+  };
+  const comparedFitData = {
+    sessions: [{ total_distance_km: 22, start_time: '2026-07-20T10:00:00.000Z' }],
+    records: [],
+    segments: [{ index: 0, type: 'flat', effortBasis: 'hr', startElapsed: 0, endElapsed: 400, durationS: 400, avgGrade: 0.5, avgHr: 140 }],
+  };
+
+  const prompt = generateComparisonPrompt(fitData, comparedFitData);
+
+  assert.match(prompt, /\*\*This Workout:\*\*/);
+  assert.match(prompt, /\*\*Another Compared Activity:\*\*/);
+  assert.ok(prompt.indexOf('**This Workout:**') < prompt.indexOf('**Another Compared Activity:**'));
+  assert.match(prompt, /directed comparison/);
+  assert.match(prompt, /Do not assume segments correspond by their list position or index/);
+  assert.match(prompt, /climb, avg grade 6%, vpower ~210 W/);
+  assert.match(prompt, /flat, avg grade 0\.5%, avg HR 140/);
+});
+
+test('activity_comparisons stores directed pairs independently and upserts by pair', async () => {
+  const SQL = await initSqlJs({
+    locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm'),
+  });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    db.run(`INSERT INTO activities (id, file_path) VALUES (1, 'a.fit'), (2, 'b.fit')`);
+    const upsert = (activityId, comparedId, text) => db.run(`
+      INSERT INTO activity_comparisons (activity_id, compared_activity_id, comparison_text, created_at, updated_at)
+      VALUES (?, ?, ?, '2026-01-01', '2026-01-01')
+      ON CONFLICT(activity_id, compared_activity_id) DO UPDATE SET
+        comparison_text = excluded.comparison_text,
+        updated_at = excluded.updated_at
+    `, [activityId, comparedId, text]);
+
+    upsert(1, 2, 'A vs B v1');
+    upsert(2, 1, 'B vs A v1');
+    upsert(1, 2, 'A vs B v2');
+
+    const rows = db.exec('SELECT activity_id, compared_activity_id, comparison_text FROM activity_comparisons ORDER BY activity_id')[0].values;
+    assert.deepEqual(rows, [[1, 2, 'A vs B v2'], [2, 1, 'B vs A v1']]);
+  } finally {
+    db.close();
+  }
+});
+
+test('comparison feature is wired: DB functions, message handlers and cheap-model exclusion', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /async function getActivityComparisonFromDb\(/);
+  assert.match(source, /async function storeActivityComparisonInDb\(/);
+  assert.match(source, /async function removeActivityComparisonFromDb\(/);
+  assert.match(source, /async function generateActivityComparison\(/);
+  assert.match(source, /return enqueueLlmTask\(\(\) => runActivityComparison\(/);
+  assert.match(source, /msg\.type === 'compareActivitiesAI'/);
+  assert.match(source, /msg\.type === 'removeComparison'/);
+  assert.match(source, /type: 'comparisonResult'/);
+  assert.match(source, /type: 'comparisonRemoved'/);
+
+  // The comparison call site should not opt into the cheap-model heuristic meant for one-off analysis.
+  const comparisonCallIndex = source.indexOf("kind: 'comparison',");
+  const comparisonCallStart = source.lastIndexOf('requestCopilotAnalysis(vscode, prompt, {', comparisonCallIndex);
+  const comparisonCallSource = source.slice(comparisonCallStart, comparisonCallIndex);
+  assert.doesNotMatch(comparisonCallSource, /preferCheapModel/);
+});
+
+test('comparison UI renders only alongside a selected comparison activity and wires Compare/Remove buttons', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  assert.match(source, /\$\{hasOverlay \? `/);
+  assert.match(source, /id="compareBtn"/);
+  assert.match(source, /id="removeComparisonBtn"/);
+  assert.match(source, /type: 'compareActivitiesAI'/);
+  assert.match(source, /type: 'removeComparison'/);
+  assert.match(source, /msg\.type === 'comparisonResult'/);
+  assert.match(source, /msg\.type === 'comparisonRemoved'/);
+});
+

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.0 - 2026-09-01
+
+### Added
+
+- Added cumulative, directed AI comparison between two selected activities: a "Compare with AI" button next to the existing comparison dropdown asks Copilot to compare the primary workout against the chosen one, segment by segment, without assuming segments align by list position. Comparisons accumulate per directed pair (A-vs-B and B-vs-A are stored separately) and can be individually removed and recomputed.
+- Segments interrupted by a short stop (e.g. a traffic light) are merged into one logical segment for the comparison prompt, noting the pause duration, instead of being read as two unrelated segments.
+
 ## 0.11.0 - 2026-09-01
 
 ### Added
