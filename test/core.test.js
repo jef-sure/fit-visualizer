@@ -190,10 +190,11 @@ test('map can color route segments from the existing activity segmentation', () 
   assert.match(extensionSource, /function buildDisplaySegments\(fitData, athleteProfile, heartRateConfig\)/);
   assert.match(modelSource, /elapsedTime: point\.elapsed_time/);
   assert.match(webviewSource, /const activitySegments = \$\{segmentPayload\};/);
-  assert.match(webviewSource, /<option value="segment">\$\{escapeHtml\(ui\.segment\)\}<\/option>/);
-  assert.match(webviewSource, /segmentColors = \{ climb:/);
-  assert.match(webviewSource, /matchedSegment\?\.technical \? 'technical' : matchedSegment\?\.type/);
-  assert.match(webviewSource, /SegmentLegend/);
+  assert.match(webviewSource, /<option value="segment" selected>\$\{escapeHtml\(ui\.segment\)\}<\/option>/);
+  assert.match(webviewSource, /function segmentColor\(index\)/);
+  assert.match(webviewSource, /displayColor: presentationByIndex\.get\(segment\.index\)\?\.color/);
+  assert.match(webviewSource, /matchedSegment\?\.displayColor/);
+  assert.match(webviewSource, /seenSegmentIndexes/);
 });
 
 test('rendered map initializer draws segment route polylines', () => {
@@ -221,6 +222,7 @@ test('rendered map initializer draws segment route polylines', () => {
   elements.set('fitMapSegmentLegend', { style: {}, innerHTML: '' });
   elements.set('fitMapRouteSection', { style: {} });
   const polylines = [];
+  const tooltips = [];
   const map = {
     removeLayer() {},
     fitBounds() {},
@@ -239,7 +241,7 @@ test('rendered map initializer draws segment route polylines', () => {
     latLngBounds() { return { pad() { return {}; } }; },
     circleMarker() { return { addTo() {} }; },
     polyline(points) {
-      const line = { points, addTo() { polylines.push(line); return line; }, bindTooltip() {} };
+      const line = { points, addTo() { polylines.push(line); return line; }, bindTooltip(content) { tooltips.push(content); } };
       return line;
     },
     TileLayer: function TileLayer() {},
@@ -257,6 +259,7 @@ test('rendered map initializer draws segment route polylines', () => {
   require('node:vm').runInNewContext(mapIife, context);
   assert.equal(polylines.length, records.length - 1);
   assert.equal(polylines.every((line) => line.points.length === 2), true);
+  assert.equal(tooltips.length, records.length - 1);
 });
 
 test('chart and map segment hover reuse grouped AI presentation details', () => {
@@ -266,6 +269,7 @@ test('chart and map segment hover reuse grouped AI presentation details', () => 
   assert.match(webviewSource, /displayTime: presentationByIndex\.get\(segment\.index\)\?\.time/);
   assert.match(webviewSource, /if \(segment\.displayDetails\)/);
   assert.match(svgSource, /y="\$\{chart\.plotBottom - 9\}"[\s\S]*?height="9"/);
+  assert.match(svgSource, /style="fill:\$\{escapeHtml\(segment\.displayColor\)\}"/);
 });
 
 test('segment map and chart hover tooltips reuse existing details without unavailable placeholders', () => {
