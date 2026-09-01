@@ -180,8 +180,9 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
       : `No language models are available for vendor "${vendor}".`);
   }
 
+  const chosenModel = await selectPreferredModel(vscode, vendor, models, options);
   // Copilot may hand out different models over time, so the log has to record which one answered.
-  const modelId = models[0].id || models[0].family || 'unknown';
+  const modelId = chosenModel.id || chosenModel.family || 'unknown';
   const report = async (result) => {
     try {
       await options.onCompleted?.({ modelId, prompt, ...result });
@@ -192,7 +193,7 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
-      const response = await models[0].sendRequest([
+      const response = await chosenModel.sendRequest([
         vscode.LanguageModelChatMessage.User(prompt),
       ]);
       let analysis = '';
@@ -226,6 +227,37 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
 
   throw new Error('Copilot analysis failed unexpectedly.');
 }
+
+// Bare model names for widely known budget/small tiers; not tied to any one vendor's naming scheme.
+const DEFAULT_CHEAP_MODEL_MARKERS = ['haiku', 'mini', 'flash', 'nano', 'lite', 'small'];
+
+// Undocumented but cheap when it works: an explicit family:'auto' request, a name-marker heuristic, then models[0].
+async function selectPreferredModel(vscode, vendor, models, options) {
+  if (!options.preferCheapModel) {
+    return models[0];
+  }
+
+  try {
+    const autoModels = await vscode.lm.selectChatModels({ vendor, family: 'auto' });
+    if (Array.isArray(autoModels) && autoModels.length) {
+      return autoModels[0];
+    }
+  } catch {
+    // family:'auto' is not a documented selector; fall through to the name heuristic below.
+  }
+
+  const markers = (Array.isArray(options.cheapModelMarkers) && options.cheapModelMarkers.length
+    ? options.cheapModelMarkers
+    : DEFAULT_CHEAP_MODEL_MARKERS)
+    .map((marker) => String(marker).trim().toLowerCase())
+    .filter(Boolean);
+  const match = models.find((model) => {
+    const name = `${model.id || ''} ${model.family || ''} ${model.name || ''}`.toLowerCase();
+    return markers.some((marker) => name.includes(marker));
+  });
+  return match || models[0];
+}
+
 
 function describeLanguageModelError(vscode, error) {
   const ctor = vscode?.LanguageModelError;

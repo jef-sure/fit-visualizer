@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "description": "Visualize cycling and running FIT files and get AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
@@ -101,6 +101,17 @@
           "type": "string",
           "default": "copilot",
           "description": "VS Code language-model vendor ID used for activity analysis and chat."
+        },
+        "fitVisualizer.preferCheapAnalysisModel": {
+          "type": "boolean",
+          "default": false,
+          "description": "For one-off activity analysis (not chat), prefer a cheaper/smaller language model over whichever model the Copilot picker currently uses. Tries an Auto model family first, then a model-name heuristic, then falls back to the default model. Neither path is officially guaranteed by the VS Code API."
+        },
+        "fitVisualizer.cheapModelMarkers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["haiku", "mini", "flash", "nano", "lite", "small"],
+          "description": "Model name substrings (case-insensitive) used to pick a cheaper model when fitVisualizer.preferCheapAnalysisModel is enabled and no Auto model family is available."
         },
         "fitVisualizer.segmentation.gradeThresholdPct": {
           "type": "number",
