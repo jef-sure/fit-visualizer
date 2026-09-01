@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.4 - 2026-09-01
+
+### Fixed
+
+- Comparison text was rendered at the default small font size, making it look like a footnote next to the main analysis text. It now matches the font size and line height of the AI Analysis text.
+
 ## 0.13.3 - 2026-09-01
 
 ### Changed
