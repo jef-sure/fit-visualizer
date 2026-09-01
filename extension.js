@@ -1966,6 +1966,14 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         if (yGroup) yGroup.innerHTML = yHtml;
       }
 
+      function updateCrosshairLabelScale(svg, payload, rect) {
+        var label = svg.querySelector('.crosshairLabel');
+        if (!label || !rect || !(rect.height > 0) || !(payload.height > 0)) return;
+        var yScale = rect.height / payload.height;
+        label.style.fontSize = (13 / yScale).toFixed(2) + 'px';
+        label.style.strokeWidth = (3 / yScale).toFixed(2) + 'px';
+      }
+
       // Nearest value in a monotonic array (px positions for the hovered chart, data x for the rest).
       function nearestIndex(sortedValues, target) {
         var lo = 0, hi = sortedValues.length - 1;
@@ -2130,6 +2138,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             var plotWidthPx = (payload.plotRight - payload.plotLeft) * (rect.width / payload.width);
             var plotHeightPx = (payload.plotBottom - payload.plotTop) * (rect.height / payload.height);
             redrawTicks(svg, payload, clampCount(plotWidthPx / 90, 3, 15), clampCount(plotHeightPx / 50, 3, 15));
+            updateCrosshairLabelScale(svg, payload, rect);
           });
           observer.observe(svg);
         }

@@ -225,6 +225,15 @@ test('crosshair shows a text label with the actual X/Y values at the hovered poi
   assert.match(source, /if \(label\) label\.style\.display = 'none';/);
 });
 
+test('crosshair label font size adapts to the rendered SVG scale', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /function updateCrosshairLabelScale\(svg, payload, rect\)/);
+  assert.match(source, /var yScale = rect\.height \/ payload\.height;/);
+  assert.match(source, /label\.style\.fontSize = \(13 \/ yScale\)\.toFixed\(2\) \+ 'px';/);
+  assert.match(source, /label\.style\.strokeWidth = \(3 \/ yScale\)\.toFixed\(2\) \+ 'px';/);
+  assert.match(source, /updateCrosshairLabelScale\(svg, payload, rect\);/);
+});
+
 test('metric overlays reuse computeGrade once, exclude the chart\'s own metric and cap at two active', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /function buildOverlayMetrics\(records, maxPoints\)/);
