@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Refactored chart geometry, chart data, chart models, activity summaries, and overlays into focused modules.
+- Refactored chart geometry, data, models, overlays, and SVG helpers into focused modules.
 
 ## 0.5.0 - 2026-09-01
 
