@@ -38,13 +38,13 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 - Open FIT files in an interactive visual editor
 - Auto-index activities into local SQLite storage
 - Compare two activities in one view
-- Speed, heart rate, and altitude charts by distance, with adaptive axis labels
+- Speed, heart rate, and altitude charts by distance
 - Overlay any two extra metrics (grade, altitude, speed, heart rate) on top of a chart
 - Shared crosshair across all three charts: hover one, see the exact value at that point on all of them
 - Hover over activity and training-load terms, including power, speed, heart rate, elevation, TSS, Normalized Power, xPower, and TRIMP, for localized explanations
 - Activity controls, forms, map actions, and analysis status messages follow the VS Code interface language
 - For an interface language without a packaged translation, generate a local UI translation bundle on demand with the selected Copilot model
-- Render GPS track on an interactive map, with Ctrl/Cmd + scroll to zoom so scrolling the page doesn't fight the map
+- Render GPS track on an interactive map
 - Color the GPS route by speed, heart rate, or detected terrain segments, with a legend for climbs, descents, flats, stops, and technical descents
 - Show matching low-opacity terrain segment bands behind all distance charts, controlled by one shared toggle
 - Hover terrain-colored map sections or chart bands for the available segment details, including duration, distance, grade, speed, heart rate, effort, elevation, and technical status
@@ -53,6 +53,7 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 - Wheel-circumference calibration hint — compares your wheel sensor's distance against GPS on trustworthy straight stretches and suggests a correction when there's enough evidence, silent otherwise
 - Save dated heart-rate zone profiles
 - Generate AI analysis of the current ride in the context of comparable past rides, recent training load, and personal records
+- Compare two activities with AI, including segment-level comparison and persistent results for each comparison direction
 - Re-analyze activities in bulk after an update changes how analysis works, instead of doing it one by one
 
 ![FIT Activity Summary](images/1.png)
@@ -116,7 +117,7 @@ This segmentation also feeds the AI analysis, so it can reason about specific in
 
 Hover a terrain-colored route section or its matching chart band to inspect the characteristics recorded for that segment. Fields that are not available for a segment are left out.
 
-## Laps And Segments
+## Segments And Laps
 
 Below the charts, FIT Visualizer lists detected segments. When a FIT file contains device-recorded laps, a compact switch also exposes those original lap summaries. Each view shows only columns supported by its data, such as time, distance, heart rate, power, grade, and elevation.
 
@@ -141,7 +142,7 @@ Derived workload metrics that cannot be calculated from the available data are o
 
 Prompts and responses are logged locally (see **Settings**) so you can review exactly what was sent and received.
 
-By default, analysis uses the VS Code `copilot` language-model vendor. Configure a different registered provider with `fitVisualizer.lmVendor`.
+By default, analysis uses the VS Code copilot language-model vendor. The vendor can be changed with fitVisualizer.lmVendor when another compatible provider is registered in VS Code.
 
 Analysis and follow-up responses default to the language of the VS Code interface. A question written in another language takes precedence for that reply.
 
