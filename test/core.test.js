@@ -967,6 +967,7 @@ test('activity webview renderer executes its complete server-side render path', 
   assert.match(html, /Interactive Map/);
   assert.doesNotMatch(html, /86 W/);
   assert.doesNotMatch(html, /\+2 m/);
+  assert.doesNotMatch(html, /0\.00 km/);
 });
 
 test('localized webview UI uses one complete string catalog', () => {

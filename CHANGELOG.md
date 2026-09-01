@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.8 - 2026-09-01
+
+### Fixed
+
+- Omitted missing distance and grade values from stopped segments instead of displaying false zeros.
+
 ## 0.9.7 - 2026-09-01
 
 ### Fixed
