@@ -262,11 +262,13 @@ function formatDuration(value) {
 }
 
 function rangeDistance(segment) {
+  if (segment?.type === 'stopped') return '';
   const distance = Number(segment.endDistanceKm) - Number(segment.startDistanceKm);
   return Number.isFinite(distance) && distance >= 0 ? `${distance.toFixed(2)} km` : '';
 }
 
 function displayNumber(value, suffix, digits, prefix = '') {
+  if (value === null || value === undefined || value === '') return '';
   const number = Number(value);
   return Number.isFinite(number) ? `${prefix}${number.toFixed(digits)}${suffix}` : '';
 }
