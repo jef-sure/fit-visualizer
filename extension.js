@@ -1340,14 +1340,14 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     </section>
     ${compStatsRow}
     <section class="grid">
-      ${metric('Records', summary.records)}
-      ${metric('Sessions', sessions.length)}
-      ${metric('Distance (km)', summary.distanceKm.toFixed(2))}
-      ${metric('Duration (h:m:s)', summary.durationText)}
-      ${metric('Avg Speed (km/h)', summary.avgSpeed.toFixed(2))}
-      ${metric('Max Speed (km/h)', summary.maxSpeed.toFixed(2))}
-      ${metric('Avg Power (W)' + powerMetricSuffix, summary.avgPower.toFixed(0))}
-      ${metric('Max Power (W)' + powerMetricSuffix, summary.maxPower.toFixed(0))}
+      ${metric('Records', summary.records, 'records', glossary)}
+      ${metric('Sessions', sessions.length, 'sessions', glossary)}
+      ${metric('Distance (km)', summary.distanceKm.toFixed(2), 'distance', glossary)}
+      ${metric('Duration (h:m:s)', summary.durationText, 'duration', glossary)}
+      ${metric('Avg Speed (km/h)', summary.avgSpeed.toFixed(2), 'averageSpeed', glossary)}
+      ${metric('Max Speed (km/h)', summary.maxSpeed.toFixed(2), 'maximumSpeed', glossary)}
+      ${metric('Avg Power (W)' + powerMetricSuffix, summary.avgPower.toFixed(0), 'averagePower', glossary)}
+      ${metric('Max Power (W)' + powerMetricSuffix, summary.maxPower.toFixed(0), 'maximumPower', glossary)}
       ${metric('Normalized Power (W)' + powerMetricSuffix, summary.normalizedPower?.toFixed(0) ?? 'n/a', 'normalizedPower', glossary)}
       ${metric('Intensity Factor (IF)' + powerMetricSuffix, summary.intensityFactor > 0 ? summary.intensityFactor.toFixed(2) : 'n/a', 'intensityFactor', glossary)}
       ${metric('TSS' + powerMetricSuffix, summary.trainingStressScore > 0 ? summary.trainingStressScore.toFixed(1) : 'n/a', 'trainingStressScore', glossary)}
@@ -1357,11 +1357,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       ${metric('Decoupling % (Intervals)' + powerMetricSuffix, Number.isFinite(summary.decouplingPct) ? summary.decouplingPct.toFixed(1) + '%' : 'n/a', 'decoupling', glossary)}
       ${metric('TRIMP', summary.trimp > 0 ? summary.trimp.toFixed(1) : 'n/a', 'trimp', glossary)}
       ${metric('hrTSS', summary.hrTss > 0 ? summary.hrTss.toFixed(1) : 'n/a', 'hrTss', glossary)}
-      ${metric('Avg HR (bpm)', summary.avgHr.toFixed(0))}
-      ${metric('Max HR (bpm)', summary.maxHr.toFixed(0))}
-      ${metric('Elevation Gain (m)', summary.elevationGainM.toFixed(0))}
-      ${metric('Elevation Loss (m)', summary.elevationLossM.toFixed(0))}
-      ${metric('GPS Points', gpsRoute.pointCount)}
+      ${metric('Avg HR (bpm)', summary.avgHr.toFixed(0), 'averageHeartRate', glossary)}
+      ${metric('Max HR (bpm)', summary.maxHr.toFixed(0), 'maximumHeartRate', glossary)}
+      ${metric('Elevation Gain (m)', summary.elevationGainM.toFixed(0), 'elevationGain', glossary)}
+      ${metric('Elevation Loss (m)', summary.elevationLossM.toFixed(0), 'elevationLoss', glossary)}
+      ${metric('GPS Points', gpsRoute.pointCount, 'gpsPoints', glossary)}
     </section>
     ${primaryPower.source === 'estimated' ? `<section style="padding:12px;margin-bottom:16px;background:rgba(255,193,7,0.1);border-left:4px solid #ffc107;color:var(--ink);font-size:0.95rem;line-height:1.5;">
       <strong>⚠ Data Quality Note:</strong> Power metrics are motion-estimated (from speed, altitude, and mass) and may be physiologically implausible, especially peak values. These figures and derived metrics (NP, IF, TSS, xPower, RI, BikeStress, Decoupling) should be disregarded for training-load decisions. Use heart-rate trends and effort perception instead.
@@ -2307,12 +2307,12 @@ function renderStatsRow(stats, unit, isComp) {
 
 function renderComparisonTable(a, b, aName, bName, glossary) {
   const rows = [
-    ['Distance (km)', a.distanceKm.toFixed(2), b.distanceKm.toFixed(2)],
-    ['Duration', a.durationText, b.durationText],
-    ['Avg Speed (km/h)', a.avgSpeed.toFixed(2), b.avgSpeed.toFixed(2)],
-    ['Max Speed (km/h)', a.maxSpeed.toFixed(2), b.maxSpeed.toFixed(2)],
-    ['Avg Power (W)', a.avgPower.toFixed(0), b.avgPower.toFixed(0)],
-    ['Max Power (W)', a.maxPower.toFixed(0), b.maxPower.toFixed(0)],
+    ['Distance (km)', a.distanceKm.toFixed(2), b.distanceKm.toFixed(2), 'distance'],
+    ['Duration', a.durationText, b.durationText, 'duration'],
+    ['Avg Speed (km/h)', a.avgSpeed.toFixed(2), b.avgSpeed.toFixed(2), 'averageSpeed'],
+    ['Max Speed (km/h)', a.maxSpeed.toFixed(2), b.maxSpeed.toFixed(2), 'maximumSpeed'],
+    ['Avg Power (W)', a.avgPower.toFixed(0), b.avgPower.toFixed(0), 'averagePower'],
+    ['Max Power (W)', a.maxPower.toFixed(0), b.maxPower.toFixed(0), 'maximumPower'],
     ['Normalized Power (W)', a.normalizedPower?.toFixed(0) ?? 'n/a', b.normalizedPower?.toFixed(0) ?? 'n/a', 'normalizedPower'],
     ['Intensity Factor (IF)', a.intensityFactor > 0 ? a.intensityFactor.toFixed(2) : 'n/a', b.intensityFactor > 0 ? b.intensityFactor.toFixed(2) : 'n/a', 'intensityFactor'],
     ['TSS', a.trainingStressScore > 0 ? a.trainingStressScore.toFixed(1) : 'n/a', b.trainingStressScore > 0 ? b.trainingStressScore.toFixed(1) : 'n/a', 'trainingStressScore'],
@@ -2322,10 +2322,10 @@ function renderComparisonTable(a, b, aName, bName, glossary) {
     ['Decoupling % (Intervals)', Number.isFinite(a.decouplingPct) ? `${a.decouplingPct.toFixed(1)}%` : 'n/a', Number.isFinite(b.decouplingPct) ? `${b.decouplingPct.toFixed(1)}%` : 'n/a', 'decoupling'],
     ['TRIMP', a.trimp > 0 ? a.trimp.toFixed(1) : 'n/a', b.trimp > 0 ? b.trimp.toFixed(1) : 'n/a', 'trimp'],
     ['hrTSS', a.hrTss > 0 ? a.hrTss.toFixed(1) : 'n/a', b.hrTss > 0 ? b.hrTss.toFixed(1) : 'n/a', 'hrTss'],
-    ['Avg HR (bpm)', a.avgHr.toFixed(0), b.avgHr.toFixed(0)],
-    ['Max HR (bpm)', a.maxHr.toFixed(0), b.maxHr.toFixed(0)],
-    ['Elevation Gain (m)', a.elevationGainM.toFixed(0), b.elevationGainM.toFixed(0)],
-    ['Elevation Loss (m)', a.elevationLossM.toFixed(0), b.elevationLossM.toFixed(0)],
+    ['Avg HR (bpm)', a.avgHr.toFixed(0), b.avgHr.toFixed(0), 'averageHeartRate'],
+    ['Max HR (bpm)', a.maxHr.toFixed(0), b.maxHr.toFixed(0), 'maximumHeartRate'],
+    ['Elevation Gain (m)', a.elevationGainM.toFixed(0), b.elevationGainM.toFixed(0), 'elevationGain'],
+    ['Elevation Loss (m)', a.elevationLossM.toFixed(0), b.elevationLossM.toFixed(0), 'elevationLoss'],
   ].map(([label, va, vb, term]) => `<tr><td class="cmpLabel">${renderTerm(label, term, glossary)}</td><td class="cmpA">${escapeHtml(va)}</td><td class="cmpB">${escapeHtml(vb)}</td></tr>`).join('');
   return `<section class="chart"><h2>Comparison</h2><table class="cmpTable">
     <thead><tr><th></th><th>${escapeHtml(aName || 'Activity')}</th><th>${escapeHtml(bName || 'Comparison')}</th></tr></thead>
