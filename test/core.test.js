@@ -144,7 +144,7 @@ function gradeFixtureRecords() {
 }
 
 test('webview selector script keeps a valid selectActivity payload', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   assert.doesNotMatch(
     source,
     /type:\s*'selectActivity',\s*Number\.isFinite\(athleteProfile\.riderMassKg\)/s
@@ -154,20 +154,20 @@ test('webview selector script keeps a valid selectActivity payload', () => {
 });
 
 test('map card isolates leaflet stacking layers below the sticky toolbar', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   assert.match(source, /\.chart\[data-target-type="map"\] \{[^}]*isolation:isolate/);
   assert.match(source, /\.toolbar \{[\s\S]*?z-index: 1100;/);
 });
 
 test('map zooms only with ctrl or cmd held', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   assert.match(source, /L\.map\('\$\{mapId\}', \{[^}]*scrollWheelZoom: false/);
   assert.match(source, /if \(!event\.ctrlKey && !event\.metaKey\)/);
   assert.match(source, /setZoomAround\(targetMap\.mouseEventToContainerPoint\(event\), next\)/);
 });
 
 test('mapId is declared before it is used to build chart payloads (no TDZ crash)', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   const declarationIndex = source.indexOf("const mapId = isComparison ? 'fitMapComp' : 'fitMap';");
   const firstUseIndex = source.indexOf('const chartClientPayloads = safeJson({');
   assert.ok(declarationIndex > 0, 'mapId declaration must exist');
@@ -234,7 +234,7 @@ test('GPS SVG renderer outputs route endpoints and handles missing routes', () =
 });
 
 test('chart interactions script ports buildTicks, syncs a shared crosshair and adapts tick density', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   assert.match(source, /function buildTicksClient\(min, max, targetCount\)/);
   assert.match(source, /Math\.floor\(Math\.log10\(rough\)\)/);
   assert.match(source, /var payloads = \$\{chartClientPayloads\};/);
@@ -244,7 +244,7 @@ test('chart interactions script ports buildTicks, syncs a shared crosshair and a
 });
 
 test('adaptive chart ticks recompute when only height changes', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   const geometrySource = fs.readFileSync(path.join(__dirname, '..', 'chart-geometry.js'), 'utf8');
   assert.match(source, /var lastWidth = 0;\s*var lastHeight = 0;/);
   assert.match(source, /Math\.abs\(rect\.width - lastWidth\) < 1 && Math\.abs\(rect\.height - lastHeight\) < 1/);
@@ -327,7 +327,7 @@ test('speed-axis tick density keeps a 10 km/h step for a 0-50 km/h range', () =>
 });
 
 test('crosshair shows a text label with the actual X/Y values at the hovered point', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   const renderer = createChartSvgRenderer({ buildDistanceMarkers: () => [], escapeHtml, formatTick: String, getHrZoneIndex: () => 0 });
   const svg = renderer.renderScaledLineChartSvg({
     points: [{}, {}], pathData: '0,0 1,1', xTicks: [], yTicks: [], xStep: 1, yStep: 1,
@@ -344,7 +344,7 @@ test('crosshair shows a text label with the actual X/Y values at the hovered poi
 });
 
 test('chart text labels adapt to the rendered SVG scale', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   const renderer = createChartSvgRenderer({ buildDistanceMarkers: () => [], escapeHtml, formatTick: String, getHrZoneIndex: () => 0 });
   const svg = renderer.renderScaledLineChartSvg({
     points: [{}, {}], pathData: '0,0 1,1', xTicks: [], yTicks: [], xStep: 1, yStep: 1,
@@ -373,7 +373,7 @@ test('chart text labels adapt to the rendered SVG scale', () => {
 });
 
 test('metric overlays reuse computeGrade once, exclude the chart\'s own metric and cap at two active', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   const overlaySource = fs.readFileSync(path.join(__dirname, '..', 'chart-overlays.js'), 'utf8');
   assert.match(overlaySource, /const grades = records\.some[\s\S]*?computeGrade\(records\)/);
   assert.match(source, /var OVERLAY_PALETTE = \['#e67e22', '#00acc1'\];/);
@@ -403,7 +403,8 @@ test('stored analyses stay visible and reusable after a version bump', () => {
   assert.match(source, /const analysis = selId \? await getLatestAnalysisAnyVersion\(dbPath, selId\) : null;/);
   assert.match(source, /const previousAnalysis = \(await getLatestAnalysisAnyVersion\(dbPath, numId\)\)\?\.text/);
   assert.match(source, /const baseAnalysis = \(await getLatestAnalysisAnyVersion\(dbPath, activityId\)\)\?\.text/);
-  assert.match(source, /escapeHtml\(ui\.olderAnalysis\)/);
+  const webviewSource = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  assert.match(webviewSource, /escapeHtml\(ui\.olderAnalysis\)/);
 });
 
 test('bulk re-analysis command is registered end to end', () => {
@@ -627,12 +628,13 @@ test('wheel calibration integration: sample storage, recommendation gating and p
   assert.match(source, /function parseOptionalWheelCircumference\(value\)/);
   assert.match(source, /mm < 1000 \|\| mm > 2500/);
 
-  assert.match(source, /wheelCircumferenceMm: document\.getElementById\('\$\{mapId\}WheelCircumference'\)\.value,/);
+  const webviewSource = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  assert.match(webviewSource, /wheelCircumferenceMm: document\.getElementById\('\$\{mapId\}WheelCircumference'\)\.value,/);
   assert.match(source, /const wheelCalibration = await getWheelCalibrationRecommendation\(dbPath\);/);
 });
 
 test('wheel calibration hint recomputes live from the typed value instead of waiting for Save Zones', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
 
   // The recommendation must not depend on a saved profile value: it reruns on every keystroke.
   assert.match(source, /data-ratio="\$\{wheelCalibration\.ratio\}"/);
@@ -821,7 +823,7 @@ test('activity glossary localizes visible metric descriptions from one source', 
   assert.match(translated.normalizedPower, /Normalized Power/);
   assert.match(GLOSSARY.technical, /Technical/);
 
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   assert.match(source, /const translate = \(message\) => generatedTranslations\?\.\[message\] \|\| vscode\.l10n\.t\(message\);/);
   assert.match(source, /const glossary = localizeGlossary\(translate\);/);
   assert.match(source, /class="term" title="\$\{escapeHtml\(description\)\}"/);
@@ -840,8 +842,8 @@ test('localized webview UI uses one complete string catalog', () => {
   assert.equal(formatUi(localized.error, 'Нет данных'), 'Ошибка: Нет данных');
   assert.equal(formatUi('{0} / {1}', 0, 2), '0 / 2');
 
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
-  assert.match(source, /const ui = localizeUi\(vscode\.l10n\.t\);/);
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  assert.match(source, /const ui = localizeUi\(translate\);/);
   assert.match(source, /<html lang="\$\{escapeHtml\(locale\)\}">/);
   assert.match(source, /const ui = \$\{safeJson\(ui\)\};/);
 });
