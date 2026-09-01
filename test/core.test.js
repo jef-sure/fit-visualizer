@@ -20,6 +20,7 @@ const { computeStats, extractXYPoints } = require('../chart-data');
 const { buildChartClientPayload, buildOverlayOptions } = require('../chart-overlays');
 const { buildSummary } = require('../activity-summary');
 const { buildLineChart } = require('../chart-model');
+const { createChartSvgRenderer } = require('../chart-svg');
 const { GLOSSARY, localizeGlossary } = require('../glossary');
 const { UI_STRINGS, formatUi, localizeUi } = require('../ui-strings');
 const {
@@ -187,12 +188,49 @@ test('chart client payload carries geometry and a trimmed point series', () => {
   assert.equal(buildChartClientPayload({ points: [{ x: 0, y: 1 }] }, 'km', 'bpm'), null);
 });
 
-test('chart svg exposes tick groups and a crosshair capture rect for the client script', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
-  assert.match(source, /<g class="xTicksGroup">/);
-  assert.match(source, /<g class="yTicksGroup">/);
-  assert.match(source, /class="crosshairCapture"/);
-  assert.match(source, /options\.svgId \? `[\s\S]*?crosshairCapture/);
+test('chart SVG renderer outputs ticks, markers, zones, and a crosshair capture rect', () => {
+  const renderer = createChartSvgRenderer({
+    buildDistanceMarkers: () => [{ px: 50, label: '1 < km' }],
+    escapeHtml,
+    formatTick: (value) => `tick:${value}`,
+    getHrZoneIndex: () => 2,
+  });
+  const chart = {
+    points: [{ x: 0, y: 100 }, { x: 1, y: 120 }],
+    pathPoints: [{ x: 20, y: 80 }, { x: 100, y: 30 }],
+    pathData: '20,80 100,30',
+    compPathData: '20,70 100,20',
+    xTicks: [{ px: 20, value: 0 }], yTicks: [{ py: 80, value: 100 }],
+    xStep: 1, yStep: 10, plotLeft: 20, plotRight: 100, plotTop: 10, plotBottom: 90, width: 120, height: 110,
+  };
+  const svg = renderer.renderScaledLineChartSvg(chart, 'lineA', 'Distance', 'Heart rate', true, {
+    svgId: 'chart<id>', zoneThresholds: [100, 120, 140, 160],
+  });
+
+  assert.match(svg, /id="chart&lt;id&gt;"/);
+  assert.match(svg, /class="kmMarker"/);
+  assert.match(svg, /1 &lt; km/);
+  assert.match(svg, /class="xTicksGroup"/);
+  assert.match(svg, /class="yTicksGroup"/);
+  assert.match(svg, /class="zoneLine zoneLine3"/);
+  assert.match(svg, /class="lineAComp"/);
+  assert.match(svg, /class="crosshairCapture"/);
+  assert.equal(renderer.renderScaledLineChartSvg({ points: [] }, 'lineA', 'x', 'y', false), '<div class="muted">Not enough data for this chart.</div>');
+});
+
+test('GPS SVG renderer outputs route endpoints and handles missing routes', () => {
+  const renderer = createChartSvgRenderer({ buildDistanceMarkers: () => [], escapeHtml, formatTick: String, getHrZoneIndex: () => 0 });
+  const route = {
+    points: [{}, {}], pathPoints: [{ x: 10, y: 20 }, { x: 90, y: 80 }], pathData: '10,20 90,80',
+    xTicks: [{ px: 10, value: 1 }], yTicks: [{ py: 20, value: 2 }], xStep: 1, yStep: 1,
+    plotLeft: 10, plotRight: 90, plotTop: 10, plotBottom: 90,
+  };
+  const svg = renderer.renderGpsRouteSvg(route, 100, 100);
+
+  assert.match(svg, /aria-label="gps route"/);
+  assert.match(svg, /class="routeStart" cx="10\.0" cy="20\.0"/);
+  assert.match(svg, /class="routeEnd" cx="90\.0" cy="80\.0"/);
+  assert.equal(renderer.renderGpsRouteSvg({ points: [] }, 100, 100), '<div class="muted">No usable GPS points found in this FIT file.</div>');
 });
 
 test('chart interactions script ports buildTicks, syncs a shared crosshair and adapts tick density', () => {
@@ -290,9 +328,14 @@ test('speed-axis tick density keeps a 10 km/h step for a 0-50 km/h range', () =>
 
 test('crosshair shows a text label with the actual X/Y values at the hovered point', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
-  assert.match(source, /<text class="crosshairLabel" style="display:none">/);
-  assert.match(source, /<tspan class="crosshairLabelX"/);
-  assert.match(source, /<tspan class="crosshairLabelY"/);
+  const renderer = createChartSvgRenderer({ buildDistanceMarkers: () => [], escapeHtml, formatTick: String, getHrZoneIndex: () => 0 });
+  const svg = renderer.renderScaledLineChartSvg({
+    points: [{}, {}], pathData: '0,0 1,1', xTicks: [], yTicks: [], xStep: 1, yStep: 1,
+    plotLeft: 0, plotRight: 100, plotTop: 0, plotBottom: 100, width: 100, height: 100,
+  }, 'lineA', 'x', 'y', false, { svgId: 'chart' });
+  assert.match(svg, /<text class="crosshairLabel" style="display:none">/);
+  assert.match(svg, /<tspan class="crosshairLabelX"/);
+  assert.match(svg, /<tspan class="crosshairLabelY"/);
   assert.match(source, /labelX\.textContent = formatCrosshairValue\(point\[0\], payload\.xUnit\);/);
   assert.match(source, /labelY\.textContent = formatCrosshairValue\(point\[1\], payload\.yUnit\);/);
   // Flips side near the right edge so the label text never runs off the chart.
@@ -302,6 +345,11 @@ test('crosshair shows a text label with the actual X/Y values at the hovered poi
 
 test('chart text labels adapt to the rendered SVG scale', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const renderer = createChartSvgRenderer({ buildDistanceMarkers: () => [], escapeHtml, formatTick: String, getHrZoneIndex: () => 0 });
+  const svg = renderer.renderScaledLineChartSvg({
+    points: [{}, {}], pathData: '0,0 1,1', xTicks: [], yTicks: [], xStep: 1, yStep: 1,
+    plotLeft: 0, plotRight: 100, plotTop: 0, plotBottom: 100, width: 100, height: 100,
+  }, 'lineA', 'Distance', 'Value', false);
   assert.match(source, /function updateChartTextScale\(svg, payload, rect\)/);
   assert.match(source, /var xScale = rect\.width \/ payload\.width;/);
   assert.match(source, /var yScale = rect\.height \/ payload\.height;/);
@@ -313,7 +361,7 @@ test('chart text labels adapt to the rendered SVG scale', () => {
   assert.match(source, /setReadableFont\('\.tick', 10\);/);
   assert.match(source, /setReadableFont\('\.kmLabel', 9\);/);
   assert.match(source, /setReadableFont\('\.crosshairLabel', 13, 3\);/);
-  assert.match(source, /class="axisLabel axisLabelX"/);
+  assert.match(svg, /class="axisLabel axisLabelX"/);
   assert.match(source, /var axisX = svg\.querySelector\('\.axisLabelX'\);/);
   assert.match(source, /var axisXx = parseFloat\(axisX\.getAttribute\('x'\)\);/);
   assert.match(source, /var axisXy = parseFloat\(axisX\.getAttribute\('y'\)\);/);
