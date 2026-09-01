@@ -15,6 +15,7 @@ const {
 } = require('../analysis');
 const { ensureDatabaseSchema } = require('../database-schema');
 const { GLOSSARY, localizeGlossary } = require('../glossary');
+const { UI_STRINGS, formatUi, localizeUi } = require('../ui-strings');
 const {
   calculateAutoHeartRateProfile,
   computeHeartRateZones,
@@ -323,7 +324,7 @@ test('stored analyses stay visible and reusable after a version bump', () => {
   assert.match(source, /const analysis = selId \? await getLatestAnalysisAnyVersion\(dbPath, selId\) : null;/);
   assert.match(source, /const previousAnalysis = \(await getLatestAnalysisAnyVersion\(dbPath, numId\)\)\?\.text/);
   assert.match(source, /const baseAnalysis = \(await getLatestAnalysisAnyVersion\(dbPath, activityId\)\)\?\.text/);
-  assert.match(source, /Analyzed with an older version/);
+  assert.match(source, /escapeHtml\(ui\.olderAnalysis\)/);
 });
 
 test('bulk re-analysis command is registered end to end', () => {
@@ -747,6 +748,22 @@ test('activity glossary localizes visible metric descriptions from one source', 
   assert.match(source, /metric\('Avg Power \(W\)' \+ powerMetricSuffix, summary\.avgPower\.toFixed\(0\), 'averagePower', glossary\)/);
   assert.match(source, /\['Max HR \(bpm\)', a\.maxHr\.toFixed\(0\), b\.maxHr\.toFixed\(0\), 'maximumHeartRate'\]/);
   assert.match(source, /metric\('TSS' \+ powerMetricSuffix,[\s\S]*?'trainingStressScore', glossary\)/);
+});
+
+test('localized webview UI uses one complete string catalog', () => {
+  const bundle = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'l10n', 'bundle.l10n.ru.json'), 'utf8'));
+  for (const message of Object.values(UI_STRINGS)) {
+    assert.ok(bundle[message], `Missing Russian UI translation: ${message}`);
+  }
+  const localized = localizeUi((text) => bundle[text] || text);
+  assert.equal(localized.analyzeActivity, 'Анализировать активность');
+  assert.equal(formatUi(localized.error, 'Нет данных'), 'Ошибка: Нет данных');
+  assert.equal(formatUi('{0} / {1}', 0, 2), '0 / 2');
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /const ui = localizeUi\(vscode\.l10n\.t\);/);
+  assert.match(source, /<html lang="\$\{escapeHtml\(locale\)\}">/);
+  assert.match(source, /const ui = \$\{safeJson\(ui\)\};/);
 });
 
 test('normalized power equals constant power for steady efforts', () => {
