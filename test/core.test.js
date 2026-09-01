@@ -205,9 +205,20 @@ test('adaptive chart ticks recompute when only height changes', () => {
   assert.match(source, /var lastWidth = 0;\s*var lastHeight = 0;/);
   assert.match(source, /Math\.abs\(rect\.width - lastWidth\) < 1 && Math\.abs\(rect\.height - lastHeight\) < 1/);
   assert.match(source, /lastWidth = rect\.width;\s*lastHeight = rect\.height;/);
-  assert.match(source, /var labelY = Math\.max\(payload\.plotTop \+ 10, Math\.min\(payload\.plotBottom - 4, parseFloat\(py\) \+ 4\)\)\.toFixed\(1\);/);
+  assert.match(source, /var labelY = Math\.max\(payload\.plotTop \+ 12, Math\.min\(payload\.plotBottom - 4, parseFloat\(py\) \+ 4\)\)\.toFixed\(1\);/);
+  assert.match(source, /const plotTop = margin\.top \+ 8;/);
+  assert.match(source, /const safeY = padYAxisRange\(yMin, yMax\);/);
   assert.match(source, /clampCount\(plotWidthPx \/ 72, 4, 18\)/);
   assert.match(source, /clampCount\(plotHeightPx \/ 30, 6, 18\)/);
+});
+
+test('Y-axis range reserves headroom above the highest data value', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const padRangeStart = source.indexOf('function padRange');
+  const fn = new Function(`${source.slice(padRangeStart, source.indexOf('function buildTicks', padRangeStart))}\nreturn padYAxisRange;`)();
+
+  assert.deepEqual(fn(0, 50), { min: 0, max: 54 });
+  assert.equal(fn(42, 42).max > 42, true);
 });
 
 test('client tick rounding keeps the server step at powers of ten', () => {
@@ -266,7 +277,7 @@ test('chart text labels adapt to the rendered SVG scale', () => {
   assert.match(source, /var axisX = svg\.querySelector\('\.axisLabelX'\);/);
   assert.match(source, /var axisXx = parseFloat\(axisX\.getAttribute\('x'\)\);/);
   assert.match(source, /var axisXy = parseFloat\(axisX\.getAttribute\('y'\)\);/);
-  assert.match(source, /axisX\.style\.fontSize = '11px';/);
+  assert.match(source, /axisX\.style\.fontSize = '12px';/);
   assert.match(source, /axisX\.setAttribute\('transform', 'translate\(' \+ axisXx \+ ' ' \+ axisXy \+ '\) scale\('/);
   assert.match(source, /\+ \(-axisXx\) \+ ' ' \+ \(-axisXy\) \+ '\)'/);
   assert.match(source, /if \(instance\.lastRect\) updateChartTextScale\(svg, payload, instance\.lastRect\);/);
@@ -877,6 +888,17 @@ test('intensity factor and TSS follow standard power formulas', () => {
   assert.ok(Math.abs(tss - 69.4444) < 0.001);
 });
 
+test('unavailable workload metrics use null rather than a misleading zero', () => {
+  assert.equal(calculateNormalizedPower([]), null);
+  assert.equal(calculateNormalizedPower([{ elapsed_time: 0, power: null }]), null);
+  assert.equal(calculateXPower([]), null);
+  assert.equal(calculateXPower([{ elapsed_time: 0, power: null }]), null);
+  assert.equal(calculateIntensityFactor(null, 300), null);
+  assert.equal(calculateTrainingStressScore(3600, null, null, 300), null);
+  assert.equal(calculateBikeStressScore(3600, null, null, 300), null);
+  assert.equal(calculateHrTss({ durationSec: 3600, avgHeartRate: null, restingHeartRate: 50, maxHeartRate: 190 }), null);
+});
+
 test('record speeds are derived from distance when the speed channel is zero', () => {
   const records = [];
   for (let elapsed = 0; elapsed <= 60; elapsed += 1) {
@@ -996,6 +1018,28 @@ test('database schema migrates manual HR overrides onto existing activities', as
     assert.equal(profileColumns.includes('wheel_circumference_mm'), true);
     const calibrationColumns = db.exec('PRAGMA table_info(wheel_calibration_samples)')[0].values.map((row) => row[1]);
     assert.deepEqual(calibrationColumns, ['id', 'activity_id', 'computed_at', 'ratio', 'trusted_distance_km']);
+  } finally {
+    db.close();
+  }
+});
+
+test('database schema clears legacy zero sentinels from derived workload metrics', async () => {
+  const SQL = await initSqlJs({
+    locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm'),
+  });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    db.run(`INSERT INTO activities (
+      file_path, normalized_power, training_stress_score, intensity_factor,
+      xpower, relative_intensity_gc, bike_stress_score, hr_tss
+    ) VALUES ('legacy.fit', 0, 0, 0, 0, 0, 0, 0)`);
+    ensureDatabaseSchema(db);
+    const row = db.exec(`SELECT normalized_power, training_stress_score, intensity_factor,
+      xpower, relative_intensity_gc, bike_stress_score, hr_tss
+      FROM activities WHERE file_path = 'legacy.fit'`)[0].values[0];
+
+    assert.deepEqual(row, [null, null, null, null, null, null, null]);
   } finally {
     db.close();
   }

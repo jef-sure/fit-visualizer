@@ -124,6 +124,8 @@ Analysis runs through GitHub Copilot's chat models (whichever model your Copilot
 - Recent training load and personal records
 - Recent AI analyses of other rides (last 30 days, or the most recent one if the last month is empty), so trends carry across rides rather than resetting each time
 
+Derived workload metrics that cannot be calculated from the available data are omitted rather than shown as zero.
+
 Prompts and responses are logged locally (see **Settings**) so you can review exactly what was sent and received.
 
 ## Heart-Rate Zones

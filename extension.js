@@ -1955,7 +1955,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }).join('');
         var yHtml = yTicks.values.map(function (v) {
           var py = scaleY(payload, v).toFixed(1);
-          var labelY = Math.max(payload.plotTop + 10, Math.min(payload.plotBottom - 4, parseFloat(py) + 4)).toFixed(1);
+          var labelY = Math.max(payload.plotTop + 12, Math.min(payload.plotBottom - 4, parseFloat(py) + 4)).toFixed(1);
           return '<g><line class="gridline" x1="' + payload.plotLeft + '" y1="' + py + '" x2="' + payload.plotRight + '" y2="' + py + '" />'
             + '<text class="tick" x="' + (payload.plotLeft - 8) + '" y="' + labelY + '" text-anchor="end">'
             + escapeHtmlClient(formatTickClient(v, yTicks.step)) + '</text></g>';
@@ -1988,7 +1988,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         if (axisX) {
           var axisXx = parseFloat(axisX.getAttribute('x'));
           var axisXy = parseFloat(axisX.getAttribute('y'));
-          axisX.style.fontSize = '11px';
+          axisX.style.fontSize = '12px';
           if (isFinite(axisXx) && isFinite(axisXy)) {
             axisX.setAttribute('transform', 'translate(' + axisXx + ' ' + axisXy + ') scale('
               + (1 / xScale).toFixed(4) + ' ' + (1 / yScale).toFixed(4) + ') translate('
@@ -2801,7 +2801,7 @@ function buildCartesianGeometry(points, width, height, margin) {
       height,
       plotLeft: margin.left,
       plotRight: width - margin.right,
-      plotTop: margin.top,
+      plotTop: margin.top + 8,
       plotBottom: height - margin.bottom,
       xTicks: [],
       yTicks: [],
@@ -2820,11 +2820,11 @@ function buildCartesianGeometry(points, width, height, margin) {
   const yMax = Math.max(...points.map((p) => p.y));
 
   const safeX = padRange(xMin, xMax);
-  const safeY = padRange(yMin, yMax);
+  const safeY = padYAxisRange(yMin, yMax);
 
   const plotLeft = margin.left;
   const plotRight = width - margin.right;
-  const plotTop = margin.top;
+  const plotTop = margin.top + 8;
   const plotBottom = height - margin.bottom;
   const plotWidth = plotRight - plotLeft;
   const plotHeight = plotBottom - plotTop;
@@ -2873,6 +2873,11 @@ function padRange(min, max) {
   }
   const pad = Math.abs(min || 1) * 0.05;
   return { min: min - pad, max: max + pad };
+}
+
+function padYAxisRange(min, max) {
+  const range = padRange(min, max);
+  return { min: range.min, max: range.max + (range.max - range.min) * 0.08 };
 }
 
 function buildTicks(min, max, targetCount) {
@@ -3274,7 +3279,7 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
       bike_stress_score: summary.bikeStressScore,
       decoupling_pct: summary.decouplingPct,
       trimp: summary.trimp > 0 ? summary.trimp : session.trimp,
-      hr_tss: summary.hrTss > 0 ? summary.hrTss : session.hr_tss,
+      hr_tss: summary.hrTss ?? (asNumber(session.hr_tss) > 0 ? session.hr_tss : null),
       ftp: Number.isFinite(athleteFtp) && athleteFtp > 0 ? athleteFtp : null,
       power_source: powerData.source,
     }, ...fitData.sessions.slice(1)],

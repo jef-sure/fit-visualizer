@@ -66,7 +66,7 @@ function average(values) {
 
 function calculateNormalizedPower(records) {
   if (!Array.isArray(records) || !records.length) {
-    return 0;
+    return null;
   }
 
   const samples = [];
@@ -80,13 +80,13 @@ function calculateNormalizedPower(records) {
   }
 
   if (!samples.length) {
-    return 0;
+    return null;
   }
 
   // Coggan NP: 30s rolling average first, then 4th-power mean and 4th root.
   const rolling = trailingTimeMovingAverage(samples, 30);
   const meanFourthPower = average(rolling.map((value) => value ** 4));
-  return meanFourthPower > 0 ? meanFourthPower ** 0.25 : 0;
+  return meanFourthPower > 0 ? meanFourthPower ** 0.25 : null;
 }
 
 function calculateAutoFtp(records) {
@@ -1320,7 +1320,7 @@ function selectFtpEstimate(candidates) {
 
 function calculateXPower(records) {
   if (!Array.isArray(records) || !records.length) {
-    return 0;
+    return null;
   }
 
   const samples = [];
@@ -1338,7 +1338,7 @@ function calculateXPower(records) {
   }
 
   if (!samples.length) {
-    return 0;
+    return null;
   }
 
   // GoldenCheetah-style xPower uses an exponentially-weighted power trace (~25s time constant),
@@ -1356,14 +1356,14 @@ function calculateXPower(records) {
   }
 
   const meanFourthPower = average(fourthPowers);
-  return meanFourthPower > 0 ? meanFourthPower ** 0.25 : 0;
+  return meanFourthPower > 0 ? meanFourthPower ** 0.25 : null;
 }
 
 function calculateIntensityFactor(normalizedPower, ftp) {
   const np = asNumber(normalizedPower);
   const threshold = asNumber(ftp);
   if (!Number.isFinite(np) || np <= 0 || !Number.isFinite(threshold) || threshold <= 0) {
-    return 0;
+    return null;
   }
   return np / threshold;
 }
@@ -1377,7 +1377,7 @@ function calculateTrainingStressScore(durationSec, normalizedPower, intensityFac
       || !Number.isFinite(np) || np <= 0
       || !Number.isFinite(ifValue) || ifValue <= 0
       || !Number.isFinite(threshold) || threshold <= 0) {
-    return 0;
+    return null;
   }
   return ((duration * np * ifValue) / (threshold * 3600)) * 100;
 }
@@ -1395,7 +1395,7 @@ function calculateIntervalsDecoupling(records, input) {
       || !Number.isFinite(restingHeartRate)
       || !Number.isFinite(maxHeartRate)
       || maxHeartRate <= restingHeartRate) {
-    return 0;
+    return null;
   }
 
   const samples = [];
@@ -1540,7 +1540,7 @@ function calculateHrTss(input) {
       || !Number.isFinite(restingHeartRate)
       || !Number.isFinite(maxHeartRate)
       || maxHeartRate <= restingHeartRate) {
-    return 0;
+    return null;
   }
 
   const relativeIntensity = (avgHeartRate - restingHeartRate) / (maxHeartRate - restingHeartRate);
