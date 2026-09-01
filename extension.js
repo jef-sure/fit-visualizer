@@ -102,6 +102,7 @@ function enqueueLlmTask(task) {
 function activate(context) {
   extensionContextRef = context;
   context.subscriptions.push(...registerCommands(context, {
+    addAndBrowseManualActivity,
     escapeHtml,
     getLocalDbPath,
     indexFitFolder,
@@ -301,6 +302,98 @@ async function prepareFitForVisualization(filePath) {
   }
   await rememberDatabasePath(dbPath);
   return { dbPath, activityId };
+}
+
+async function addAndBrowseManualActivity() {
+  const dbPath = await resolveActiveDbPath() || await selectDatabaseFolder();
+  if (!dbPath) {
+    vscode.window.showInformationMessage('No database folder selected.');
+    return;
+  }
+
+  // Prompt user for input
+  const startTimeStr = await vscode.window.showInputBox({
+    prompt: 'Activity start time (YYYY-MM-DD HH:MM)',
+    placeHolder: '2026-09-01 12:00',
+  });
+  if (!startTimeStr) return;
+
+  let startTime;
+  try {
+    const parsed = new Date(startTimeStr.replace(' ', 'T'));
+    startTime = parsed.toISOString();
+  } catch {
+    vscode.window.showErrorMessage('Invalid date format. Use YYYY-MM-DD HH:MM');
+    return;
+  }
+
+  const sport = await vscode.window.showQuickPick(
+    ['cycling', 'running', 'other'],
+    { placeHolder: 'Select sport' }
+  );
+  if (!sport) return;
+
+  const distanceStr = await vscode.window.showInputBox({
+    prompt: 'Total distance (km)',
+    placeHolder: '20.0',
+  });
+  if (!distanceStr) return;
+
+  const durationStr = await vscode.window.showInputBox({
+    prompt: 'Duration (seconds)',
+    placeHolder: '3600',
+  });
+  if (!durationStr) return;
+
+  const avgHrStr = await vscode.window.showInputBox({
+    prompt: 'Average heart rate (bpm)',
+    placeHolder: '140',
+  });
+
+  const maxHrStr = await vscode.window.showInputBox({
+    prompt: 'Maximum heart rate (bpm)',
+    placeHolder: '165',
+  });
+
+  const elevGainStr = await vscode.window.showInputBox({
+    prompt: 'Elevation gain (m, optional)',
+    placeHolder: '0',
+  });
+
+  // Parse and validate
+  const distanceKm = parseFloat(distanceStr);
+  const durationS = parseInt(durationStr, 10);
+  const avgHr = avgHrStr ? parseFloat(avgHrStr) : null;
+  const maxHr = maxHrStr ? parseFloat(maxHrStr) : null;
+  const elevGainM = elevGainStr ? parseFloat(elevGainStr) : null;
+
+  if (!Number.isFinite(distanceKm) || distanceKm <= 0) {
+    vscode.window.showErrorMessage('Distance must be a positive number');
+    return;
+  }
+  if (!Number.isFinite(durationS) || durationS <= 0) {
+    vscode.window.showErrorMessage('Duration must be a positive number');
+    return;
+  }
+
+  try {
+    const db = await getDb(dbPath);
+    const activityId = createManualActivity(db, {
+      startTime,
+      sport,
+      durationS,
+      distanceKm,
+      avgHr: Number.isFinite(avgHr) ? avgHr : null,
+      maxHr: Number.isFinite(maxHr) ? maxHr : null,
+      elevGainM: Number.isFinite(elevGainM) ? elevGainM : null,
+    });
+    db.close();
+
+    await rememberDatabasePath(dbPath);
+    await openActivityBrowser(extensionContextRef, dbPath, activityId);
+  } catch (err) {
+    vscode.window.showErrorMessage(`Failed to create manual activity: ${err.message}`);
+  }
 }
 
 async function resolveActiveDbPath(preferredDir) {
@@ -598,7 +691,9 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
 }
 
 function buildDisplaySegments(fitData, athleteProfile, heartRateConfig) {
+  // Guard: skip segmentation for manual activities (no records)
   if (!fitData || !Array.isArray(fitData.records) || fitData.records.length < 2) return [];
+  
   const records = normalizeRecordSpeeds(fitData.records);
   const powerData = addEstimatedPowerWhenMissing(records, {
     riderMassKg: athleteProfile?.riderMassKg,
@@ -692,6 +787,7 @@ async function loadFitDataFromDb(dbPath, activityId) {
       laps: parseStoredLaps(activity.laps_json),
       _activityId: Number(activity.id),
       _fileName: activity.file_name,
+      _source: activity.source || 'fit',
     };
   } finally {
     db.close();
@@ -932,6 +1028,99 @@ function parseStoredLaps(raw) {
   } catch {
     return [];
   }
+}
+
+/**
+ * Create a manual activity (without FIT records) from user input.
+ * @param {sql.Database} db
+ * @param {Object} activity - { startTime, sport, durationS, distanceKm, avgHr, maxHr, elevGainM }
+ * @returns {number} activityId
+ */
+function createManualActivity(db, activity) {
+  const {
+    startTime,    // ISO string
+    sport,        // 'cycling', 'running', or 'other'
+    durationS,    // total_elapsed_s
+    distanceKm,
+    avgHr,
+    maxHr,
+    elevGainM,
+  } = activity;
+
+  // Synthetic file path for manual entries: manual://2026-09-01T120000Z
+  const manualFilePath = `manual://${new Date().toISOString().replace(/[:.]/g, '')}`;
+  const nowIso = new Date().toISOString();
+  
+  // Compute average speed from distance and duration
+  const avgSpeedKmh = (Number.isFinite(distanceKm) && Number.isFinite(durationS) && durationS > 0)
+    ? distanceKm / (durationS / 3600)
+    : null;
+
+  const upsertValues = [
+    manualFilePath,
+    'Manual Activity',
+    nowIso,
+    startTime || null,
+    sport || null,
+    null, // sub_sport
+    distanceKm || null,
+    elevGainM || null,
+    null, // total_descent_m
+    durationS || null,
+    durationS || null, // total_elapsed_s = total_timer_s for manual
+    avgHr || null,
+    maxHr || null,
+    avgSpeedKmh, // computed avg_speed_kmh
+    null, // max_speed_kmh
+    null, null, // avg_cadence, max_cadence
+    null, null, null, // avg_power, max_power, normalized_power
+    null, null, null, null, null, null, null, null, // TSS, IF, xPower, relIntensity, bikeStress, decoupling, hrTss, trimp
+    null, null, null, // training effects
+    null, // total_calories
+    0, // record_count (no records for manual activity)
+    0, // lap_count
+    JSON.stringify([]), // laps_json
+    null, // rider_mass_kg
+    null, // bike_mass_kg
+    'manual', // source
+  ];
+
+  const upsertStmt = db.prepare(`
+    INSERT INTO activities (
+      file_path, file_name, imported_at, start_time, sport, sub_sport,
+      total_distance_km, total_ascent_m, total_descent_m,
+      total_timer_s, total_elapsed_s,
+      avg_hr, max_hr, avg_speed_kmh, max_speed_kmh,
+      avg_cadence, max_cadence, avg_power, max_power, normalized_power,
+      training_stress_score, intensity_factor, xpower, relative_intensity_gc, bike_stress_score, decoupling_pct, hr_tss, trimp,
+      total_training_effect, aerobic_training_effect, anaerobic_training_effect,
+      total_calories, record_count, lap_count, laps_json, rider_mass_kg, bike_mass_kg, source
+    ) VALUES (${upsertValues.map(() => '?').join(',')})
+    ON CONFLICT(file_path) DO UPDATE SET
+      file_name=excluded.file_name, imported_at=excluded.imported_at,
+      start_time=excluded.start_time, sport=excluded.sport,
+      total_distance_km=excluded.total_distance_km,
+      total_ascent_m=excluded.total_ascent_m,
+      total_elapsed_s=excluded.total_elapsed_s,
+      avg_hr=excluded.avg_hr, max_hr=excluded.max_hr,
+      avg_speed_kmh=excluded.avg_speed_kmh,
+      laps_json=excluded.laps_json
+  `);
+
+  upsertStmt.run(upsertValues);
+  upsertStmt.free();
+
+  const idStmt = db.prepare('SELECT id FROM activities WHERE file_path = ?');
+  idStmt.bind([manualFilePath]);
+  if (!idStmt.step()) {
+    idStmt.free();
+    throw new Error(`Failed to create manual activity`);
+  }
+  const row = idStmt.getAsObject();
+  idStmt.free();
+  const activityId = Number(row.id);
+
+  return activityId;
 }
 
 function getSegmentationOptions() {

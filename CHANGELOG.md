@@ -1,94 +1,16 @@
 # Changelog
 
-## 0.9.18 - 2026-09-01
-
-### Changed
-
-- Removed the unused single-color map mode.
-
-## 0.9.17 - 2026-09-01
+## 0.10.0 - 2026-09-01
 
 ### Added
 
-- Show the selected speed or heart-rate value when hovering a route segment on the map.
+- Added manual activity creation: log activities without FIT files with custom distance, duration, and heart rate data. Manual activities are included in baseline comparisons and historical aggregates for AI analysis.
 
-## 0.9.16 - 2026-09-01
+## 0.9.18 - 2026-09-01
 
-### Changed
+### Added
 
-- Assigned distinct colors to consecutive grouped segments on maps and chart terrain bars.
-
-## 0.9.15 - 2026-09-01
-
-### Fixed
-
-- Restored map route rendering by providing localized UI text to its client script.
-
-## 0.9.14 - 2026-09-01
-
-### Fixed
-
-- Restored segment-colored map routes and terrain bar hover details in the webview.
-
-## 0.9.13 - 2026-09-01
-
-### Fixed
-
-- Restored terrain bar hover details and segment-colored map routes after the webview refactor.
-
-## 0.9.12 - 2026-09-01
-
-### Changed
-
-- Presented grouped segment details in dedicated table columns instead of one dense text column.
-
-## 0.9.11 - 2026-09-01
-
-### Changed
-
-- Made chart and map segment hover details match the grouped context used by AI, with compact terrain bars below chart data.
-
-## 0.9.10 - 2026-09-01
-
-### Changed
-
-- Presented grouped segment analysis as a table using the same rows sent to AI.
-
-## 0.9.9 - 2026-09-01
-
-### Changed
-
-- Show the same grouped segment context in the activity view that is sent to AI analysis.
-
-## 0.9.8 - 2026-09-01
-
-### Fixed
-
-- Omitted missing distance and grade values from stopped segments instead of displaying false zeros.
-
-## 0.9.7 - 2026-09-01
-
-### Fixed
-
-- Merged adjacent terrain sections with similar effort signals to avoid artificial flat-segment fragmentation.
-
-## 0.9.6 - 2026-09-01
-
-### Fixed
-
-- Kept short continuous terrain sections, including climbs, from being split into noisy effort micro-segments.
-
-## 0.9.5 - 2026-09-01
-
-### Fixed
-
-- Made segment tables show power only when its effort basis is meaningful and omit misleading elevation gain on descents.
-
-## 0.9.4 - 2026-09-01
-
-### Fixed
-
-- Restored activity browser rendering after refactoring and added a smoke test for renderer dependencies.
+- Added grouped terrain segments across the activity table, charts, AI context, and map, with meaningful hover details and route metric values.
 
 ## 0.9.0 - 2026-09-01
 
