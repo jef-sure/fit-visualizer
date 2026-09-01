@@ -17,6 +17,7 @@ const {
   extractGpsPoints,
   formatHms,
   formatNumber,
+  normalizeRecordSpeeds,
   safeJson,
 } = require('./utils');
 
