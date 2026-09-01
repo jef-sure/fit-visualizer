@@ -3,6 +3,7 @@ const vscode = require('vscode');
 
 function registerCommands(context, services) {
   const {
+    addAndBrowseManualActivity,
     escapeHtml,
     getLocalDbPath,
     indexFitFolder,
@@ -68,6 +69,12 @@ function registerCommands(context, services) {
     );
   });
 
+  const addManual = register(
+    'fitVisualizer.addManualActivity',
+    'Add manual activity failed',
+    () => addAndBrowseManualActivity()
+  );
+
   const customEditor = vscode.window.registerCustomEditorProvider(
     'fitVisualizer.fitEditor',
     createFitEditorProvider(context, {
@@ -81,7 +88,7 @@ function registerCommands(context, services) {
     }
   );
 
-  return [openFit, browse, indexAll, indexNew, indexOne, reanalyzeOutdated, customEditor];
+  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, customEditor];
 }
 
 function createFitEditorProvider(context, services) {

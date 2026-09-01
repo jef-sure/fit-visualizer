@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.9.18",
+  "version": "0.10.0",
   "description": "Visualize cycling and running FIT files and get AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
@@ -49,6 +49,10 @@
       {
         "command": "fitVisualizer.indexOne",
         "title": "FIT: Index This File"
+      },
+      {
+        "command": "fitVisualizer.addManualActivity",
+        "title": "FIT: Add Manual Activity"
       },
       {
         "command": "fitVisualizer.reanalyzeOutdated",

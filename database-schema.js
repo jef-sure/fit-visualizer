@@ -159,6 +159,7 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'athlete_profile', 'bike_mass_kg', 'REAL');
   addColumnIfMissing(db, 'athlete_profile', 'wheel_circumference_mm', 'REAL');
   addColumnIfMissing(db, 'activity_analysis', 'analysis_version', 'INTEGER NOT NULL DEFAULT 1');
+  addColumnIfMissing(db, 'activities', 'source', "TEXT NOT NULL DEFAULT 'fit'");
 }
 
 function addColumnIfMissing(db, table, column, type) {
