@@ -90,21 +90,22 @@ function buildSegmentContext(segments, options = {}) {
   const shortStopIndexes = new Set(shortStops.map((segment) => segment.index));
   const rows = groupSimilarSegments(list.filter((segment) => !shortStopIndexes.has(segment.index)), options);
 
-  const lines = rows.map((row) => {
+  const displayRows = rows.map((row) => {
     const members = row.kind === 'repeat' ? row.members : [row.segment];
     const first = members[0];
     const last = members[members.length - 1];
     const span = `${formatHms(first.startElapsed)}-${formatHms(last.endElapsed)}`;
     const body = row.kind === 'repeat' ? describeRepeat(row) : describeSegment(first);
-    return `${span} (${formatClock(last.endElapsed - first.startElapsed)}) ${body}`;
+    return { time: `${span} (${formatClock(last.endElapsed - first.startElapsed)})`, details: body };
   });
 
   if (shortStops.length) {
     const total = shortStops.reduce((sum, segment) => sum + segment.durationS, 0);
     const longest = Math.max(...shortStops.map((segment) => segment.durationS));
-    lines.push(`Plus ${shortStops.length} short stops, ${formatClock(total)} total (longest ${formatClock(longest)})`);
+    displayRows.push({ time: '', details: `Plus ${shortStops.length} short stops, ${formatClock(total)} total (longest ${formatClock(longest)})` });
   }
 
+  const lines = displayRows.map((row) => `${row.time ? `${row.time} ` : ''}${row.details}`);
   const totalDuration = Math.max(...list.map((segment) => segment.endElapsed)) - list[0].startElapsed;
   const maxLines = segmentLineBudget(totalDuration, options);
   const numbered = lines.map((line, index) => `${index + 1}. ${line}`).join('\n');
@@ -121,6 +122,7 @@ function buildSegmentContext(segments, options = {}) {
     lines: lines.length,
     maxLines,
     exceeded: lines.length > maxLines,
+    displayRows,
   };
 }
 
