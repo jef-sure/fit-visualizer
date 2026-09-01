@@ -152,7 +152,7 @@ One-off activity analysis (not the follow-up chat) can prefer a cheaper/smaller 
 
 ### Comparing Two Activities with AI
 
-When a comparison activity is selected in the toolbar, a **Compare with AI** button appears below the regular analysis. It asks Copilot to compare the two workouts segment by segment — the primary activity ("This Workout") against the selected one ("Another Compared Activity") — without assuming their segments line up by position, since a stop can split one activity's segment into two while the other stays continuous.
+When a comparison activity is selected in the toolbar, a **Compare with AI** button appears inside the **AI Analysis** section, between the analysis itself and the follow-up chat — all AI features live in that one section. It asks Copilot to compare the two workouts segment by segment — the primary activity ("This Workout") against the selected one ("Another Compared Activity") — without assuming their segments line up by position, since a stop can split one activity's segment into two while the other stays continuous.
 
 Comparisons accumulate per directed pair: comparing A against B and B against A are stored separately, and re-selecting a previously compared pair shows the saved result instead of asking Copilot again. Use **Remove Comparison** to delete just that pair and allow a fresh comparison.
 

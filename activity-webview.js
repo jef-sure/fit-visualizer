@@ -75,7 +75,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonText)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonText, compId)
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -322,7 +322,7 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonText) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonText, comparedActivityId) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -415,19 +415,22 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     ? renderComparisonTable(summary, compSummary, fitData._fileName, compData._fileName, glossary, ui)
     : '';
 
-  // Sits with the numeric comparison rather than at the end of the page: this is the only place
-  // the user is already looking at both rides at once.
-  const comparisonSection = hasOverlay ? `
-    <section class="chart">
-      <h2>${escapeHtml(ui.compareWithAI)}</h2>
-      <div id="comparisonContent" style="padding:12px;color:var(--muted);min-height:60px;line-height:1.5;">
-        <p style="margin:0;">${escapeHtml(ui.clickCompare)}</p>
-      </div>
-      <div style="display:flex;gap:8px;margin-top:10px;">
-        <button id="compareBtn" style="padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.compareWithAI)}</button>
-        <button id="removeComparisonBtn" style="padding:8px 16px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;display:none;">${escapeHtml(ui.removeComparison)}</button>
-      </div>
-    </section>` : '';
+  // Keyed off the dropdown selection, not off whether a GPS track loaded: an activity with only
+  // summary data (a manual entry, say) is still worth comparing, and silently hiding the whole
+  // block would leave no trace of why.
+  const comparedId = Number(comparedActivityId);
+  const canCompare = Number.isFinite(comparedId) && comparedId > 0;
+  const comparisonBlock = canCompare ? `
+      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
+        <h3 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--muted);">${escapeHtml(ui.compareWithAI)}</h3>
+        <div id="comparisonContent" style="padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--vscode-editor-background);color:var(--muted);line-height:1.5;">
+          <p style="margin:0;">${escapeHtml(ui.clickCompare)}</p>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button id="compareBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.compareWithAI)}</button>
+          <button id="removeComparisonBtn" style="padding:8px 14px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;display:none;">${escapeHtml(ui.removeComparison)}</button>
+        </div>
+      </div>` : '';
 
   return `<main class="wrap">
     <section class="hero">
@@ -436,7 +439,6 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     </section>
     ${shouldOfferTranslations ? `<section class="calibrationHint"><span>${escapeHtml(formatUi(ui.translationsAvailable, language))}</span><button type="button" id="generateTranslationsBtn">${escapeHtml(formatUi(ui.generateTranslations, language))}</button><span id="translationStatus"></span></section>` : ''}
     ${compStatsRow}
-    ${comparisonSection}
     <section class="grid">
       ${metric('Records', summary.records, 'records', glossary)}
       ${metric('Sessions', sessions.length, 'sessions', glossary)}
@@ -593,6 +595,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <p style="margin:0;">${escapeHtml(ui.loadingAnalysis)}</p>
       </div>
       <button id="analyzeBtn" style="margin-top:10px;padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.analyzeActivity)}</button>
+      ${comparisonBlock}
       <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
         <h3 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--muted);">${escapeHtml(ui.followUpChat)}</h3>
         <div id="analysisChatMessages" style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--vscode-editor-background);"></div>
@@ -644,7 +647,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       let chatMessages = ${safeJson(Array.isArray(analysisChat) ? analysisChat : [])};
       const initialComparison = ${safeJson(comparisonText || '')};
       let hasComparison = Boolean(initialComparison);
-      let compareActivityId = ${compData && compData._activityId ? compData._activityId : 'null'};
+      let compareActivityId = ${canCompare ? comparedId : 'null'};
 
       function analyzeButtonLabel() {
         if (!hasAnalysis) return ui.analyzeActivity;
