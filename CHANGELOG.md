@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0 - 2026-09-01
+
+### Added
+
+- Added a compact activity table for detected segments and device-recorded FIT laps when available.
+
 ## 0.8.0 - 2026-09-01
 
 ### Added

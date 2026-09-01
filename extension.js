@@ -24,7 +24,7 @@ const {
 const { registerCommands } = require('./commands');
 const { renderActivityBrowserHtml, renderActivityContentHtml } = require('./activity-webview');
 const { ensureDatabaseSchema } = require('./database-schema');
-const { fileExists, getFitUris, parseFitFile } = require('./fit-files');
+const { fileExists, getFitUris, getParsedLaps, parseFitFile } = require('./fit-files');
 const {
   calculateAutoHeartRateProfile,
   computeHeartRateZones,
@@ -688,7 +688,7 @@ async function loadFitDataFromDb(dbPath, activityId) {
         avg_hr:                activity.manual_avg_hr ?? activity.avg_hr,
         max_hr:                activity.manual_max_hr ?? activity.max_hr,
       }],
-      laps: [],
+      laps: parseStoredLaps(activity.laps_json),
       _activityId: Number(activity.id),
       _fileName: activity.file_name,
     };
@@ -781,7 +781,7 @@ function getAthleteProfileFromDbConnection(db) {
 function upsertActivity(db, filePath, fitData) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
-  const laps = Array.isArray(fitData.laps) ? fitData.laps : [];
+  const laps = getParsedLaps(fitData);
   const athleteProfile = getAthleteProfileFromDbConnection(db);
 
   const profileMaxHr = getProfileMaxHeartRate(db, sessions[0]?.start_time);
@@ -810,7 +810,7 @@ function upsertActivity(db, filePath, fitData) {
     summary.trainingStressScore, summary.intensityFactor, summary.xPower, summary.relativeIntensityGc, summary.bikeStressScore, summary.decouplingPct, summary.hrTss, summary.trimp,
     null, null, null,
     Number.isFinite(sessionCalories) && sessionCalories > 0 ? sessionCalories : null,
-    records.length, laps.length,
+    records.length, laps.length, JSON.stringify(laps),
     Number.isFinite(athleteProfile.riderMassKg) ? athleteProfile.riderMassKg : null,
     Number.isFinite(athleteProfile.bikeMassKg) ? athleteProfile.bikeMassKg : null,
   ];
@@ -824,7 +824,7 @@ function upsertActivity(db, filePath, fitData) {
       avg_cadence, max_cadence, avg_power, max_power, normalized_power,
       training_stress_score, intensity_factor, xpower, relative_intensity_gc, bike_stress_score, decoupling_pct, hr_tss, trimp,
       total_training_effect, aerobic_training_effect, anaerobic_training_effect,
-      total_calories, record_count, lap_count, rider_mass_kg, bike_mass_kg
+      total_calories, record_count, lap_count, laps_json, rider_mass_kg, bike_mass_kg
     ) VALUES (${upsertValues.map(() => '?').join(',')})
     ON CONFLICT(file_path) DO UPDATE SET
       file_name=excluded.file_name, imported_at=excluded.imported_at,
@@ -849,7 +849,7 @@ function upsertActivity(db, filePath, fitData) {
       aerobic_training_effect=excluded.aerobic_training_effect,
       anaerobic_training_effect=excluded.anaerobic_training_effect,
       total_calories=excluded.total_calories,
-      record_count=excluded.record_count, lap_count=excluded.lap_count,
+      record_count=excluded.record_count, lap_count=excluded.lap_count, laps_json=excluded.laps_json,
       rider_mass_kg=COALESCE(activities.rider_mass_kg, excluded.rider_mass_kg),
       bike_mass_kg=COALESCE(activities.bike_mass_kg, excluded.bike_mass_kg)
   `);
@@ -921,6 +921,15 @@ function upsertActivity(db, filePath, fitData) {
         ratio = excluded.ratio,
         trusted_distance_km = excluded.trusted_distance_km
     `, [activityId, new Date().toISOString(), calibration.ratio, calibration.trustedDistanceKm]);
+  }
+}
+
+function parseStoredLaps(raw) {
+  try {
+    const laps = JSON.parse(String(raw || '[]'));
+    return Array.isArray(laps) ? laps : [];
+  } catch {
+    return [];
   }
 }
 

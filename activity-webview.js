@@ -202,6 +202,50 @@ function formatActivityLabel(a) {
   return [dateStr, sport, dist, dur].filter(Boolean).join(' · ');
 }
 
+function renderActivityTable(segments, laps, ui) {
+  const segmentRows = (Array.isArray(segments) ? segments : []).map((segment, index) => ({
+    label: `${index + 1}. ${segment.technical ? ui.technical : (ui[segment.type] || ui.segment)}`,
+    time: formatDuration(segment.durationS),
+    distance: rangeDistance(segment),
+    heartRate: displayNumber(segment.avgHr, ' bpm', 0),
+    power: displayNumber(segment.avgPower, ' W', 0),
+    grade: displayNumber(segment.avgGrade, '%', 1),
+    elevation: Number(segment.elevGainM) > 0 ? displayNumber(segment.elevGainM, ' m', 0, '+') : '',
+  }));
+  const lapRows = (Array.isArray(laps) ? laps : []).map((lap, index) => ({
+    label: String(index + 1),
+    time: formatDuration(lap.total_timer_time ?? lap.total_elapsed_time),
+    distance: displayNumber(lap.total_distance, ' km', 2),
+    heartRate: displayNumber(lap.avg_heart_rate ?? lap.avg_hr, ' bpm', 0),
+    power: displayNumber(lap.avg_power, ' W', 0),
+    grade: displayNumber(lap.avg_grade, '%', 1),
+    elevation: Number(lap.total_ascent) > 0 ? displayNumber(lap.total_ascent, ' m', 0, '+') : '',
+  }));
+  const columns = [['label', ui.segment], ['time', ui.time], ['distance', ui.distance], ['heartRate', ui.heartRate], ['power', ui.power], ['grade', ui.grade], ['elevation', ui.elevation]];
+  const renderRows = (rows, name, hidden) => {
+    const visible = columns.filter(([key]) => rows.some((row) => row[key]));
+    return `<div class="activityTableWrap" data-activity-table="${name}"${hidden ? ' hidden' : ''}><table class="activityTable"><thead><tr>${visible.map(([, heading]) => `<th>${escapeHtml(heading)}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${visible.map(([key]) => `<td>${escapeHtml(row[key] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  };
+  if (!segmentRows.length) return '';
+  const tabs = lapRows.length ? `<div class="activityTableTabs"><button type="button" data-activity-table-tab="segments" aria-pressed="true">${escapeHtml(ui.segments)}</button><button type="button" data-activity-table-tab="laps" aria-pressed="false">${escapeHtml(ui.laps)}</button></div>` : '';
+  return `<section class="chart"><h2>${escapeHtml(lapRows.length ? ui.segments : ui.segment)}</h2>${tabs}${renderRows(segmentRows, 'segments', false)}${lapRows.length ? renderRows(lapRows, 'laps', true) : ''}</section>`;
+}
+
+function formatDuration(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds >= 0 ? formatHms(seconds) : '';
+}
+
+function rangeDistance(segment) {
+  const distance = Number(segment.endDistanceKm) - Number(segment.startDistanceKm);
+  return Number.isFinite(distance) && distance >= 0 ? `${distance.toFixed(2)} km` : '';
+}
+
+function displayNumber(value, suffix, digits, prefix = '') {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${prefix}${number.toFixed(digits)}${suffix}` : '';
+}
+
 function parseActivityTime(value) {
   if (!value) return null;
   const iso = new Date(value);
@@ -277,6 +321,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const altitudeOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'altitude');
   const chartSegments = mapSegmentsToDistanceRanges(segments, records);
   const segmentTooltipPayload = safeJson(chartSegments);
+  const activityTable = renderActivityTable(chartSegments, fitData.laps, ui);
   const chartClientPayloads = safeJson({
     [mapId + 'SpeedSvg']: buildChartClientPayloadFromModule(speedChart, 'km', 'km/h', speedOverlays),
     [mapId + 'HrSvg']: buildChartClientPayloadFromModule(hrChart, 'km', 'bpm', hrOverlays),
@@ -448,6 +493,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
+    ${activityTable}
     <div id="${mapId}SegmentTooltip" class="segmentTooltip" role="tooltip" hidden></div>
     <section id="${mapId}RouteSection" class="chart">
       <h2>${escapeHtml(ui.gpsRoute)}</h2>
@@ -939,6 +985,17 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       var payloads = ${chartClientPayloads};
       var chartSegments = ${segmentTooltipPayload};
       var segmentTooltip = document.getElementById('${mapId}SegmentTooltip');
+      document.querySelectorAll('[data-activity-table-tab]').forEach(function (button) {
+        button.addEventListener('click', function () {
+          var target = button.getAttribute('data-activity-table-tab');
+          document.querySelectorAll('[data-activity-table]').forEach(function (table) {
+            table.hidden = table.getAttribute('data-activity-table') !== target;
+          });
+          document.querySelectorAll('[data-activity-table-tab]').forEach(function (tab) {
+            tab.setAttribute('aria-pressed', String(tab === button));
+          });
+        });
+      });
       var svgIds = Object.keys(payloads).filter(function (id) { return payloads[id]; });
       var instances = {};
 
@@ -1310,6 +1367,14 @@ function sharedCss() {
     .segmentBandTechnical { fill:#c0392b; fill-opacity:0.14; }
     .segmentTooltip, .segmentLeafletTooltip { max-width:260px; padding:7px 9px; border:1px solid var(--border); border-radius:6px; background:var(--vscode-editorHoverWidget-background, var(--card)); color:var(--ink); box-shadow:0 3px 12px rgba(0,0,0,.22); font-size:.82rem; line-height:1.4; pointer-events:none; }
     .segmentTooltip { position:fixed; z-index:1300; }
+    .activityTableTabs { display:flex; gap:6px; margin:0 0 10px; }
+    .activityTableTabs button { border:1px solid var(--border); border-radius:4px; padding:5px 9px; background:var(--input-bg); color:var(--input-fg); cursor:pointer; }
+    .activityTableTabs button[aria-pressed="true"] { background:var(--accent); color:var(--bg); }
+    .activityTableWrap { overflow:auto; }
+    .activityTable { width:100%; border-collapse:collapse; font-size:.84rem; white-space:nowrap; }
+    .activityTable th, .activityTable td { padding:6px 8px; border-bottom:1px solid var(--border); text-align:right; }
+    .activityTable th:first-child, .activityTable td:first-child { text-align:left; }
+    .activityTable th { color:var(--muted); font-size:.75rem; text-transform:uppercase; }
     .segmentBandControls { display:inline-flex; align-items:center; gap:4px; margin:0 0 6px; color:var(--muted); font-size:0.82rem; cursor:pointer; }
     .crosshair { stroke:color-mix(in srgb,var(--ink) 55%,transparent); stroke-width:1; pointer-events:none; }
     .crosshairDot { fill:var(--accent); stroke:var(--bg); stroke-width:1.5; pointer-events:none; }
