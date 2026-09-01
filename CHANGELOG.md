@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.1 - 2026-09-01
+
+### Changed
+
+- Segment breakdown lines now include the segment's distance, placed next to speed (and shown for stops when known).
+- The segment breakdown is now embedded inside the `This Workout` block of the AI prompt, right after the workout's own aggregates, instead of appearing as a separate block after cross-activity history.
+- Renamed the prompt's `Previous Analysis` block to `Previous Workout Analysis` to avoid confusion with `Recent Activity History` (analyses of other activities) and the `## Workout Analysis` output heading.
+
 ## 0.10.0 - 2026-09-01
 
 ### Added

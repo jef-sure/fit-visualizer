@@ -890,6 +890,7 @@ test('activity segments combine terrain, effort basis and aggregates', () => {
   assert.ok(climb.elevGainM > 0);
   // Terrain boundaries shift by a sample or two because of the hysteresis.
   assert.ok(Math.abs(climb.avgPower - 240) <= 5, `expected ~240 W, got ${climb.avgPower}`);
+  assert.ok(climb.distanceKm > 0, `expected a positive segment distance, got ${climb.distanceKm}`);
 
   const flat = segments.find((segment) => segment.type === 'flat');
   assert.equal(flat.effortBasis, 'hr');
@@ -1761,6 +1762,16 @@ test('segment breakdown lists segments, collapses repeats and folds short stops'
   assert.match(grouped.text, /8x \[ ~4:00 flat power 250-257 W \| ~1:00 flat power 120-127 W \]/);
 });
 
+test('segment lines include distance next to speed, and for stops when known', () => {
+  const segments = [
+    { index: 0, type: 'descent', effortBasis: 'none', startElapsed: 24, endElapsed: 117, durationS: 93, avgGrade: -7.4, avgHr: 104, avgSpeedKmh: 34.6, distanceKm: 0.9 },
+    { index: 1, type: 'stopped', effortBasis: 'none', startElapsed: 4089, endElapsed: 4401, durationS: 312, distanceKm: 0.1 },
+  ];
+  const context = buildSegmentContext(segments);
+  assert.match(context.text, /descent, avg grade -7\.4%, avg HR 104, 34\.6 km\/h, 0\.9 km/);
+  assert.match(context.text, /stopped, 0\.1 km/);
+});
+
 test('segment line budget scales with duration and never truncates', () => {
   assert.equal(segmentLineBudget(0), 10);
   assert.equal(segmentLineBudget(3600), 10);
@@ -1823,7 +1834,8 @@ test('prompt places data before rules and carries segment guidance', () => {
   );
 
   assert.ok(prompt.indexOf('**Segment Breakdown:**') < prompt.indexOf('**Evidence Rules:**'));
-  assert.ok(prompt.indexOf('**Recent Activity History') < prompt.indexOf('**Segment Breakdown:**'));
+  assert.ok(prompt.indexOf('**Segment Breakdown:**') < prompt.indexOf('**Recent Activity History'));
+  assert.ok(prompt.indexOf('**This Workout:**') < prompt.indexOf('**Segment Breakdown:**'));
   assert.ok(prompt.indexOf('**Evidence Rules:**') < prompt.indexOf('**Questions for Analysis:**'));
   assert.match(prompt, /never compare vpower numbers against HR numbers directly/);
   assert.match(prompt, /past analyses of other workouts/);
