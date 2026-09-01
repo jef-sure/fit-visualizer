@@ -931,8 +931,8 @@ test('activity webview renderer executes its complete server-side render path', 
       ],
       sessions: [{ total_distance: 0.5, total_timer_time: 60 }],
       laps: [],
-    }, {}, 'nonce', false, null, {}, null, [], null,
-    localizeUi(), localizeGlossary(), false, 'English', []
+    }, {}, 'nonce', false, null, {}, { text: 'Older analysis', version: 1 }, [], null,
+    localizeUi(), localizeGlossary(), false, 'English', [], 8
   );
   assert.match(html, /fitMapSpeedSvg/);
   assert.match(html, /Interactive Map/);

@@ -1,22 +1,16 @@
 # Changelog
 
+## 0.9.4 - 2026-09-01
+
+### Fixed
+
+- Restored activity browser rendering for stored analyses after the webview renderer refactor.
+
 ## 0.9.3 - 2026-09-01
 
 ### Fixed
 
-- Added a renderer smoke test to catch missing webview module dependencies before release.
-
-## 0.9.2 - 2026-09-01
-
-### Fixed
-
-- Restored numeric activity rendering after the webview renderer refactor.
-
-## 0.9.1 - 2026-09-01
-
-### Fixed
-
-- Restored activity browser loading after the webview renderer refactor.
+- Restored activity browser rendering after refactoring and added a smoke test for renderer dependencies.
 
 ## 0.9.0 - 2026-09-01
 
