@@ -894,6 +894,7 @@ test('activity glossary localizes visible metric descriptions from one source', 
   assert.match(GLOSSARY.technical, /Technical/);
 
   const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  assert.match(source, /asNumber,/);
   assert.match(source, /normalizeRecordSpeeds,/);
   assert.match(source, /const translate = \(message\) => generatedTranslations\?\.\[message\] \|\| vscode\.l10n\.t\(message\);/);
   assert.match(source, /const glossary = localizeGlossary\(translate\);/);

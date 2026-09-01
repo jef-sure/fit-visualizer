@@ -11,6 +11,7 @@ const {
 } = require('./chart-overlays');
 const { computeHeartRateZones } = require('./heart-rate');
 const {
+  asNumber,
   createNonce,
   escapeHtml,
   estimateWheelCalibrationRatio,
