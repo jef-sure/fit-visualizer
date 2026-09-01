@@ -38,7 +38,7 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 - Open FIT files in an interactive visual editor
 - Auto-index activities into local SQLite storage
 - Compare two activities in one view
-- Speed, heart rate, and altitude charts by distance — with adaptive axis labels that add detail as you resize width or height
+- Speed, heart rate, and altitude charts by distance, with adaptive axis labels
 - Overlay any two extra metrics (grade, altitude, speed, heart rate) on top of a chart
 - Shared crosshair across all three charts: hover one, see the exact value at that point on all of them
 - Render GPS track on an interactive map, with Ctrl/Cmd + scroll to zoom so scrolling the page doesn't fight the map
@@ -63,7 +63,6 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 ## Requirements
 
 - GitHub Copilot Chat, installed and signed in, for AI analysis. Everything else (charts, map, segmentation, zones, calibration) works without it.
-- VS Code may ask you to authorize FIT Visualizer before the first Copilot-backed analysis request; if permission is denied, the extension reports that separately from missing sign-in or policy blocks.
 
 ## What's a FIT File, and How Do I Get One?
 
@@ -112,7 +111,7 @@ Thresholds (grade cutoff, minimum segment length, stop detection, GPS trust wind
 
 ## Wheel Calibration
 
-If your bike uses a wheel speed sensor, its distance depends on a configured wheel circumference — which drifts if tire pressure changes or was mismeasured to begin with. FIT Visualizer compares the sensor's distance against GPS on long, straight, well-tracked stretches across your recent rides, and — only once there's enough trustworthy distance accumulated and the deviation is real, not GPS noise — suggests a corrected circumference. Stable large mismatches are treated as calibration evidence rather than discarded just because they are far from 1:1. It stays silent otherwise; there's no partial progress indicator to watch.
+If your bike uses a wheel speed sensor, its distance depends on a configured wheel circumference. FIT Visualizer compares sensor distance against GPS on long, straight, well-tracked stretches and suggests a correction only when enough trustworthy evidence is available. It stays silent otherwise.
 
 ## AI-Assisted Analysis
 
