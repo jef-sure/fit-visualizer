@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const test = require('node:test');
 const initSqlJs = require('../vendor/sql-wasm/sql-wasm.js');
 const {
@@ -16,6 +17,12 @@ const {
 const { ensureDatabaseSchema } = require('../database-schema');
 const { GLOSSARY, localizeGlossary } = require('../glossary');
 const { UI_STRINGS, formatUi, localizeUi } = require('../ui-strings');
+const {
+  loadGeneratedTranslationBundle,
+  parseGeneratedBundle,
+  saveGeneratedTranslationBundle,
+  validateTranslationBundle,
+} = require('../dynamic-localization');
 const {
   calculateAutoHeartRateProfile,
   computeHeartRateZones,
@@ -743,7 +750,8 @@ test('activity glossary localizes visible metric descriptions from one source', 
   assert.match(GLOSSARY.technical, /Technical/);
 
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
-  assert.match(source, /const glossary = localizeGlossary\(vscode\.l10n\.t\);/);
+  assert.match(source, /const translate = \(message\) => generatedTranslations\?\.\[message\] \|\| vscode\.l10n\.t\(message\);/);
+  assert.match(source, /const glossary = localizeGlossary\(translate\);/);
   assert.match(source, /class="term" title="\$\{escapeHtml\(description\)\}"/);
   assert.match(source, /metric\('Avg Power \(W\)' \+ powerMetricSuffix, summary\.avgPower\.toFixed\(0\), 'averagePower', glossary\)/);
   assert.match(source, /\['Max HR \(bpm\)', a\.maxHr\.toFixed\(0\), b\.maxHr\.toFixed\(0\), 'maximumHeartRate'\]/);
@@ -764,6 +772,26 @@ test('localized webview UI uses one complete string catalog', () => {
   assert.match(source, /const ui = localizeUi\(vscode\.l10n\.t\);/);
   assert.match(source, /<html lang="\$\{escapeHtml\(locale\)\}">/);
   assert.match(source, /const ui = \$\{safeJson\(ui\)\};/);
+});
+
+test('generated translation bundles must exactly match the UI and glossary catalogs', () => {
+  const bundle = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'l10n', 'bundle.l10n.ru.json'), 'utf8'));
+  assert.equal(validateTranslationBundle(bundle), bundle);
+  assert.throws(() => validateTranslationBundle({}), /exactly the current UI string catalog/);
+  assert.throws(() => validateTranslationBundle({ ...bundle, 'Error: {0}': 'Ошибка' }), /changed its placeholders/);
+  assert.equal(parseGeneratedBundle(`\`\`\`json\n${JSON.stringify(bundle)}\n\`\`\``)['Activity'], 'Активность');
+});
+
+test('generated translation bundles are stored per locale outside the extension package', async () => {
+  const storagePath = fs.mkdtempSync(path.join(os.tmpdir(), 'fitviz-l10n-'));
+  const bundle = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'l10n', 'bundle.l10n.ru.json'), 'utf8'));
+  try {
+    await saveGeneratedTranslationBundle(storagePath, 'es-MX', bundle);
+    assert.deepEqual(await loadGeneratedTranslationBundle(storagePath, 'es_MX'), bundle);
+    assert.equal(await loadGeneratedTranslationBundle(storagePath, 'invalid locale'), null);
+  } finally {
+    fs.rmSync(storagePath, { recursive: true, force: true });
+  }
 });
 
 test('normalized power equals constant power for steady efforts', () => {
