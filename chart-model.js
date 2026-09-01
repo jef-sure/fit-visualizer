@@ -29,7 +29,13 @@ function buildGpsRoute(records, width, height, maxPoints) {
   return { ...route, pointCount: gpsPoints.length,
     boundsText: route.points.length ? `lat ${formatTick(route.yMin, route.yStep)}..${formatTick(route.yMax, route.yStep)}, lon ${formatTick(route.xMin, route.xStep)}..${formatTick(route.xMax, route.xStep)}` : 'no GPS points available',
     routeDistanceKm: computeRouteDistanceKm(gpsPoints), speedStats: computeStats(gpsPoints.map((point) => point.speed).filter(Number.isFinite)), hrStats: computeStats(gpsPoints.map((point) => point.heart_rate).filter(Number.isFinite)),
-    geoPoints: gpsPoints.map((point) => ({ lat: point.y, lon: point.x, speed: point.speed, heart_rate: point.heart_rate })) };
+    geoPoints: gpsPoints.map((point) => ({
+      lat: point.y,
+      lon: point.x,
+      speed: point.speed,
+      heart_rate: point.heart_rate,
+      elapsedTime: point.elapsed_time,
+    })) };
 }
 
 module.exports = { buildGpsRoute, buildLineChart };

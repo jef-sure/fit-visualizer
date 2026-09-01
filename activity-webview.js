@@ -19,7 +19,7 @@ const {
   safeJson,
 } = require('./utils');
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments) {
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
   const ui = localizeUi(translate);
   const glossary = localizeGlossary(translate);
@@ -62,7 +62,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale))
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments)
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -236,7 +236,7 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -285,6 +285,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const compGpsPoints = hasOverlay ? safeJson(extractGpsPoints(compRecords).slice(0, gpsRoutePointBudget).map((p) => ({ lat: p.y, lon: p.x }))) : 'null';
 
   const mapPayload = safeJson(gpsRoute.geoPoints);
+  const segmentPayload = safeJson(Array.isArray(segments) ? segments : []);
   const safeFile = escapeHtml(fitData._fileName || '');
   const activitySession = sessions[0] || {};
   const avgHrValue = positiveNumberOrBlank(activitySession.avg_hr);
@@ -457,9 +458,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           <select id="${mapId}Mode">
             <option value="speed" selected>${escapeHtml(ui.speed)}</option>
             <option value="heart_rate">${escapeHtml(ui.heartRate)}</option>
+            <option value="segment">${escapeHtml(ui.segment)}</option>
             <option value="none">${escapeHtml(ui.singleColor)}</option>
           </select>
         </div>
+        <div id="${mapId}SegmentLegend" class="segmentLegend" style="display:none"></div>
         <div id="${mapId}"></div>
         <div class="mapHint">${escapeHtml(ui.mapTiles)}</div>
       </div>
@@ -794,6 +797,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   <script nonce="${nonce}">
     (function () {
       const routePoints = ${mapPayload};
+      const activitySegments = ${segmentPayload};
       const mapEl = document.getElementById('${mapId}');
       const gpsRouteSection = document.getElementById('${mapId}RouteSection');
 
@@ -860,6 +864,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
         function drawSegments(mode) {
           clearSegments();
+          const segmentColors = { climb: '#d35400', descent: '#2980b9', flat: '#3d8b40', stopped: '#7f8c8d', technical: '#c0392b' };
+          const segmentLabels = { climb: ui.climb, descent: ui.descent, flat: ui.flat, stopped: ui.stopped, technical: ui.technical };
+          const legend = document.getElementById('${mapId}SegmentLegend');
+          if (legend) {
+            legend.style.display = mode === 'segment' ? '' : 'none';
+            if (mode === 'segment') legend.innerHTML = '<span>' + escapeHtmlClient(ui.terrainLegend) + ':</span> ' + Object.keys(segmentColors).map(function (type) {
+              return '<span class="segmentLegendItem"><i style="background:' + segmentColors[type] + '"></i>' + escapeHtmlClient(segmentLabels[type]) + '</span>';
+            }).join('');
+          }
           const vals = routePoints
             .map((p) => p[mode])
             .filter((value) => value != null && Number.isFinite(Number(value)))
@@ -869,7 +882,13 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           for (let i = 1; i < routePoints.length; i++) {
             const a = routePoints[i-1], b = routePoints[i];
             const value = b[mode] == null ? NaN : Number(b[mode]);
-            const color = mode !== 'none' ? colorForValue(value, mn, mx) : '#2f6db3';
+            const matchedSegment = mode === 'segment' ? activitySegments.find(function (segment) {
+              return b.elapsedTime >= segment.startElapsed && b.elapsedTime <= segment.endElapsed;
+            }) : null;
+            const segmentType = matchedSegment?.technical ? 'technical' : matchedSegment?.type;
+            const color = mode === 'segment'
+              ? (segmentColors[segmentType] || '#7f8c8d')
+              : (mode !== 'none' ? colorForValue(value, mn, mx) : '#2f6db3');
             segments.push(L.polyline([[a.lat,a.lon],[b.lat,b.lon]], { color, weight:4, opacity:0.92, lineCap:'round' }).addTo(map));
           }
         }
@@ -1260,6 +1279,9 @@ function sharedCss() {
     .zoneMeta { color:var(--muted); font-size:0.78rem; min-width:130px; text-align:right; white-space:nowrap; }
     .mapWrap { display:grid; gap:8px; }
     .mapControls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; color:var(--muted); font-size:0.9rem; }
+    .segmentLegend { display:flex; gap:8px; flex-wrap:wrap; align-items:center; color:var(--muted); font-size:0.78rem; }
+    .segmentLegendItem { display:inline-flex; align-items:center; gap:4px; }
+    .segmentLegendItem i { width:10px; height:10px; border-radius:2px; display:inline-block; }
     .mapControls select { border:1px solid var(--border); border-radius:6px; padding:4px 8px; background:var(--input-bg); color:var(--input-fg); font-size:0.9rem; }
     #fitMap, #fitMapComp { height:var(--map-height,clamp(320px,52vh,760px)); border:1px solid var(--border); border-radius:10px; overflow:hidden; background:color-mix(in srgb,var(--card) 65%,var(--bg)); }
     .mapHint { color:var(--muted); font-size:0.85rem; }

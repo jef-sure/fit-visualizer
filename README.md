@@ -45,6 +45,7 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 - Activity controls, forms, map actions, and analysis status messages follow the VS Code interface language
 - For an interface language without a packaged translation, generate a local UI translation bundle on demand with the selected Copilot model
 - Render GPS track on an interactive map, with Ctrl/Cmd + scroll to zoom so scrolling the page doesn't fight the map
+- Color the GPS route by speed, heart rate, or detected terrain segments, with a legend for climbs, descents, flats, stops, and technical descents
 - Automatic ride segmentation — splits a ride into climbs, descents, flats, and stops, and estimates effort with a physics-based power model on climbs or heart rate elsewhere, honestly labeling which one applies to each segment
 - Wheel-circumference calibration hint — compares your wheel sensor's distance against GPS on trustworthy straight stretches and suggests a correction when there's enough evidence, silent otherwise
 - Save dated heart-rate zone profiles

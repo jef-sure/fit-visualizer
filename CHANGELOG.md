@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0 - 2026-09-01
+
+### Added
+
+- Added route coloring by detected terrain segments, including a legend for climbs, descents, flats, stops, and technical descents.
+
 ## 0.5.1 - 2026-09-01
 
 ### Changed
