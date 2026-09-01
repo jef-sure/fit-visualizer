@@ -2302,6 +2302,11 @@ test('comparison UI wires Compare/Remove through a delegated click handler', () 
   // Every AI feature lives in the one AI Analysis section, between Analyze and the follow-up chat.
   assert.ok(source.indexOf('${comparisonBlock}') > source.indexOf('id="analyzeBtn"'));
   assert.ok(source.indexOf('${comparisonBlock}') < source.indexOf('id="analysisChatMessages"'));
+
+  // The comparison text must read as prominently as the main analysis text, not as a footnote.
+  const cardTextStyle = /font-size:1\.08rem;line-height:1\.6;white-space:pre-wrap;word-break:break-word;/g;
+  assert.equal((source.match(cardTextStyle) || []).length, 3,
+    'expected the same font-size on the analysis text, the server-rendered card, and the client-rendered card');
 });
 
 test('comparison entries are labeled from the activities list the same way as the dropdown', () => {

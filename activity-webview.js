@@ -435,7 +435,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           <strong style="font-size:0.9rem;">${escapeHtml(entry.label)}</strong>
           <button class="removeComparisonBtn" data-compared-id="${entry.comparedActivityId}" style="padding:4px 10px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.8rem;">${escapeHtml(ui.removeComparison)}</button>
         </div>
-        <div style="white-space:pre-wrap;line-height:1.5;color:var(--ink);">${escapeHtml(entry.comparisonText)}</div>
+        <div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(entry.comparisonText)}</div>
       </div>`).join('');
 
   // The trigger targets whichever activity is picked in "Compare with" right now; the label
@@ -694,7 +694,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           + '<strong style="font-size:0.9rem;">' + escapeHtml(entry.label) + '</strong>'
           + '<button class="removeComparisonBtn" data-compared-id="' + entry.comparedActivityId + '" style="padding:4px 10px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.8rem;">' + escapeHtml(ui.removeComparison) + '</button>'
           + '</div>'
-          + '<div style="white-space:pre-wrap;line-height:1.5;color:var(--ink);">' + escapeHtml(entry.comparisonText) + '</div>'
+          + '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(entry.comparisonText) + '</div>'
           + '</div>';
       }
 
