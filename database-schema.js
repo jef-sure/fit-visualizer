@@ -126,12 +126,32 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'activities', 'manual_max_hr', 'REAL');
   addColumnIfMissing(db, 'activities', 'rider_mass_kg', 'REAL');
   addColumnIfMissing(db, 'activities', 'bike_mass_kg', 'REAL');
+  addColumnIfMissing(db, 'activities', 'normalized_power', 'REAL');
+  addColumnIfMissing(db, 'activities', 'training_stress_score', 'REAL');
+  addColumnIfMissing(db, 'activities', 'intensity_factor', 'REAL');
   addColumnIfMissing(db, 'activities', 'xpower', 'REAL');
   addColumnIfMissing(db, 'activities', 'relative_intensity_gc', 'REAL');
   addColumnIfMissing(db, 'activities', 'bike_stress_score', 'REAL');
   addColumnIfMissing(db, 'activities', 'decoupling_pct', 'REAL');
   addColumnIfMissing(db, 'activities', 'hr_tss', 'REAL');
   addColumnIfMissing(db, 'activities', 'trimp', 'REAL');
+  db.run(`
+    UPDATE activities
+    SET normalized_power = NULL,
+        training_stress_score = NULL,
+        intensity_factor = NULL,
+        xpower = NULL,
+        relative_intensity_gc = NULL,
+        bike_stress_score = NULL,
+        hr_tss = NULL
+    WHERE normalized_power = 0
+       OR training_stress_score = 0
+       OR intensity_factor = 0
+       OR xpower = 0
+       OR relative_intensity_gc = 0
+       OR bike_stress_score = 0
+       OR hr_tss = 0;
+  `);
   addColumnIfMissing(db, 'athlete_profile', 'ftp', 'REAL');
   addColumnIfMissing(db, 'athlete_profile', 'rider_mass_kg', 'REAL');
   addColumnIfMissing(db, 'athlete_profile', 'bike_mass_kg', 'REAL');

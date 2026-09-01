@@ -1,52 +1,16 @@
 # Changelog
 
-## 0.1.17 - 2026-09-01
+## 0.1.20 - 2026-09-01
 
 ### Fixed
 
-- Prevented top Y-axis tick clipping and stabilized the X-axis label scale.
+- Treated unavailable derived workload metrics as missing data instead of zero, including existing indexed activities.
 
-## 0.1.16 - 2026-09-01
-
-### Fixed
-
-- Kept the X-axis label visible and made adaptive chart ticks denser.
-
-## 0.1.15 - 2026-09-01
+## 0.1.19 - 2026-09-01
 
 ### Fixed
 
-- Increased adaptive chart tick density and stabilized the X-axis label size during resize.
-
-## 0.1.14 - 2026-09-01
-
-### Fixed
-
-- Restored adaptive chart tick labels while keeping SVG text readable during resize.
-
-## 0.1.13 - 2026-09-01
-
-### Fixed
-
-- Rebuilt the chart text scaling fix with a new package version for extension testing.
-
-## 0.1.12 - 2026-09-01
-
-### Fixed
-
-- Kept chart axis and crosshair labels readable under non-uniform SVG scaling.
-
-## 0.1.11 - 2026-09-01
-
-### Fixed
-
-- Recomputed Y-axis ticks during height-only chart resize.
-
-## 0.1.10 - 2026-09-01
-
-### Fixed
-
-- Stabilized crosshair label sizing across chart sizes.
+- Improved adaptive chart axes: readable labels, denser ticks on resize, and headroom above the highest Y value.
 
 ## 0.1.9 - 2026-09-01
 
