@@ -171,7 +171,7 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
     : 1;
   const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
   if (!models.length) {
-    throw new Error('No Copilot language model is available. Check that GitHub Copilot Chat is installed and signed in.');
+    throw new Error('Copilot Chat is not installed or you are not signed in.');
   }
 
   // Copilot may hand out different models over time, so the log has to record which one answered.
@@ -210,11 +210,34 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
       if (isRateLimitError(message)) {
         throw new Error('Copilot rate limit reached. Please wait a bit and try Analyze again.');
       }
+      const lmErrorMessage = describeLanguageModelError(vscode, error);
+      if (lmErrorMessage) {
+        throw new Error(lmErrorMessage);
+      }
       throw error;
     }
   }
 
   throw new Error('Copilot analysis failed unexpectedly.');
+}
+
+function describeLanguageModelError(vscode, error) {
+  const ctor = vscode?.LanguageModelError;
+  const isLanguageModelError = Boolean(ctor && error instanceof ctor) || typeof error?.code === 'string';
+  if (!isLanguageModelError) {
+    return null;
+  }
+
+  if (error.code === 'NoPermissions') {
+    return 'GitHub Copilot is installed, but FIT Visualizer is not authorized to use it yet. Run Analyze again and grant access when VS Code asks.';
+  }
+  if (error.code === 'Blocked') {
+    return 'GitHub Copilot blocked this analysis request. Check your Copilot policy settings and try again.';
+  }
+  if (error.code === 'NotFound') {
+    return 'The selected Copilot language model was not found. Choose an available Copilot model and try again.';
+  }
+  return null;
 }
 
 // Splits a prompt on its bold headings so the log shows which block dominates the request.
