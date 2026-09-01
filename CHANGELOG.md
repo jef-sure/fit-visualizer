@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.16 - 2026-09-01
+
+### Changed
+
+- Assigned distinct colors to consecutive grouped segments on maps and chart terrain bars.
+
 ## 0.9.15 - 2026-09-01
 
 ### Fixed

@@ -283,6 +283,10 @@ function displayNumber(value, suffix, digits, prefix = '') {
   return Number.isFinite(number) ? `${prefix}${number.toFixed(digits)}${suffix}` : '';
 }
 
+function segmentColor(index) {
+  return `hsl(${Math.round((index * 137.508 + 20) % 360)} 58% 43%)`;
+}
+
 function parseActivityTime(value) {
   if (!value) return null;
   const iso = new Date(value);
@@ -358,13 +362,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const altitudeOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'altitude');
   const segmentPresentation = buildSegmentContext(segments);
   const presentationByIndex = new Map();
-  segmentPresentation.displayRows.forEach((row) => row.members.forEach((segment) => {
-    presentationByIndex.set(segment.index, { time: row.time, details: row.details });
+  segmentPresentation.displayRows.forEach((row, index) => row.members.forEach((segment) => {
+    presentationByIndex.set(segment.index, { time: row.time, details: row.details, index, color: segmentColor(index) });
   }));
   const presentationSegments = (Array.isArray(segments) ? segments : []).map((segment) => ({
     ...segment,
     displayTime: presentationByIndex.get(segment.index)?.time || '',
     displayDetails: presentationByIndex.get(segment.index)?.details || '',
+    displayIndex: presentationByIndex.get(segment.index)?.index ?? -1,
+    displayColor: presentationByIndex.get(segment.index)?.color || '#7f8c8d',
   }));
   const chartSegments = mapSegmentsToDistanceRanges(presentationSegments, records);
   const segmentTooltipPayload = safeJson(chartSegments);
@@ -554,9 +560,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <div class="mapControls">
           <label for="${mapId}Mode">${escapeHtml(ui.colorRouteBy)}</label>
           <select id="${mapId}Mode">
-            <option value="speed" selected>${escapeHtml(ui.speed)}</option>
+            <option value="speed">${escapeHtml(ui.speed)}</option>
             <option value="heart_rate">${escapeHtml(ui.heartRate)}</option>
-            <option value="segment">${escapeHtml(ui.segment)}</option>
+            <option value="segment" selected>${escapeHtml(ui.segment)}</option>
             <option value="none">${escapeHtml(ui.singleColor)}</option>
           </select>
         </div>
@@ -989,14 +995,19 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
         function drawSegments(mode) {
           clearSegments();
-          const segmentColors = { climb: '#d35400', descent: '#2980b9', flat: '#3d8b40', stopped: '#7f8c8d', technical: '#c0392b' };
-          const segmentLabels = { climb: ui.climb, descent: ui.descent, flat: ui.flat, stopped: ui.stopped, technical: ui.technical };
           const legend = document.getElementById('${mapId}SegmentLegend');
           if (legend) {
             legend.style.display = mode === 'segment' ? '' : 'none';
-            if (mode === 'segment') legend.innerHTML = '<span>' + escapeSegmentHtml(ui.terrainLegend) + ':</span> ' + Object.keys(segmentColors).map(function (type) {
-              return '<span class="segmentLegendItem"><i style="background:' + segmentColors[type] + '"></i>' + escapeSegmentHtml(segmentLabels[type]) + '</span>';
-            }).join('');
+            if (mode === 'segment') {
+              var seenSegmentIndexes = {};
+              legend.innerHTML = '<span>' + escapeSegmentHtml(ui.segments) + ':</span> ' + activitySegments.filter(function (segment) {
+                if (seenSegmentIndexes[segment.displayIndex]) return false;
+                seenSegmentIndexes[segment.displayIndex] = true;
+                return segment.displayIndex >= 0;
+              }).map(function (segment) {
+                return '<span class="segmentLegendItem" title="' + escapeSegmentHtml(segment.displayTime + ' ' + segment.displayDetails) + '"><i style="background:' + escapeSegmentHtml(segment.displayColor) + '"></i>' + (segment.displayIndex + 1) + '</span>';
+              }).join('');
+            }
           }
           const vals = routePoints
             .map((p) => p[mode])
@@ -1007,15 +1018,14 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           for (let i = 1; i < routePoints.length; i++) {
             const a = routePoints[i-1], b = routePoints[i];
             const value = b[mode] == null ? NaN : Number(b[mode]);
-            const matchedSegment = mode === 'segment' ? activitySegments.find(function (segment) {
+            const matchedSegment = activitySegments.find(function (segment) {
               return b.elapsedTime >= segment.startElapsed && b.elapsedTime <= segment.endElapsed;
-            }) : null;
-            const segmentType = matchedSegment?.technical ? 'technical' : matchedSegment?.type;
+            });
             const color = mode === 'segment'
-              ? (segmentColors[segmentType] || '#7f8c8d')
+              ? (matchedSegment?.displayColor || '#7f8c8d')
               : (mode !== 'none' ? colorForValue(value, mn, mx) : '#2f6db3');
             const line = L.polyline([[a.lat,a.lon],[b.lat,b.lon]], { color, weight:4, opacity:0.92, lineCap:'round' }).addTo(map);
-            if (mode === 'segment' && matchedSegment) line.bindTooltip(window.formatSegmentDetails(matchedSegment), { sticky: true, className: 'segmentLeafletTooltip' });
+            if (matchedSegment) line.bindTooltip(window.formatSegmentDetails(matchedSegment), { sticky: true, className: 'segmentLeafletTooltip' });
             segments.push(line);
           }
         }
