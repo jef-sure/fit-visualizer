@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Refactored chart geometry, data, models, overlays, and SVG renderers into focused modules.
+- Refactored chart geometry, data, models, overlays, SVG renderers, and activity webview presentation into focused modules; the webview module now owns activity browser/content markup, inline client behavior, shared styles, and presentation helpers.
 
 ## 0.5.0 - 2026-09-01
 
