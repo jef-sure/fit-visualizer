@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.5 - 2026-09-01
+
+### Changed
+
+- Extracted chart overlay data and client payload preparation into a reusable module.
+
 ## 0.5.4 - 2026-09-01
 
 ### Changed
