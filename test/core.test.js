@@ -1171,6 +1171,15 @@ test('generated translation bundles must exactly match the UI and glossary catal
   assert.equal(parseGeneratedBundle(`\`\`\`json\n${JSON.stringify(bundle)}\n\`\`\``)['Activity'], 'Активность');
 });
 
+test('webview translation prompt builds the complete generated bundle request', () => {
+  const { buildTranslationPrompt } = loadActivityWebviewForTest();
+  const prompt = buildTranslationPrompt('de');
+  assert.match(prompt, /locale "de"/);
+  assert.match(prompt, /Return only one valid JSON object/);
+  assert.match(prompt, /"Activity":""/);
+  assert.match(prompt, /"Error: \{0\}":""/);
+});
+
 test('generated translation bundles are stored per locale outside the extension package', async () => {
   const storagePath = fs.mkdtempSync(path.join(os.tmpdir(), 'fitviz-l10n-'));
   const bundle = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'l10n', 'bundle.l10n.ru.json'), 'utf8'));

@@ -23,7 +23,7 @@ const {
   validateTranslationBundle,
 } = require('./dynamic-localization');
 const { registerCommands } = require('./commands');
-const { renderActivityBrowserHtml, renderActivityContentHtml } = require('./activity-webview');
+const { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, buildTranslationPrompt } = require('./activity-webview');
 const { ensureDatabaseSchema } = require('./database-schema');
 const { fileExists, getFitUris, getParsedLaps, parseFitFile } = require('./fit-files');
 const {
@@ -588,6 +588,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
 
   const activities = await loadActivityListFromDb(dbPath);
   const selectedId = preselectId || (activities[0]?.id ? Number(activities[0].id) : null);
+  let translationJustGenerated = false;
   async function render(selId, selCompId) {
     const data = selId ? await loadFitDataFromDb(dbPath, selId) : null;
     const comp = selCompId ? await loadFitDataFromDb(dbPath, selCompId) : null;
@@ -608,8 +609,9 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     );
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated
     );
+    translationJustGenerated = false;
     if (selId) {
       panel.webview.postMessage({ type: 'analysisChatState', id: Number(selId), messages: analysisChat });
     }
@@ -622,21 +624,56 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       const locale = String(vscode.env.language || '').replace(/_/g, '-');
       const language = displayLanguage(locale);
       const ui = localizeUi(vscode.l10n.t);
-      const confirmed = await vscode.window.showInformationMessage(
-        formatUi(ui.generateTranslationsConfirm, language), { modal: true }, ui.generate
-      );
+      let confirmed;
+      try {
+        // Modal dialogs can fail to render under some sandboxed VS Code installs (e.g. snap) and then
+        // hang forever; a plain toast notification uses the same code path as the working reload prompt.
+        const prompt = formatUi(ui.generateTranslationsConfirm, language);
+        confirmed = await withTimeout(
+          vscode.window.showInformationMessage(prompt, ui.generate),
+          60000,
+          'The confirmation prompt did not appear or was not answered within 1 minute.'
+        );
+      } catch (error) {
+        const msg = error instanceof Error && error.message ? error.message : String(error);
+        const finalMsg = msg || 'Translation generation was cancelled or failed.';
+        panel.webview.postMessage({ type: 'translationError', error: finalMsg });
+        return;
+      }
       if (confirmed !== ui.generate) {
+        panel.webview.postMessage({ type: 'translationCancelled' });
         return;
       }
       try {
-        const response = await requestCopilotAnalysis(vscode, buildTranslationPrompt(locale), { vendor: getLanguageModelVendor() });
+        const prompt = buildTranslationPrompt(locale);
+        // vscode.lm can hang indefinitely on a missed permission prompt; a visible progress toast plus
+        // a hard timeout turns that silent stall into a diagnosable error instead of a dead "Generating...".
+        const response = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: formatUi(ui.generateTranslations, language) },
+          () => withTimeout(
+            requestCopilotAnalysis(vscode, prompt, {
+              vendor: getLanguageModelVendor(),
+              onCompleted: (result) => logLlmRequest(dbPath, { activityId: `locale-${locale}`, kind: 'translation', ...result }),
+            }),
+            120000,
+            'Copilot did not respond within 2 minutes. Check for a hidden VS Code notification asking to allow FIT Visualizer to use the language model, then try again.'
+          )
+        );
         const bundle = validateTranslationBundle(parseGeneratedBundle(response));
         await saveGeneratedTranslationBundle(extensionContextRef?.globalStorageUri?.fsPath, locale, bundle);
+        translationJustGenerated = true;
         await render(msg.id ? Number(msg.id) : selectedId, msg.compId ? Number(msg.compId) : null);
-        vscode.window.showInformationMessage(formatUi(ui.translationGenerated, language));
+        const reload = await vscode.window.showInformationMessage(
+          formatUi(ui.translationGenerated, language), 'Reload Window'
+        );
+        if (reload === 'Reload Window') {
+          await vscode.commands.executeCommand('workbench.action.reloadWindow');
+        }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        panel.webview.postMessage({ type: 'translationError', error: message });
+        const msg = error instanceof Error && error.message ? error.message : String(error);
+        const finalMsg = msg || 'Translation generation failed.';
+        await logLlmRequest(dbPath, { activityId: `locale-${locale}`, kind: 'translation', error: finalMsg });
+        panel.webview.postMessage({ type: 'translationError', error: finalMsg });
       }
     } else if (msg.type === 'analyzeActivity') {
       try {
@@ -1431,6 +1468,15 @@ function getLlmLogConfig() {
 function getLanguageModelVendor() {
   const vendor = vscode.workspace.getConfiguration('fitVisualizer').get('lmVendor');
   return typeof vendor === 'string' && vendor.trim() ? vendor.trim() : 'copilot';
+}
+
+// Guards against vscode.lm calls that hang on a missed consent prompt instead of resolving or rejecting.
+function withTimeout(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function getPreferCheapAnalysisModel() {

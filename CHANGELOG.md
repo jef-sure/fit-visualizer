@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.15 - 2026-09-02
+
+### Fixed
+
+- Fixed translation generation crashing after confirmation for newly generated locales because the exported webview prompt builder was missing its `translationMessages` import.
+
 ## 0.13.7 - 2026-09-01
 
 ### Fixed
