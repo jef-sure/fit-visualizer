@@ -7,6 +7,7 @@ const { buildGpsRoute: buildGpsRouteFromModule, buildLineChart: buildLineChartFr
 const { extractGpsPoints, mapSegmentsToDistanceRanges } = require('./chart-data');
 const { buildDistanceMarkers, formatTick } = require('./chart-geometry');
 const { createChartSvgRenderer } = require('./chart-svg');
+const { translationMessages } = require('./dynamic-localization');
 const {
   buildChartClientPayload: buildChartClientPayloadFromModule,
   buildOverlayMetrics: buildOverlayMetricsFromModule,
@@ -32,7 +33,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
   getHrZoneIndex: getHeartRateZoneIndex,
 });
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false) {
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
   const ui = localizeUi(translate);
   const glossary = localizeGlossary(translate);
@@ -86,7 +87,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated)
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -333,7 +334,7 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -463,6 +464,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <div class="muted">${safeFile}</div>
     </section>
     ${shouldOfferTranslations ? `<section class="calibrationHint"><span>${escapeHtml(formatUi(ui.translationsAvailable, language))}</span><button type="button" id="generateTranslationsBtn">${escapeHtml(formatUi(ui.generateTranslations, language))}</button><span id="translationStatus"></span></section>` : ''}
+    ${translationJustGenerated ? `<section class="calibrationHint"><span>${escapeHtml(formatUi(ui.translationGenerated, language))}</span></section>` : ''}
     ${compStatsRow}
     <section class="grid">
       ${metric(ui.recordsLabel, summary.records, 'records', glossary)}
@@ -806,7 +808,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           renderComparisonList();
           updateCompareTrigger();
         } else if (msg.type === 'translationError') {
-          if (translationStatus) translationStatus.textContent = formatMessage(ui.error, String(msg.error || ''));
+          if (translationStatus) {
+            const rawError = String(msg?.error ?? '').trim();
+            const fallback = 'Translation generation failed.';
+            const errorText = rawError && rawError !== 'Error: {0}' ? rawError : fallback;
+            translationStatus.textContent = formatMessage(ui.error, errorText);
+          }
+          if (generateTranslationsBtn) generateTranslationsBtn.disabled = false;
+        } else if (msg.type === 'translationCancelled') {
+          if (translationStatus) translationStatus.textContent = '';
           if (generateTranslationsBtn) generateTranslationsBtn.disabled = false;
         } else if (msg.type === 'manualDataError') {
           manualDataStatus.textContent = msg.error;
@@ -979,11 +989,17 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       generateTranslationsBtn?.addEventListener('click', () => {
         generateTranslationsBtn.disabled = true;
         if (translationStatus) translationStatus.textContent = ui.translationGenerating;
-        vscode.postMessage({
-          type: 'generateTranslations',
-          id: window.currentActivityId,
-          compId: document.getElementById('compSel')?.value || null,
-        });
+        try {
+          vscode.postMessage({
+            type: 'generateTranslations',
+            id: window.currentActivityId,
+            compId: document.getElementById('compSel')?.value || null,
+          });
+        } catch (error) {
+          const errorText = error instanceof Error ? error.message : String(error);
+          if (translationStatus) translationStatus.textContent = errorText || 'Translation generation failed.';
+          generateTranslationsBtn.disabled = false;
+        }
       });
 
       function sendChatTurn() {
@@ -1759,4 +1775,4 @@ function renderHeartRateZones(zoneData, ui) {
   </div>`;
 }
 
-module.exports = { renderActivityBrowserHtml, renderActivityContentHtml };
+module.exports = { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, buildTranslationPrompt };
