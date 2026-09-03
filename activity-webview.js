@@ -1308,7 +1308,6 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
 
         setReadableFont('.tick', 10);
-        setReadableFont('.kmLabel', 9);
         setReadableFont('.crosshairLabel', 13, 3);
 
         var axisX = svg.querySelector('.axisLabelX');
@@ -1347,12 +1346,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         var controls = document.querySelector('.overlayControls[data-overlay-for="' + svgId + '"]');
         if (!controls || !payload.overlays) return;
         var active = {};
+        instance.activeOverlays = active;
 
         function overlayLineId(metricKey) { return svgId + '_overlay_' + metricKey; }
 
+        function overlayAxisId(metricKey) { return svgId + '_overlay_axis_' + metricKey; }
+
         function drawOverlay(metricKey, color) {
           var series = payload.overlays[metricKey];
-          if (!series || !instance.overlayGroup) return;
+          if (!series || !instance.overlayGroup || !instance.overlayYAxisGroup) return;
           var range = (series.max - series.min) || 1;
           var pts = series.points.map(function (p) {
             var px = scaleX(payload, p[0]);
@@ -1373,11 +1375,64 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           poly.setAttribute('vector-effect', 'non-scaling-stroke');
           poly.setAttribute('opacity', '0.9');
           instance.overlayGroup.appendChild(poly);
+
+          var axis = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+          axis.setAttribute('id', overlayAxisId(metricKey));
+          axis.setAttribute('class', 'overlayYAxis');
+          axis.style.color = color;
+          var axisOffset = Object.keys(active).indexOf(metricKey) * 34;
+          var axisX = payload.plotRight + 8 + axisOffset;
+          var axisLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+          axisLine.setAttribute('class', 'overlayAxisLine');
+          axisLine.setAttribute('x1', axisX);
+          axisLine.setAttribute('x2', axisX);
+          axisLine.setAttribute('y1', payload.plotTop);
+          axisLine.setAttribute('y2', payload.plotBottom);
+          axis.appendChild(axisLine);
+          var ticks = Array.isArray(series.yTicks) ? series.yTicks : buildTicksClient(series.min, series.max, 18).values;
+          var tickStep = Number.isFinite(series.yStep) ? series.yStep : buildTicksClient(series.min, series.max, 18).step;
+          var tickRange = (series.max - series.min) || 1;
+          var visibleTicks = [];
+          ticks.forEach(function (value) {
+            var currentPy = payload.plotBottom - ((value - series.min) / tickRange) * (payload.plotBottom - payload.plotTop);
+            var currentLabelY = Math.max(payload.plotTop + 12, Math.min(payload.plotBottom - 4, currentPy + 4));
+            if (!visibleTicks.length) {
+              visibleTicks.push(value);
+              return;
+            }
+            var previousValue = visibleTicks[visibleTicks.length - 1];
+            var previousPy = payload.plotBottom - ((previousValue - series.min) / tickRange) * (payload.plotBottom - payload.plotTop);
+            var previousLabelY = Math.max(payload.plotTop + 12, Math.min(payload.plotBottom - 4, previousPy + 4));
+            if (Math.abs(currentLabelY - previousLabelY) >= 18) {
+              visibleTicks.push(value);
+            } else if (value === 0 && previousValue !== 0) {
+              visibleTicks[visibleTicks.length - 1] = value;
+            }
+          });
+          visibleTicks.forEach(function (value) {
+            var py = payload.plotBottom - ((value - series.min) / range) * (payload.plotBottom - payload.plotTop);
+            var tickLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            tickLine.setAttribute('class', 'overlayAxisTick');
+            tickLine.setAttribute('x1', axisX - 4);
+            tickLine.setAttribute('x2', axisX);
+            tickLine.setAttribute('y1', py.toFixed(1));
+            tickLine.setAttribute('y2', py.toFixed(1));
+            axis.appendChild(tickLine);
+            var text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            text.setAttribute('class', 'overlayTick');
+            text.setAttribute('x', axisX + 6);
+            text.setAttribute('y', Math.max(payload.plotTop + 12, Math.min(payload.plotBottom - 4, py + 4)).toFixed(1));
+            text.textContent = formatTickClient(value, tickStep);
+            axis.appendChild(text);
+          });
+          instance.overlayYAxisGroup.appendChild(axis);
         }
 
         function removeOverlay(metricKey) {
           var el = instance.overlayGroup && instance.overlayGroup.querySelector('#' + overlayLineId(metricKey));
           if (el) el.parentNode.removeChild(el);
+          var axis = instance.overlayYAxisGroup && instance.overlayYAxisGroup.querySelector('#' + overlayAxisId(metricKey));
+          if (axis) axis.parentNode.removeChild(axis);
         }
 
         var checkboxes = controls.querySelectorAll('input[type=checkbox]');
@@ -1421,7 +1476,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         var labelX = label && label.querySelector('.crosshairLabelX');
         var labelY = label && label.querySelector('.crosshairLabelY');
         var capture = svg.querySelector('.crosshairCapture');
-        var instance = { payload: payload, pxXs: pxXs, dataXs: dataXs, overlayGroup: svg.querySelector('.overlayGroup') };
+        var instance = { payload: payload, pxXs: pxXs, dataXs: dataXs,
+          overlayGroup: svg.querySelector('.overlayGroup'), overlayYAxisGroup: svg.querySelector('.overlayYAxisGroup') };
         instances[svgId] = instance;
 
         instance.showAt = function (index) {
@@ -1446,6 +1502,19 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             labelY.setAttribute('x', anchorX);
             labelX.textContent = formatCrosshairValue(point[0], payload.xUnit);
             labelY.textContent = formatCrosshairValue(point[1], payload.yUnit);
+            label.querySelectorAll('.crosshairOverlayValue').forEach(function (element) { element.remove(); });
+            Object.keys(instance.activeOverlays || {}).forEach(function (metricKey) {
+              var series = payload.overlays && payload.overlays[metricKey];
+              var overlayPoint = series && series.points[index];
+              if (!series || !overlayPoint || !Number.isFinite(overlayPoint[1])) return;
+              var overlayLabel = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+              overlayLabel.setAttribute('class', 'crosshairOverlayValue');
+              overlayLabel.setAttribute('x', anchorX);
+              overlayLabel.setAttribute('dy', '14');
+              overlayLabel.style.fill = instance.activeOverlays[metricKey];
+              overlayLabel.textContent = series.label + ': ' + formatCrosshairValue(overlayPoint[1], series.unit);
+              label.appendChild(overlayLabel);
+            });
             label.style.display = '';
             if (instance.lastRect) updateChartTextScale(svg, payload, instance.lastRect);
           }
@@ -1599,7 +1668,9 @@ function sharedCss() {
     .axisLabel { fill:var(--ink); font-size:11px; font-weight:bold; letter-spacing:0.03em; text-transform:uppercase; }
     .routeStart { fill:var(--vscode-testing-iconPassed); } .routeEnd { fill:var(--vscode-testing-iconFailed); }
     .kmMarker { stroke:color-mix(in srgb,var(--ink) 30%,transparent); stroke-width:1; stroke-dasharray:2 5; }
-    .kmLabel { fill:var(--muted); font-size:9px; }
+    .overlayYAxis { color:var(--muted); }
+    .overlayAxisLine, .overlayAxisTick { stroke:currentColor; stroke-width:1; vector-effect:non-scaling-stroke; }
+    .overlayTick { fill:currentColor; font-size:10px; }
     .segmentBand { pointer-events:all; cursor:help; }
     .segmentBandClimb { fill:#d35400; fill-opacity:0.72; } .segmentBandDescent { fill:#2980b9; fill-opacity:0.72; }
     .segmentBandFlat { fill:#3d8b40; fill-opacity:0.66; } .segmentBandStopped { fill:#7f8c8d; fill-opacity:0.72; }

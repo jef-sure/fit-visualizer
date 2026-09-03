@@ -1,5 +1,6 @@
 const { asNumber, computeGrade, roundTo } = require('./utils');
 const { extractXYPoints } = require('./chart-data');
+const { buildTicks } = require('./chart-geometry');
 
 const OVERLAY_METRIC_LABELS = { grade: 'Grade', altitude: 'Altitude', speed: 'Speed', heart_rate: 'Heart Rate' };
 const OVERLAY_METRIC_UNITS = { grade: '%', altitude: 'm', speed: 'km/h', heart_rate: 'bpm' };
@@ -38,7 +39,9 @@ function buildOverlayOptions(overlayMetrics, ownKey, labels = OVERLAY_METRIC_LAB
     const min = Math.min(...series.yValues);
     const max = Math.max(...series.yValues);
     if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) continue;
+    const ticks = buildTicks(min, max, 18);
     result[key] = { points: series.points.map((point) => [roundTo(point.x, 4), roundTo(point.y, 2)]), min, max,
+      yTicks: ticks.values, yStep: ticks.step,
       label: labels[key] || OVERLAY_METRIC_LABELS[key] || key, unit: units[key] || OVERLAY_METRIC_UNITS[key] || '' };
   }
   return result;

@@ -9,7 +9,7 @@ function buildLineChart(records, xField, yField, width, height, maxPoints, optio
   const compSeries = options.compRecords?.length
     ? extractXYPoints(options.compRecords, xField, yField, maxPoints, { xTransform, yTransform }) : null;
   const allPoints = compSeries ? [...series.points, ...compSeries.points] : series.points;
-  const chart = buildCartesianGeometry(allPoints, width, height, { left: 60, right: 18, top: 12, bottom: 40 });
+  const chart = buildCartesianGeometry(allPoints, width, height, { left: 60, right: 100, top: 12, bottom: 40 });
   const scaleX = (value) => chart.plotLeft + ((value - chart.xMin) / ((chart.xMax - chart.xMin) || 1)) * (chart.plotRight - chart.plotLeft);
   const scaleY = (value) => chart.plotBottom - ((value - chart.yMin) / ((chart.yMax - chart.yMin) || 1)) * (chart.plotBottom - chart.plotTop);
   chart.pathData = series.points.map((point) => `${scaleX(point.x).toFixed(1)},${scaleY(point.y).toFixed(1)}`).join(' ');

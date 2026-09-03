@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.24 - 2026-09-03
+
+### Added
+
+- Added independent, color-matched Y-axis scales on the right side of activity charts for active metric overlays. Up to two overlay scales can be shown at once.
+- Added active overlay values to the chart crosshair, including localized labels and units, with each value shown in the color of its overlay line.
+
+### Changed
+
+- Increased overlay Y-axis tick density while suppressing only labels that would visually collide, including collisions caused by ticks clamped to the chart edges.
+- Removed the overlapping upper kilometer labels from charts while retaining the vertical distance markers and bottom distance axis.
+
 ## 0.13.15 - 2026-09-02
 
 ### Fixed
