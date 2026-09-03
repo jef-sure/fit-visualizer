@@ -47,7 +47,6 @@ function createChartSvgRenderer({ buildDistanceMarkers, escapeHtml, formatTick, 
     const kmMarkers = addDistanceMarkers ? buildDistanceMarkers(chart, 1) : [];
     const markerSvg = kmMarkers.map((marker) => `<g>
       <line class="kmMarker" x1="${marker.px.toFixed(1)}" y1="${chart.plotTop}" x2="${marker.px.toFixed(1)}" y2="${chart.plotBottom}" />
-      <text class="kmLabel" x="${marker.px.toFixed(1)}" y="${chart.plotTop + 10}" text-anchor="middle">${escapeHtml(marker.label)}</text>
     </g>`).join('');
 
     const xTicks = `<g class="xTicksGroup">${chart.xTicks.map((tick) => `<g>
@@ -78,6 +77,7 @@ function createChartSvgRenderer({ buildDistanceMarkers, escapeHtml, formatTick, 
     ${markerSvg}
     ${xTicks}
     ${yTicks}
+    <g class="overlayYAxisGroup"></g>
     <line class="axis" x1="${chart.plotLeft}" y1="${chart.plotBottom}" x2="${chart.plotRight}" y2="${chart.plotBottom}" />
     <line class="axis" x1="${chart.plotLeft}" y1="${chart.plotTop}" x2="${chart.plotLeft}" y2="${chart.plotBottom}" />
     ${compLineSvg}

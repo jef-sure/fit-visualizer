@@ -360,7 +360,7 @@ test('chart SVG renderer outputs ticks, markers, zones, and a crosshair capture 
 
   assert.match(svg, /id="chart&lt;id&gt;"/);
   assert.match(svg, /class="kmMarker"/);
-  assert.match(svg, /1 &lt; km/);
+  assert.doesNotMatch(svg, /class="kmLabel"/);
   assert.match(svg, /class="xTicksGroup"/);
   assert.match(svg, /class="yTicksGroup"/);
   assert.match(svg, /class="zoneLine zoneLine3"/);
@@ -536,7 +536,7 @@ test('chart text labels adapt to the rendered SVG scale', () => {
   const readableFontBody = source.match(/function setReadableFont\(selector, cssPx, strokePx\) \{([\s\S]*?)\n        \}/)?.[1] || '';
   assert.doesNotMatch(readableFontBody, /setAttribute\('transform'/);
   assert.match(source, /setReadableFont\('\.tick', 10\);/);
-  assert.match(source, /setReadableFont\('\.kmLabel', 9\);/);
+  assert.doesNotMatch(source, /setReadableFont\('\.kmLabel'/);
   assert.match(source, /setReadableFont\('\.crosshairLabel', 13, 3\);/);
   assert.match(svg, /class="axisLabel axisLabelX"/);
   assert.match(source, /var axisX = svg\.querySelector\('\.axisLabelX'\);/);
@@ -565,9 +565,16 @@ test('metric overlays reuse computeGrade once, exclude the chart\'s own metric a
 
   const options = buildOverlayOptions(metrics, 'speed', { grade: 'Уклон', heart_rate: 'Пульс' }, { heart_rate: 'уд/мин' });
   assert.deepEqual(Object.keys(options).sort(), ['grade', 'heart_rate']);
+  assert.match(overlaySource, /const \{ buildTicks \} = require\('\.\/chart-geometry'\);/);
+  assert.match(source, /overlayYAxisGroup/);
+  assert.match(source, /overlayTick/);
+  assert.match(source, /crosshairOverlayValue/);
+  assert.match(source, /series\.label \+ ': ' \+ formatCrosshairValue\(overlayPoint\[1\], series\.unit\)/);
   // A flat (zero-range) altitude series is not offered as an overlay: there is nothing to see.
   assert.equal(options.grade.min, 1);
   assert.equal(options.grade.max, 5);
+  assert.deepEqual(options.grade.yTicks, [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5]);
+  assert.equal(options.grade.yStep, 0.5);
   assert.equal(options.grade.unit, '%');
   assert.equal(options.grade.label, 'Уклон');
   assert.equal(options.heart_rate.label, 'Пульс');
