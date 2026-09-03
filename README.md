@@ -4,7 +4,11 @@
 
 Explore your cycling and running activities directly in VS Code, including GPS tracks, elevation, heart rate, cadence, power, effort segmentation, historical comparisons, and optional AI-assisted analysis.
 
-![FIT Visualizer Summary](images/1.png)
+I built FIT Visualizer around the idea that activity data should be something you can discuss, not just inspect. Its AI integration places each ride in the context of your previous training, helps identify longer-term trends, suggests possible next steps, and lets you continue the conversation afterwards.
+
+This makes the extension feel less like a static activity viewer and more like a way to explore your own training history through a conversation.
+
+![AI Analysis](images/7.png)
 
 ## Why FIT Visualizer?
 
@@ -39,7 +43,7 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 - Auto-index activities into local SQLite storage
 - Compare two activities in one view
 - Speed, heart rate, and altitude charts by distance
-- Overlay any two extra metrics (grade, altitude, speed, heart rate) on top of a chart
+- Overlay up to two extra metrics on a chart, each with its own color-coded Y-axis and values in the shared crosshair
 - Shared crosshair across all three charts: hover one, see the exact value at that point on all of them
 - Hover over activity and training-load terms, including power, speed, heart rate, elevation, TSS, Normalized Power, xPower, and TRIMP, for localized explanations
 - Activity controls, forms, map actions, and analysis status messages follow the VS Code interface language
@@ -56,21 +60,17 @@ FIT Visualizer is not trying to replace a power-analysis workbench. It is trying
 - Compare two activities with AI, including segment-level comparison and persistent results for each comparison direction
 - Re-analyze activities in bulk after an update changes how analysis works, instead of doing it one by one
 
-![FIT Activity Summary](images/1.png)
-
-![HR Zones and Speed](images/2.png)
-
-![HR Zones](images/3.png)
-
-![Altitude](images/4.png)
-
-![Interactive map](images/5.png)
-
-![AI Analysis](images/6.png)
-
 ## Requirements
 
 - GitHub Copilot Chat, installed and signed in, for AI analysis. Everything else (charts, map, segmentation, zones, calibration) works without it.
+
+## Installation
+
+Launch VS Code Quick Open (`Ctrl+P`), paste the following command, and press Enter:
+
+```text
+ext install AntonPetrusevich.fit-visualizer
+```
 
 ## What's a FIT File, and How Do I Get One?
 
@@ -92,7 +92,21 @@ How to get `.fit` files off common devices:
 2. Run **FIT: Index New Files**.
 3. Open a FIT file or run **FIT: Browse Loaded Data**.
 4. (Optional) Configure your Heart Rate Zone Profile.
-5. Click **Analyze Activity** to generate the activity analysis.
+5. (Optional, requires GitHub Copilot Chat) Click **Analyze Activity** to generate the activity analysis.
+
+![FIT Visualizer Summary](images/1.png)
+
+![HR Zones and Speed](images/2.png)
+
+![HR Zones](images/3.png)
+
+![Altitude](images/4.png)
+
+![Segments](images/5.png)
+
+![Interactive map](images/6.png)
+
+
 
 ## Commands
 
@@ -158,9 +172,6 @@ Selecting a comparison activity in the toolbar adds a **Compare with AI** button
 
 Comparisons accumulate per directed pair: comparing A against B and B against A are stored separately. Selecting a pair that already has a saved comparison offers **Compare Again** instead of a fresh comparison. Each saved entry has its own **Remove Comparison** button.
 
-
-When no packaged UI translation exists for the VS Code interface language, FIT Visualizer offers an explicit action to generate one. It sends only the fixed UI and glossary string catalog to the selected language-model provider, never activity, location, health, or analysis data. The generated bundle is validated and saved locally in VS Code extension storage.
-
 ## Heart-Rate Zones
 
 - Supports dated zone profiles
@@ -184,11 +195,19 @@ When AI-assisted analysis is enabled, FIT Visualizer builds an analysis context 
 
 ### Privacy
 
-FIT files can contain sensitive information, including GPS coordinates, timestamps, heart-rate data, device information, and your training history.
+FIT Visualizer is local-first.
 
-FIT Visualizer processes and stores indexed activity data locally. No cloud service is required for browsing, charts, maps, segmentation, zones, or calibration.
+Browsing FIT files, indexing activities, charts, maps, segmentation, heart-rate zones, wheel calibration, and activity history work locally in VS Code. The original `.fit` files are not uploaded or copied to a remote service by FIT Visualizer.
 
-AI-assisted analysis is different: when enabled, the analysis context is sent through GitHub Copilot. This can include data from the current activity and relevant historical activities.
+FIT files may contain sensitive information such as GPS coordinates, timestamps, heart-rate data, device information, and training history.
+
+AI-assisted analysis is optional. When enabled, FIT Visualizer sends an analysis context through GitHub Copilot. This context may include basic information about the current activity, derived metrics, detected segments, comparable past activities, recent training load, and previous analysis results. The original FIT file itself is not sent.
+
+You can also use the selected language model to generate a missing UI translation when your VS Code interface language does not have a packaged translation. This request contains only the fixed UI and glossary strings. It does not include activity, location, health, or analysis data.
+
+If `fitVisualizer.logLlmRequests` is enabled, Copilot prompts and responses are stored locally in `.fit-visualizer/logs`. The log retention period is controlled by `fitVisualizer.llmLogRetentionDays`.
+
+Review your GitHub Copilot configuration and logging settings before using AI features with activities containing sensitive information.
 
 If `fitVisualizer.logLlmRequests` is enabled, the Copilot prompts and responses are also stored locally in `.fit-visualizer/logs`.
 
