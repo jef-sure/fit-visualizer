@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.25 - 2026-09-07
+
+### Fixed
+
+- Fixed manual activity
+
 ## 0.13.24 - 2026-09-03
 
 ### Added

@@ -25,6 +25,7 @@ const { buildLineChart } = require('../chart-model');
 const { createChartSvgRenderer } = require('../chart-svg');
 const { GLOSSARY, localizeGlossary } = require('../glossary');
 const { UI_STRINGS, formatUi, localizeUi } = require('../ui-strings');
+const { createManualActivity } = require('../manual-activity');
 const {
   loadBundledTranslationBundle,
   loadGeneratedTranslationBundle,
@@ -1554,6 +1555,49 @@ test('database schema migrates manual HR overrides onto existing activities', as
   } finally {
     db.close();
   }
+});
+
+test('manual activity input creates a summary activity without FIT records', async () => {
+  const SQL = await initSqlJs({
+    locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm'),
+  });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const activityId = createManualActivity(db, {
+      startTime: '2026-09-01T12:00:00.000Z',
+      sport: 'cycling',
+      durationS: 3600,
+      distanceKm: 20,
+      avgHr: 140,
+      maxHr: 165,
+      elevGainM: 250,
+    });
+
+    const activity = db.exec(`SELECT file_path, file_name, start_time, sport,
+      total_distance_km, total_ascent_m, total_timer_s, total_elapsed_s,
+      avg_hr, max_hr, avg_speed_kmh, record_count, lap_count, source
+      FROM activities WHERE id = ${activityId}`)[0].values[0];
+
+    assert.match(activity[0], /^manual:\/\//);
+    assert.deepEqual(activity.slice(1), [
+      'Manual Activity', '2026-09-01T12:00:00.000Z', 'cycling',
+      20, 250, 3600, 3600, 140, 165, 20, 0, 0, 'manual',
+    ]);
+    assert.equal(db.exec(`SELECT COUNT(*) FROM records WHERE activity_id = ${activityId}`)[0].values[0][0], 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('manual activity handler opens, persists, and closes the sql.js database', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const handler = source.slice(source.indexOf('async function addAndBrowseManualActivity()'), source.indexOf('\nasync function resolveActiveDbPath'));
+
+  assert.doesNotMatch(handler, /getDb\(/);
+  assert.match(handler, /const SQL = await getSqlJs\(\);\s*db = await openDatabase\(SQL, dbPath\);/);
+  assert.match(handler, /await persistDatabase\(db, dbPath\);/);
+  assert.match(handler, /finally \{\s*db\?\.close\(\);\s*\}/);
 });
 
 test('database schema clears legacy zero sentinels from derived workload metrics', async () => {
