@@ -4,6 +4,7 @@ const {
   calculateTrainingStressScore, calculateXPower, despikeSeries, estimateDuration, formatHms, maxOrZero,
 } = require('./utils');
 const { computeElevationGainLoss } = require('./chart-data');
+const { estimateLactateThresholdHeartRate } = require('./heart-rate');
 
 function buildSummary(records, sessions, options = {}) {
   const speeds = records.map((record) => asNumber(record.speed)).filter(Number.isFinite);
@@ -35,9 +36,14 @@ function buildSummary(records, sessions, options = {}) {
   const bikeStressScore = calculateBikeStressScore(durationSec, xPower, relativeIntensityGc, ftp);
   const restingHeartRate = asNumber(options.restingHeartRate);
   const maxHeartRateForHrr = Number.isFinite(asNumber(options.maxHeartRateForHrr)) ? asNumber(options.maxHeartRateForHrr) : maxHr;
-  const trimp = calculateBanisterTrimp({ durationSec, avgHeartRate: avgHr, restingHeartRate, maxHeartRate: maxHeartRateForHrr, sex: options.sex });
-  const hrTss = calculateHrTss({ durationSec, avgHeartRate: avgHr, restingHeartRate, maxHeartRate: maxHeartRateForHrr });
-  const decouplingPct = calculateIntervalsDecoupling(records, { ftp, restingHeartRate, maxHeartRate: maxHeartRateForHrr });
+  const trimp = calculateBanisterTrimp({ durationSec, avgHeartRate: avgHr, records, restingHeartRate, maxHeartRate: maxHeartRateForHrr, sex: options.sex });
+  const hrTss = calculateHrTss({
+    durationSec, avgHeartRate: avgHr, records, restingHeartRate,
+    lactateThresholdHeartRate: estimateLactateThresholdHeartRate(maxHeartRateForHrr, options.heartRateThresholds),
+  });
+  const decouplingPct = options.powerSource === 'estimated'
+    ? null
+    : calculateIntervalsDecoupling(records);
   return {
     records: records.length, distanceKm: Number.isFinite(distanceKm) ? distanceKm : 0, durationText: formatHms(durationSec), durationSec,
     avgSpeed, maxSpeed, avgPower: average(powers), maxPower: maxOrZero(powers), avgCadence: average(cadences), maxCadence: maxOrZero(cadences),

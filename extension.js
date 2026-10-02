@@ -1,12 +1,13 @@
 const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { generateAnalysisPrompt, generateAnalysisChatPrompt, generateComparisonPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('./analysis');
+const { buildSegmentContext, generateAnalysisPrompt, generateAnalysisChatPrompt, generateComparisonPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('./analysis');
 const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
 const { buildCartesianGeometry, buildDistanceMarkers, buildTicks, formatTick, padRange, padYAxisRange } = require('./chart-geometry');
 const { computeElevationGainLoss, computeRouteDistanceKm, computeStats, extractGpsPoints, extractXYPoints } = require('./chart-data');
 const { buildSummary } = require('./activity-summary');
+const { attachActivityZones, buildTrainingContext } = require('./training-context');
 const { buildGpsRoute: buildGpsRouteFromModule, buildLineChart: buildLineChartFromModule } = require('./chart-model');
 const { createChartSvgRenderer } = require('./chart-svg');
 const {
@@ -23,6 +24,7 @@ const {
   validateTranslationBundle,
 } = require('./dynamic-localization');
 const { registerCommands } = require('./commands');
+const { MODEL_PRICE_CACHE_KEY, restoreModelPriceCache, updateModelPrices } = require('./model-pricing');
 const { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, buildTranslationPrompt } = require('./activity-webview');
 const { ensureDatabaseSchema } = require('./database-schema');
 const { createManualActivity } = require('./manual-activity');
@@ -30,6 +32,7 @@ const { fileExists, getFitUris, getParsedLaps, parseFitFile } = require('./fit-f
 const {
   calculateAutoHeartRateProfile,
   computeHeartRateZones,
+  estimateLactateThresholdHeartRate,
   getHeartRateZoneIndex: getHrZoneIndex,
 } = require('./heart-rate');
 const {
@@ -45,6 +48,7 @@ const {
   calculateIntensityFactor,
   calculateIntervalsDecoupling,
   calculateNormalizedPower,
+  calculateRobustTrend,
   calculateTrainingStressScore,
   calculateXPower,
   computeGpsDerivedSpeed,
@@ -62,7 +66,6 @@ const {
   estimateWheelCalibrationRatio,
   formatHms,
   formatNumber,
-  groupSimilarSegments,
   haversineKm,
   maxOrZero,
   normalizeCoordinate,
@@ -86,7 +89,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 8;
+const ANALYSIS_VERSION = 17;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
 const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
@@ -103,6 +106,7 @@ function enqueueLlmTask(task) {
 
 function activate(context) {
   extensionContextRef = context;
+  restoreModelPriceCache(context.globalState.get(MODEL_PRICE_CACHE_KEY));
   context.subscriptions.push(...registerCommands(context, {
     addAndBrowseManualActivity,
     escapeHtml,
@@ -118,7 +122,19 @@ function activate(context) {
     resolveFitUri,
     selectDatabaseFolder,
     showActivityBrowserInPanel,
+    updateModelPriceTable,
   }));
+}
+
+async function updateModelPriceTable() {
+  const cache = await vscode.window.withProgress({
+    location: vscode.ProgressLocation.Notification,
+    title: vscode.l10n.t('Updating Copilot model prices'),
+    cancellable: false,
+  }, () => updateModelPrices(extensionContextRef.globalState));
+  vscode.window.showInformationMessage(vscode.l10n.t(
+    'Model prices updated: {0} models ({1}).', cache.prices.length, cache.updatedAt.slice(0, 10)
+  ));
 }
 
 async function indexFitFolder(onlyNew) {
@@ -149,7 +165,7 @@ async function indexFitFolder(onlyNew) {
     dbPath,
     `Indexing ${fitUris.length} ${onlyNew ? 'new ' : ''}FIT file(s)...`
   );
-  vscode.window.showInformationMessage(`FIT DB index complete: ${result.saved} indexed, ${result.failed} failed.`);
+  vscode.window.showInformationMessage(vscode.l10n.t('FIT DB index complete: {0} indexed, {1} failed.', result.saved, result.failed));
 }
 
 async function pickIndexBaseDir() {
@@ -188,17 +204,26 @@ async function indexFitUris(fitUris, dbPath, heading) {
 
   let saved = 0;
   let failed = 0;
-  for (const fitUri of fitUris) {
-    try {
-      const parsed = await parseFitFile(fitUri.fsPath);
-      await saveFitToLocalDb(fitUri.fsPath, parsed, dbPath);
-      saved += 1;
-      output.appendLine(`Indexed: ${fitUri.fsPath}`);
-    } catch (error) {
-      failed += 1;
-      output.appendLine(`Failed: ${fitUri.fsPath} -> ${error instanceof Error ? error.message : String(error)}`);
+  await vscode.window.withProgress({
+    location: vscode.ProgressLocation.Notification,
+    title: vscode.l10n.t('Indexing FIT files'),
+    cancellable: false,
+  }, async (progress) => {
+    for (const fitUri of fitUris) {
+      progress.report({ message: vscode.l10n.t('{0}/{1}: {2}', saved + failed + 1, fitUris.length, path.basename(fitUri.fsPath)) });
+      try {
+        const parsed = await parseFitFile(fitUri.fsPath);
+        await saveFitToLocalDb(fitUri.fsPath, parsed, dbPath);
+        saved += 1;
+        output.appendLine(`Indexed: ${fitUri.fsPath}`);
+      } catch (error) {
+        failed += 1;
+        output.appendLine(`Failed: ${fitUri.fsPath} -> ${error instanceof Error ? error.message : String(error)}`);
+      }
+      progress.report({ increment: 100 / fitUris.length });
     }
-  }
+  });
+  output.appendLine(vscode.l10n.t('FIT DB index complete: {0} indexed, {1} failed.', saved, failed));
   return { saved, failed };
 }
 
@@ -851,6 +876,12 @@ async function loadFitDataFromDb(dbPath, activityId) {
         max_speed_kmh:         activity.max_speed_kmh,
         avg_hr:                activity.manual_avg_hr ?? activity.avg_hr,
         max_hr:                activity.manual_max_hr ?? activity.max_hr,
+        _device_avg_hr:        activity.avg_hr,
+        _device_max_hr:        activity.max_hr,
+        _source:               activity.source || 'fit',
+        _hasManualHrOverrides: activity.source === 'manual'
+          || activity.manual_avg_hr != null
+          || activity.manual_max_hr != null,
       }],
       laps: parseStoredLaps(activity.laps_json),
       _activityId: Number(activity.id),
@@ -949,12 +980,14 @@ function upsertActivity(db, filePath, fitData) {
   const laps = getParsedLaps(fitData);
   const athleteProfile = getAthleteProfileFromDbConnection(db);
 
-  const profileMaxHr = getProfileMaxHeartRate(db, sessions[0]?.start_time);
+  const hrProfile = getProfileHeartRateConfig(db, sessions[0]?.start_time);
   const summary = buildSummary(records, sessions, {
     ftp: athleteProfile.ftp,
     restingHeartRate: athleteProfile.restingHeartRate,
     sex: athleteProfile.sex,
-    maxHeartRateForHrr: profileMaxHr ?? sessions[0]?.max_hr,
+    maxHeartRateForHrr: hrProfile?.maxHeartRate ?? sessions[0]?.max_hr,
+    heartRateThresholds: hrProfile?.thresholds,
+    powerSource: records.some((record) => Number.isFinite(asNumber(record.power))) ? 'measured' : 'unavailable',
   });
   const session = sessions[0] || {};
   const sessionCalories = asNumber(session.total_calories);
@@ -1052,7 +1085,7 @@ function upsertActivity(db, filePath, fitData) {
     const hasGpsFix = Number.isFinite(lat) && Number.isFinite(lon) && !(lat === 0 && lon === 0);
     const grade = grades[i];
     // Below a metre of travel the slope is altitude noise divided by ~nothing.
-    const gradePct = grade && grade.dt > 0 && grade.dt <= 5 && grade.distanceM >= 1
+    const gradePct = grade && grade.dt > 0 && grade.dt <= 30 && grade.distanceM > 0
       ? roundTo(grade.grade * 100, 2)
       : null;
     insertRecord.run([
@@ -1148,40 +1181,11 @@ function getHeartRateConfig() {
 }
 
 async function getHeartRateConfigForActivity(dbPath, startTime) {
-  const activityDate = toDateOnly(startTime);
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
-  let stmt;
-  let fallbackStmt;
   try {
-    if (activityDate) {
-      stmt = db.prepare(`
-        SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start
-        FROM heart_rate_profiles
-        WHERE effective_date <= ?
-        ORDER BY effective_date DESC
-        LIMIT 1
-      `);
-      stmt.bind([activityDate]);
-      if (stmt.step()) {
-        return profileRowToConfig(stmt.getAsObject());
-      }
-    }
-
-    fallbackStmt = db.prepare(`
-      SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start
-      FROM heart_rate_profiles
-      ORDER BY effective_date DESC
-      LIMIT 1
-    `);
-    if (fallbackStmt.step()) {
-      return profileRowToConfig(fallbackStmt.getAsObject());
-    }
-
-    return getHeartRateConfig();
+    return getProfileHeartRateConfig(db, startTime);
   } finally {
-    stmt?.free();
-    fallbackStmt?.free();
     db.close();
   }
 }
@@ -1196,23 +1200,24 @@ function profileRowToConfig(profile) {
   };
 }
 
-function getProfileMaxHeartRate(db, startTime) {
+function getProfileHeartRateConfig(db, startTime) {
   const activityDate = toDateOnly(startTime);
   let stmt;
   try {
     stmt = db.prepare(activityDate
-      ? 'SELECT max_hr FROM heart_rate_profiles WHERE effective_date <= ? ORDER BY effective_date DESC LIMIT 1'
-      : 'SELECT max_hr FROM heart_rate_profiles ORDER BY effective_date DESC LIMIT 1');
+      ? 'SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start FROM heart_rate_profiles WHERE effective_date <= ? ORDER BY effective_date DESC LIMIT 1'
+      : 'SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start FROM heart_rate_profiles ORDER BY effective_date DESC LIMIT 1');
     if (activityDate) {
       stmt.bind([activityDate]);
     }
     if (stmt.step()) {
-      const maxHr = asNumber(stmt.getAsObject().max_hr);
+      const row = stmt.getAsObject();
+      const maxHr = asNumber(row.max_hr);
       if (Number.isFinite(maxHr) && maxHr > 0) {
-        return maxHr;
+        return profileRowToConfig(row);
       }
     }
-    return null;
+    return getHeartRateConfig();
   } finally {
     stmt?.free();
   }
@@ -1329,11 +1334,16 @@ async function runActivityAnalysis(dbPath, activityId, force) {
   }
 
   const analysisData = await prepareAnalysisData(dbPath, current, numId);
-  const summary = await getProgressSummaryFromDb(dbPath, numId);
+  const summary = await getProgressSummaryFromDb(dbPath, numId, analysisData);
   const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time);
-  const previousAnalysis = (await getLatestAnalysisAnyVersion(dbPath, numId))?.text || null;
-  const followUpHistory = await getAnalysisChatFromDb(dbPath, numId);
-  const recentHistory = await getRecentAnalysesContext(dbPath, numId, analysisData.sessions?.[0]?.start_time);
+  const hasManualHrOverrides = Boolean(analysisData.sessions?.[0]?._hasManualHrOverrides);
+  const previousResult = hasManualHrOverrides ? null : await getLatestAnalysisAnyVersion(dbPath, numId);
+  const previousAnalysis = previousResult?.version >= ANALYSIS_VERSION ? previousResult.text : null;
+  const storedChat = await getAnalysisChatFromDb(dbPath, numId);
+  const followUpHistory = previousResult?.version >= ANALYSIS_VERSION
+    ? storedChat
+    : storedChat.filter((entry) => entry?.role === 'user');
+  const recentHistory = summary.trainingContext?.recentHistory || [];
   const prompt = generateAnalysisPrompt(
     analysisData, summary, hrConfig, previousAnalysis, followUpHistory, recentHistory, vscode.env.language
   );
@@ -1360,7 +1370,8 @@ function segmentBudgetWarnings(analysisData) {
     return [];
   }
 
-  const rows = groupSimilarSegments(segments);
+  // Count the rows the prompt actually shows; the folded short-stop summary is not a segment row.
+  const rows = buildSegmentContext(segments).displayRows.filter((row) => row.time);
   const durationS = segments[segments.length - 1].endElapsed - segments[0].startElapsed;
   const maxLines = segmentLineBudget(durationS);
   return rows.length > maxLines
@@ -1392,7 +1403,7 @@ function withTimeout(promise, ms, message) {
 }
 
 function getPreferCheapAnalysisModel() {
-  return vscode.workspace.getConfiguration('fitVisualizer').get('preferCheapAnalysisModel') === true;
+  return vscode.workspace.getConfiguration('fitVisualizer').get('preferCheapAnalysisModel') !== false;
 }
 
 function getCheapModelMarkers() {
@@ -1457,36 +1468,22 @@ async function reanalyzeOutdatedActivities() {
     return;
   }
 
-  const rows = await getOutdatedAnalysisActivities(dbPath);
-  const outdated = rows.filter((row) => row.analysisVersion != null);
-  const missing = rows.filter((row) => row.analysisVersion == null);
-  if (!rows.length) {
+  const targets = await getOutdatedAnalysisActivities(dbPath);
+  if (!targets.length) {
     vscode.window.showInformationMessage(`All analyses already use version ${ANALYSIS_VERSION}.`);
     return;
   }
 
-  const choices = [];
-  if (outdated.length) {
-    choices.push({
-      label: `Outdated analyses only (${outdated.length})`,
-      detail: `Re-run Copilot for activities analyzed before version ${ANALYSIS_VERSION}.`,
-      targets: outdated,
-    });
-  }
-  choices.push({
-    label: `Outdated and never analyzed (${rows.length})`,
-    detail: `${outdated.length} outdated, ${missing.length} never analyzed.`,
-    targets: rows,
-  });
-
-  const picked = await vscode.window.showQuickPick(choices, {
-    placeHolder: 'Each activity costs one Copilot request; they run one at a time.',
-  });
-  if (!picked) {
+  const start = vscode.l10n.t('Start');
+  const confirmed = await vscode.window.showInformationMessage(
+    vscode.l10n.t('Update analyses for {0} activities? This includes outdated and missing analyses and uses one Copilot request per activity.', targets.length),
+    { modal: true },
+    start
+  );
+  if (confirmed !== start) {
     return;
   }
 
-  const targets = picked.targets;
   const result = await vscode.window.withProgress({
     location: vscode.ProgressLocation.Notification,
     title: 'Re-analyzing FIT activities',
@@ -1540,7 +1537,12 @@ async function reanalyzeOutdatedActivities() {
 
 async function prepareAnalysisData(dbPath, fitData, activityId) {
   const athleteProfile = await getAthleteProfile(dbPath, activityId);
-  const session = fitData.sessions?.[0] || {};
+  const sourceSession = fitData.sessions?.[0] || {};
+  const session = {
+    ...sourceSession,
+    avg_hr: sourceSession._source === 'manual' ? null : (Object.hasOwn(sourceSession, '_device_avg_hr') ? sourceSession._device_avg_hr : sourceSession.avg_hr),
+    max_hr: sourceSession._source === 'manual' ? null : (Object.hasOwn(sourceSession, '_device_max_hr') ? sourceSession._device_max_hr : sourceSession.max_hr),
+  };
   const hrConfig = await getHeartRateConfigForActivity(dbPath, session.start_time);
   const normalizedRecords = normalizeRecordSpeeds(fitData.records);
   const powerData = addEstimatedPowerWhenMissing(normalizedRecords, {
@@ -1548,13 +1550,15 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
     bikeMassKg: athleteProfile.bikeMassKg,
     ...getPowerModelOptions(),
   });
-  const summary = buildSummary(powerData.records, fitData.sessions, {
+  const summary = buildSummary(powerData.records, [session], {
     ftp: athleteProfile.ftp,
     restingHeartRate: athleteProfile.restingHeartRate,
     sex: athleteProfile.sex,
     maxHeartRateForHrr: Number.isFinite(asNumber(hrConfig?.maxHeartRate))
       ? asNumber(hrConfig.maxHeartRate)
       : session.max_hr,
+    heartRateThresholds: hrConfig?.thresholds,
+    powerSource: powerData.source,
   });
   const athleteFtp = asNumber(athleteProfile.ftp);
   const segments = buildActivitySegments(powerData.records, {
@@ -1571,6 +1575,14 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
     ...fitData,
     records: powerData.records,
     segments,
+    analysisHeartRateConfig: hrConfig,
+    analysisQuality: {
+      massSource: 'activity-specific mass when saved, otherwise current athlete profile; not measured by FIT',
+      riderMassKg: asNumber(athleteProfile.riderMassKg), bikeMassKg: asNumber(athleteProfile.bikeMassKg),
+      hrSource: session._source === 'manual' ? 'manual activity; HR withheld' : 'original FIT values; manual overrides withheld',
+      altitudeSource: 'FIT altitude; sensor provenance not retained',
+      ftpSource: 'current athlete profile; threshold test date and method not retained',
+    },
     sessions: [{
       ...session,
       avg_speed_kmh: summary.avgSpeed > 0 ? summary.avgSpeed : session.avg_speed_kmh,
@@ -1585,9 +1597,10 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
       relative_intensity_gc: summary.relativeIntensityGc,
       bike_stress_score: summary.bikeStressScore,
       decoupling_pct: summary.decouplingPct,
-      trimp: summary.trimp ?? (asNumber(session.trimp) > 0 ? session.trimp : null),
-      hr_tss: summary.hrTss ?? (asNumber(session.hr_tss) > 0 ? session.hr_tss : null),
+      trimp: summary.trimp,
+      hr_tss: summary.hrTss,
       ftp: Number.isFinite(athleteFtp) && athleteFtp > 0 ? athleteFtp : null,
+      lactate_threshold_hr: estimateLactateThresholdHeartRate(hrConfig?.maxHeartRate, hrConfig?.thresholds),
       power_source: powerData.source,
     }, ...fitData.sessions.slice(1)],
   };
@@ -1709,8 +1722,9 @@ async function autoCalculateHeartRateProfileFromDb(dbPath, message) {
     stmt = db.prepare(`
       SELECT
         COALESCE(MAX(max_hr), 0) AS max_session_hr,
-        COALESCE((SELECT MAX(heart_rate) FROM records), 0) AS max_record_hr
+        COALESCE((SELECT MAX(r.heart_rate) FROM records r JOIN activities a ON a.id = r.activity_id WHERE a.source = 'fit'), 0) AS max_record_hr
       FROM activities
+      WHERE source = 'fit'
     `);
     stmt.step();
     const row = stmt.getAsObject();
@@ -1999,6 +2013,7 @@ async function getRecentAnalysesContext(dbPath, activityId, referenceDate, windo
   const from = `FROM activities a
       JOIN activity_analysis aa ON aa.activity_id = a.id
       LEFT JOIN activity_analysis_chat aac ON aac.activity_id = a.id`;
+    const measuredHrOnly = `AND a.source = 'fit' AND a.manual_avg_hr IS NULL AND a.manual_max_hr IS NULL`;
 
   const read = (sql, params) => {
     const stmt = db.prepare(sql);
@@ -2031,8 +2046,10 @@ async function getRecentAnalysesContext(dbPath, activityId, referenceDate, windo
     const recent = read(
       `SELECT ${columns} ${from}
        WHERE a.id != ? AND a.start_time >= date(?, '-${Number(windowDays) || 30} days') AND a.start_time < ?
+         AND aa.analysis_version >= ?
+         AND COALESCE(a.sport, '') = COALESCE((SELECT sport FROM activities WHERE id = ?), '') ${measuredHrOnly}
        ORDER BY a.start_time ASC`,
-      [activityId, reference, reference]
+      [activityId, reference, reference, ANALYSIS_VERSION, activityId]
     );
     if (recent.length) {
       return recent;
@@ -2041,9 +2058,11 @@ async function getRecentAnalysesContext(dbPath, activityId, referenceDate, windo
     return read(
       `SELECT ${columns} ${from}
        WHERE a.id != ? AND a.start_time < ?
+         AND aa.analysis_version >= ?
+         AND COALESCE(a.sport, '') = COALESCE((SELECT sport FROM activities WHERE id = ?), '') ${measuredHrOnly}
        ORDER BY a.start_time DESC
        LIMIT 1`,
-      [activityId, reference]
+      [activityId, reference, ANALYSIS_VERSION, activityId]
     );
   } finally {
     db.close();
@@ -2081,14 +2100,14 @@ async function getOutdatedAnalysisActivities(dbPath) {
   }
 }
 
-async function getProgressSummaryFromDb(dbPath, activityId) {
+async function getProgressSummaryFromDb(dbPath, activityId, currentData = null) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   let stmt;
   try {
     stmt = db.prepare(`
       WITH selected AS (
-        SELECT id, start_time, total_distance_km
+        SELECT id, start_time, total_distance_km, sport
         FROM activities
         WHERE id = ?
       ),
@@ -2098,7 +2117,7 @@ async function getProgressSummaryFromDb(dbPath, activityId) {
         WHERE (
           datetime(activities.start_time) < datetime(selected.start_time)
           OR (datetime(activities.start_time) = datetime(selected.start_time) AND activities.id < selected.id)
-        )
+        ) AND COALESCE(activities.sport, '') = COALESCE(selected.sport, '')
       ),
       prior AS (
         SELECT all_prior.*
@@ -2114,9 +2133,8 @@ async function getProgressSummaryFromDb(dbPath, activityId) {
         (SELECT COALESCE(SUM(total_distance_km), 0) FROM prior) AS total_distance_km,
         (SELECT COALESCE(SUM(total_timer_s) / 3600.0, 0) FROM prior) AS total_hours,
         (SELECT COALESCE(AVG(avg_speed_kmh), 0) FROM prior WHERE avg_speed_kmh > 0) AS avg_speed_kmh,
-        (SELECT COALESCE(AVG(COALESCE(manual_avg_hr, avg_hr)), 0) FROM prior
-          WHERE COALESCE(manual_avg_hr, avg_hr) > 0) AS avg_heart_rate,
-        (SELECT COALESCE(MAX(COALESCE(manual_max_hr, max_hr)), 0) FROM prior) AS max_recorded_heart_rate,
+        (SELECT COALESCE(AVG(avg_hr), 0) FROM prior WHERE source = 'fit' AND avg_hr > 0) AS avg_heart_rate,
+        (SELECT COALESCE(MAX(max_hr), 0) FROM prior WHERE source = 'fit' AND max_hr > 0) AS max_recorded_heart_rate,
         (SELECT COUNT(*) FROM all_prior
           WHERE datetime(start_time) >= datetime((SELECT start_time FROM selected), '-7 days')) AS recent_activity_count,
         (SELECT COALESCE(SUM(total_distance_km), 0) FROM all_prior
@@ -2129,8 +2147,10 @@ async function getProgressSummaryFromDb(dbPath, activityId) {
         (SELECT start_time FROM prior ORDER BY datetime(start_time) DESC, id DESC LIMIT 1) AS last_activity_date,
         (SELECT COALESCE(MAX(max_speed_kmh), 0) FROM prior) AS best_speed_kmh,
         (SELECT COALESCE(MAX(total_ascent_m), 0) FROM prior) AS best_elevation_m,
-        (SELECT MIN(100.0, COUNT(*) * 100.0 / 16.0) FROM all_prior
-          WHERE datetime(start_time) >= datetime((SELECT start_time FROM selected), '-28 days')) AS consistency_pct
+        (SELECT COUNT(*) FROM all_prior
+          WHERE datetime(start_time) >= datetime((SELECT start_time FROM selected), '-28 days')) AS rides_28_days,
+        (SELECT COUNT(DISTINCT date(start_time)) FROM all_prior
+          WHERE datetime(start_time) >= datetime((SELECT start_time FROM selected), '-28 days')) AS active_days_28_days
     `);
     stmt.bind([
       activityId,
@@ -2144,16 +2164,17 @@ async function getProgressSummaryFromDb(dbPath, activityId) {
     stmt.free();
     stmt = db.prepare(`
       WITH selected AS (
-        SELECT start_time, total_distance_km
+        SELECT start_time, total_distance_km, sport
         FROM activities
         WHERE id = ?
       )
-      SELECT activities.avg_speed_kmh, COALESCE(activities.manual_avg_hr, activities.avg_hr) AS avg_hr, activities.start_time
+      SELECT activities.avg_speed_kmh, activities.avg_hr, activities.start_time, activities.source
       FROM activities, selected
       WHERE (
         datetime(activities.start_time) < datetime(selected.start_time)
         OR (datetime(activities.start_time) = datetime(selected.start_time) AND activities.id < ?)
       )
+        AND COALESCE(activities.sport, '') = COALESCE(selected.sport, '')
         AND selected.total_distance_km > 0
         AND activities.total_distance_km BETWEEN selected.total_distance_km * ? AND selected.total_distance_km * ?
       ORDER BY datetime(activities.start_time) ASC, activities.id ASC
@@ -2169,7 +2190,10 @@ async function getProgressSummaryFromDb(dbPath, activityId) {
       prior.push(stmt.getAsObject());
     }
     summary.trend_speed = calculateProgressTrend(prior, 'avg_speed_kmh', 'km/h');
-    summary.trend_heart_rate = calculateProgressTrend(prior, 'avg_hr', 'bpm');
+    summary.trend_heart_rate = calculateProgressTrend(prior.filter((activity) => activity.source === 'fit'), 'avg_hr', 'bpm');
+    stmt.free();
+    stmt = null;
+    summary.trainingContext = getTrainingContextFromDb(db, activityId, currentData);
     return summary;
   } finally {
     stmt?.free();
@@ -2177,22 +2201,95 @@ async function getProgressSummaryFromDb(dbPath, activityId) {
   }
 }
 
+function getTrainingContextFromDb(db, activityId, currentData) {
+  const readRows = (sql, params) => {
+    const statement = db.prepare(sql);
+    try {
+      statement.bind(params);
+      const rows = [];
+      while (statement.step()) rows.push(statement.getAsObject());
+      return rows;
+    } finally {
+      statement.free();
+    }
+  };
+  const selected = readRows('SELECT * FROM activities WHERE id = ?', [activityId])[0];
+  if (!selected?.start_time) return null;
+  const rows = readRows(`SELECT a.*, aa.analysis_text, aa.analysis_version, aac.chat_json
+    FROM activities a LEFT JOIN activity_analysis aa ON aa.activity_id = a.id
+    LEFT JOIN activity_analysis_chat aac ON aac.activity_id = a.id
+    WHERE datetime(a.start_time) < datetime(?) AND datetime(a.start_time) >= datetime(?, '-90 days')
+    ORDER BY datetime(a.start_time) DESC, a.id DESC`, [selected.start_time, selected.start_time]);
+  const profile = getAthleteProfileFromDbConnection(db);
+  const detailedPerSport = new Map();
+  const buildDetail = (row) => {
+    const records = readRows('SELECT * FROM records WHERE activity_id = ? ORDER BY record_index', [row.id]).map((record) => ({
+      elapsed_time: record.elapsed_s, distance: record.distance_km, speed: record.speed_kmh,
+      altitude: record.altitude_m == null ? null : record.altitude_m / 1000,
+      heart_rate: row.source === 'manual' ? null : record.heart_rate,
+      power: record.power, cadence: record.cadence,
+      position_lat: record.latitude, position_long: record.longitude,
+    }));
+    const normalized = normalizeRecordSpeeds(records);
+    const power = addEstimatedPowerWhenMissing(normalized, {
+      riderMassKg: row.rider_mass_kg ?? profile.riderMassKg,
+      bikeMassKg: row.bike_mass_kg ?? profile.bikeMassKg, ...getPowerModelOptions(),
+    });
+    const hrConfig = getProfileHeartRateConfig(db, row.start_time);
+    const segments = buildActivitySegments(power.records, { sport: row.sport, powerSource: power.source,
+      thresholds: getSegmentationOptions(), athlete: { ftp: profile.ftp, restingHeartRate: profile.restingHeartRate,
+        maxHeartRate: hrConfig?.maxHeartRate } });
+    return { records: normalized, segments, hrConfig, powerSource: power.source };
+  };
+  const activities = rows.map((row) => {
+    const count = detailedPerSport.get(row.sport) || 0;
+    detailedPerSport.set(row.sport, count + 1);
+    const detail = count < 40 && row.source !== 'manual' ? buildDetail(row) : null;
+    let conversation = [];
+    try {
+      const parsed = JSON.parse(row.chat_json || '[]');
+      if (Array.isArray(parsed)) conversation = parsed.filter((entry) => entry?.role === 'user' && String(entry.content || '').trim()).slice(-8);
+    } catch {}
+    const activity = { activityId: row.id, startTime: row.start_time, sport: row.sport,
+      subSport: row.sub_sport, durationS: row.total_timer_s, distanceKm: row.total_distance_km,
+      elevationM: row.total_ascent_m, avgSpeedKmh: row.avg_speed_kmh,
+      avgHr: row.source === 'fit' ? row.avg_hr : null,
+      powerSource: detail?.powerSource || 'unknown',
+      trainingStressScore: detail?.powerSource === 'measured' ? row.training_stress_score : null,
+      hrProfileDate: detail?.hrConfig?.effectiveDate || null,
+      segments: detail?.segments || [], conversation,
+      source: row.source,
+      analysisText: row.source === 'fit' && row.analysis_version >= ANALYSIS_VERSION && row.manual_avg_hr == null && row.manual_max_hr == null
+        ? row.analysis_text : null,
+      analysisVersion: row.analysis_version,
+    };
+    return attachActivityZones(activity, detail?.records || [], detail?.hrConfig);
+  });
+  const currentSegments = currentData?.segments || buildDetail(selected).segments;
+  const context = buildTrainingContext(activities, selected.start_time, selected.sport, currentSegments);
+  const conversations = readRows(`SELECT a.start_time, aac.chat_json
+    FROM activities a JOIN activity_analysis_chat aac ON aac.activity_id = a.id
+    WHERE datetime(a.start_time) < datetime(?) ORDER BY datetime(a.start_time) DESC LIMIT 24`, [selected.start_time]);
+  context.userReports = conversations.reverse().flatMap((row) => {
+    try {
+      const parsed = JSON.parse(row.chat_json);
+      return Array.isArray(parsed) ? parsed.filter((turn) => turn?.role === 'user' && String(turn.content || '').trim())
+        .slice(-8).map((turn) => ({ startTime: row.start_time, ts: turn.ts || null, content: String(turn.content) })) : [];
+    } catch {
+      return [];
+    }
+  });
+  context.coverageNote += ' User context includes the latest 24 earlier activity conversations, up to 8 user reports each, independently of numeric windows. This is bounded conversation context, not a complete medical or goal record.';
+  return context;
+}
+
 function calculateProgressTrend(activities, field, unit) {
-  const values = activities
-    .map((activity) => Number(activity[field]))
-    .filter((value) => Number.isFinite(value) && value > 0);
-  if (values.length < 4) {
+  const trend = calculateRobustTrend(activities.map((activity) => activity[field]));
+  if (!trend) {
     return 'insufficient data';
   }
-  const midpoint = Math.floor(values.length / 2);
-  const earlier = average(values.slice(0, midpoint));
-  const recent = average(values.slice(midpoint));
-  if (!Number.isFinite(earlier) || earlier <= 0 || !Number.isFinite(recent)) {
-    return 'insufficient data';
-  }
-  const changePct = ((recent - earlier) / earlier) * 100;
-  const direction = changePct > 2 ? 'rising' : changePct < -2 ? 'falling' : 'stable';
-  return `${direction} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%, ${unit})`;
+  const changePct = trend.changePct;
+  return `${trend.direction} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%, ${unit}; noise threshold ±${trend.thresholdPct.toFixed(1)}%)`;
 }
 
 async function storeAnalysisInDb(dbPath, activityId, analysis) {
@@ -2418,11 +2515,17 @@ async function runActivityChatReply(dbPath, activityId, history, userQuestion) {
     throw new Error(`Activity ${activityId} not found in database`);
   }
   const analysisData = await prepareAnalysisData(dbPath, current, activityId);
-  const summary = await getProgressSummaryFromDb(dbPath, activityId);
+  const summary = await getProgressSummaryFromDb(dbPath, activityId, analysisData);
   const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time);
-  const baseAnalysis = (await getLatestAnalysisAnyVersion(dbPath, activityId))?.text || null;
+  const hasManualHrOverrides = Boolean(analysisData.sessions?.[0]?._hasManualHrOverrides);
+  const previousResult = hasManualHrOverrides ? null : await getLatestAnalysisAnyVersion(dbPath, activityId);
+  const hasCurrentAnalysis = previousResult?.version >= ANALYSIS_VERSION;
+  const baseAnalysis = hasCurrentAnalysis ? previousResult.text : null;
+  const safeHistory = hasCurrentAnalysis && !hasManualHrOverrides
+    ? history
+    : history.filter((entry) => entry?.role === 'user');
   const prompt = generateAnalysisChatPrompt(
-    analysisData, summary, hrConfig, baseAnalysis, history, userQuestion, vscode.env.language
+    analysisData, summary, hrConfig, baseAnalysis, safeHistory, userQuestion, vscode.env.language
   );
   return requestCopilotAnalysis(vscode, prompt, {
     vendor: getLanguageModelVendor(),

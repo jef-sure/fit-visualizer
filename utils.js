@@ -207,62 +207,96 @@ function calculateHistoricalMeanMaximalPower(activityRecords, durations) {
 // Grade per record (fraction, e.g. 0.06 = 6%), aligned with the input array; null where unknown.
 function computeGrade(records) {
   const grades = Array.isArray(records) ? records.map(() => null) : [];
-  if (!Array.isArray(records) || records.length < 2) {
-    return grades;
-  }
-
-  // Records use parser units: speed in km/h, altitude and distance in km.
-  const samples = [];
-  for (let i = 0; i < records.length; i += 1) {
-    const record = records[i] || {};
+  if (!Array.isArray(records) || records.length < 2) return grades;
+  const intervals = records.slice(1).map((record, index) => asNumber(record.elapsed_time) - asNumber(records[index].elapsed_time))
+    .filter((seconds) => seconds > 0 && seconds <= 30);
+  const maxGap = Math.min(30, Math.max(5, (median(intervals) || 1) * 3));
+  const runs = [];
+  let run = [];
+  let previous = null;
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index] || {};
     const elapsed = asNumber(record.elapsed_time);
-    const speed = asNumber(record.speed);
-    const altitude = asNumber(record.altitude);
-    const distance = asNumber(record.distance);
-    const hasValidGpsFix = Number.isFinite(asNumber(record.position_lat))
-      && Number.isFinite(asNumber(record.position_long))
-      && !(asNumber(record.position_lat) === 0 && asNumber(record.position_long) === 0);
-
-    if (Number.isFinite(elapsed) && Number.isFinite(speed) && Number.isFinite(altitude) && hasValidGpsFix) {
-      samples.push({
-        index: i,
-        elapsed,
-        speed: Math.max(0, speed) / 3.6,
-        altitude: altitude * 1000,
-        distance: Number.isFinite(distance) ? distance : 0,
-      });
+    const speed = asNumber(record.speed) / 3.6;
+    const altitude = asNumber(record.altitude) * 1000;
+    const distance = asNumber(record.distance) * 1000;
+    if (!Number.isFinite(elapsed) || !Number.isFinite(speed) || !Number.isFinite(altitude) || speed < 1 / 3.6) {
+      if (run.length) runs.push(run);
+      run = [];
+      previous = null;
+      continue;
+    }
+    const dt = previous ? elapsed - previous.elapsed : 0;
+    const meanSpeed = previous ? (speed + previous.speed) / 2 : speed;
+    const measuredDistance = previous ? distance - previous.distance : Number.NaN;
+    const distanceM = Number.isFinite(measuredDistance) ? measuredDistance : meanSpeed * dt;
+    if (previous && (dt <= 0 || dt > maxGap || distanceM <= 0 || distanceM > Math.max(20, meanSpeed * dt * 3))) {
+      if (run.length) runs.push(run);
+      run = [];
+      previous = null;
+    }
+    const sample = { index, elapsed, speed, altitude, distance, dt: previous ? dt : 0,
+      distanceM: previous ? distanceM : 0, positionM: previous ? previous.positionM + distanceM : 0,
+      distanceSource: Number.isFinite(measuredDistance) ? 'recorded distance; sensor source unknown' : 'integrated speed' };
+    run.push(sample);
+    previous = sample;
+  }
+  if (run.length) runs.push(run);
+  for (const samples of runs) {
+    for (let index = 1; index < samples.length; index += 1) {
+      const current = samples[index];
+      let estimate = null;
+      for (const windowM of [30, 60, 120]) {
+        let start = index;
+        let end = index;
+        while (start > 0 && current.positionM - samples[start - 1].positionM <= windowM / 2) start -= 1;
+        while (end + 1 < samples.length && samples[end + 1].positionM - current.positionM <= windowM / 2) end += 1;
+        if (samples[end].positionM - samples[start].positionM < 30) continue;
+        const bins = new Map();
+        for (const point of samples.slice(start, end + 1)) {
+          const key = Math.floor((point.positionM - samples[start].positionM) / 5);
+          if (!bins.has(key)) bins.set(key, []);
+          bins.get(key).push(point);
+        }
+        const points = [...bins.values()].map((members) => ({
+          positionM: average(members.map((point) => point.positionM)),
+          altitude: median(members.map((point) => point.altitude)),
+        }));
+        estimate = fitGradeWindow(points);
+        if (estimate && estimate.residualM / estimate.windowDistanceM <= 0.025) break;
+      }
+      if (!estimate || estimate.residualM / estimate.windowDistanceM > 0.04) continue;
+      grades[current.index] = { elapsed_time: current.elapsed, dt: current.dt,
+        speed: (samples[index - 1].speed + current.speed) / 2, distanceM: current.distanceM,
+        distanceSource: current.distanceSource, ...estimate,
+        quality: estimate.rejectedFraction > 0.2 || estimate.residualM / estimate.windowDistanceM > 0.025
+          ? 'limited' : 'usable' };
     }
   }
-
-  if (samples.length < 2) {
-    return grades;
-  }
-
-  const smoothedAltitude = smoothSeries(samples.map((s) => s.altitude), 5);
-
-  for (let index = 1; index < samples.length; index += 1) {
-    const previous = samples[index - 1];
-    const current = samples[index];
-    const dt = current.elapsed - previous.elapsed;
-    const speed = (previous.speed + current.speed) / 2;
-    const altitudeDelta = (smoothedAltitude[index] || current.altitude) - (smoothedAltitude[index - 1] || previous.altitude);
-    const distanceDeltaM = Number.isFinite(current.distance) && Number.isFinite(previous.distance)
-      ? (current.distance - previous.distance) * 1000
-      : NaN;
-    const distanceM = Number.isFinite(distanceDeltaM) && distanceDeltaM > 0
-      ? distanceDeltaM
-      : speed * dt;
-
-    grades[current.index] = {
-      elapsed_time: current.elapsed,
-      grade: altitudeDelta / Math.max(distanceM, 1),
-      dt,
-      speed,
-      distanceM,
-    };
-  }
-
   return grades;
+}
+
+function fitGradeWindow(points) {
+  if (points.length < 3) return null;
+  const slopes = points.slice(1).map((point, index) =>
+    (point.altitude - points[index].altitude) / (point.positionM - points[index].positionM));
+  const initialGrade = median(slopes);
+  const intercept = median(points.map((point) => point.altitude - initialGrade * point.positionM));
+  const residuals = points.map((point) => point.altitude - intercept - initialGrade * point.positionM);
+  const residualCenter = median(residuals);
+  const cutoff = Math.max(0.5, 3 * 1.4826 * median(residuals.map((value) => Math.abs(value - residualCenter))));
+  const kept = points.filter((point, index) => Math.abs(residuals[index] - residualCenter) <= cutoff);
+  if (kept.length < 3) return null;
+  const windowDistanceM = kept.at(-1).positionM - kept[0].positionM;
+  if (windowDistanceM < 30) return null;
+  const meanDistance = average(kept.map((point) => point.positionM));
+  const meanAltitude = average(kept.map((point) => point.altitude));
+  const denominator = kept.reduce((sum, point) => sum + (point.positionM - meanDistance) ** 2, 0);
+  if (!(denominator > 0)) return null;
+  const grade = kept.reduce((sum, point) => sum + (point.positionM - meanDistance) * (point.altitude - meanAltitude), 0) / denominator;
+  const residualM = Math.sqrt(average(kept.map((point) =>
+    (point.altitude - meanAltitude - grade * (point.positionM - meanDistance)) ** 2)));
+  return { grade, windowDistanceM, residualM, rejectedFraction: 1 - kept.length / points.length };
 }
 
 // Upright riding on the hoods. The old 0.25 belonged to a tucked time-trial position.
@@ -298,8 +332,7 @@ function estimatePowerFromMotion(records, input = {}) {
     }
 
     const { dt, speed, grade } = sample;
-    // Beyond +-18% the motion model is dominated by altitude noise rather than real slope.
-    if (dt <= 0 || dt > 5 || speed < 0.5 || Math.abs(grade) > 0.18) {
+    if (dt <= 0 || dt > 30 || speed < 1 / 3.6 || sample.quality !== 'usable') {
       previousSpeed = null;
       continue;
     }
@@ -316,7 +349,14 @@ function estimatePowerFromMotion(records, input = {}) {
     const estimatedPower = Math.min(maxPhysiologicalPower, wheelPower / drivetrainEfficiency);
 
     previousSpeed = speed;
-    result.push({ elapsed_time: sample.elapsed_time, power: estimatedPower });
+    result.push({ elapsed_time: sample.elapsed_time, power: estimatedPower,
+      gradeQuality: sample.quality, gradeWindowM: sample.windowDistanceM,
+      gradeResidualM: sample.residualM, distanceSource: sample.distanceSource,
+      gravityFraction: wheelPower > 0 ? Math.max(0, gravityPower) / wheelPower : 0,
+      accelerationFraction: wheelPower > 0 ? Math.abs(accelerationPower) / wheelPower : 0,
+      gradeSensitivityWPerPct: totalMassKg * gravity * speed * 0.01 / (drivetrainEfficiency * (1 + grade ** 2) ** 1.5),
+      massSensitivityWPerKg: (gravityPower + rollingPower + accelerationPower) / (totalMassKg * drivetrainEfficiency),
+      capped: wheelPower / drivetrainEfficiency > maxPhysiologicalPower });
   }
 
   return result;
@@ -756,21 +796,22 @@ function optionNumber(options, key, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-// Grade in percent per record: stored values win, otherwise recomputed from altitude.
-function gradeSeriesPct(records, smoothWindow = 15) {
+// One spatial altitude model controls power and terrain; stored grade is a terrain-only fallback.
+function gradeSeriesPct(records, smoothWindow = 15, computed = computeGrade(records)) {
   if (!Array.isArray(records) || !records.length) {
     return [];
   }
-  const computed = computeGrade(records);
-  const raw = records.map((record, index) => {
-    const stored = asNumber(record?.grade);
-    if (Number.isFinite(stored)) {
-      return stored;
-    }
+  return records.map((record, index) => {
     const entry = computed[index];
-    return entry && entry.dt > 0 && entry.dt <= 5 && entry.distanceM >= 1 ? entry.grade * 100 : Number.NaN;
+    if (entry) return entry.grade * 100;
+    if (Number.isFinite(asNumber(record?.altitude)) || asNumber(record?.speed) < 1) return Number.NaN;
+    const halfWindow = Math.floor(smoothWindow / 2);
+    const nearby = records.slice(Math.max(0, index - halfWindow), index + halfWindow + 1)
+      .filter((point) => asNumber(point.speed) >= 1
+        && Math.abs(asNumber(point.elapsed_time) - asNumber(record.elapsed_time)) <= halfWindow)
+      .map((point) => asNumber(point.grade)).filter(Number.isFinite);
+    return nearby.length ? median(nearby) : Number.NaN;
   });
-  return smoothSeries(raw, smoothWindow);
 }
 
 function segmentByGrade(records, options = {}) {
@@ -959,15 +1000,17 @@ const EFFORT_SIGNAL_STRATEGIES = {
       return { basis: 'power', reason: 'power meter' };
     }
     if (segment.type === 'climb' && segment.hasPower
+      && segment.vpowerUse === 'conditional relative comparison'
       && asNumber(segment.avgGrade) >= optionNumber(context, 'vpowerMinGradePct', 3)) {
-      return { basis: 'vpower', reason: 'gravity dominates on this climb' };
+      return { basis: 'vpower', reason: 'usable grade and mostly gravitational work; relative comparisons require similar conditions' };
     }
     if (segment.hasHeartRate) {
       return { basis: 'hr', reason: segment.hasPower ? 'vpower unreliable off the climbs' : 'no power data' };
     }
-    return segment.hasPower
-      ? { basis: 'vpower', reason: 'no heart-rate data' }
-      : { basis: 'none', reason: 'no effort data' };
+    return segment.type === 'climb' && asNumber(segment.avgGrade) >= optionNumber(context, 'vpowerMinGradePct', 3)
+      && segment.hasPower && segment.vpowerUse === 'rough description only'
+      ? { basis: 'vpower', reason: 'rough motion estimate; not suitable for training-load or performance conclusions' }
+      : { basis: 'none', reason: 'no reliable effort data' };
   },
 
   running(segment) {
@@ -1012,6 +1055,8 @@ function summarizeSegmentRange(records, range, shared, options) {
   const heartRates = [];
   const powers = [];
   const segmentGrades = [];
+  const gradeSamples = [];
+  const estimates = [];
   let elevGainM = 0;
   let highConfidence = 0;
   let confidenceSamples = 0;
@@ -1027,6 +1072,8 @@ function summarizeSegmentRange(records, range, shared, options) {
     if (Number.isFinite(heartRate) && heartRate > 0) heartRates.push(heartRate);
     if (Number.isFinite(power) && power >= 0) powers.push(power);
     if (Number.isFinite(grade)) segmentGrades.push(grade);
+    if (shared.gradeSamples[index]) gradeSamples.push(shared.gradeSamples[index]);
+    if (record._powerEstimate) estimates.push(record._powerEstimate);
 
     if (index > startIndex) {
       const rise = shared.altitudesM[index] - shared.altitudesM[index - 1];
@@ -1058,6 +1105,33 @@ function summarizeSegmentRange(records, range, shared, options) {
   const distanceKm = Number.isFinite(startDistanceKm) && Number.isFinite(endDistanceKm)
     ? Math.max(0, endDistanceKm - startDistanceKm)
     : Number.NaN;
+  const durations = sampleDurations(records.slice(startIndex, endIndex + 1).map((record) => ({ t: asNumber(record.elapsed_time) })));
+  const coveredSeconds = (predicate) => durations.reduce((sum, seconds, offset) =>
+    sum + (predicate(records[startIndex + offset], startIndex + offset) ? seconds : 0), 0);
+  const totalSeconds = durations.reduce((sum, seconds) => sum + seconds, 0);
+  const coveragePct = (predicate) => totalSeconds > 0 ? roundTo(100 * coveredSeconds(predicate) / totalSeconds, 0) : 0;
+  const powerCoveragePct = coveragePct((record) => Number.isFinite(asNumber(record.power)));
+  const gradeCoveragePct = coveragePct((record, index) => Boolean(shared.gradeSamples[index]));
+  const gravityFraction = estimates.length ? median(estimates.map((entry) => entry.gravityFraction)) : 0;
+  const relativeEstimate = estimates.length > 0 && powerCoveragePct >= 80 && gradeCoveragePct >= 80
+    && gravityFraction >= 0.7 && estimates.every((entry) => !entry.capped && entry.accelerationFraction <= 0.2);
+  const vpowerUse = estimates.length && moving
+    ? relativeEstimate ? 'conditional relative comparison' : 'rough description only'
+    : 'not assessed';
+  const midpoint = (asNumber(records[startIndex]?.elapsed_time) + asNumber(records[endIndex]?.elapsed_time)) / 2;
+  const halfAverage = (field, first) => {
+    let weighted = 0;
+    let seconds = 0;
+    durations.forEach((duration, offset) => {
+      const record = records[startIndex + offset];
+      const value = asNumber(record[field]);
+      if ((asNumber(record.elapsed_time) < midpoint) !== first || !Number.isFinite(value)
+        || (field === 'heart_rate' && value <= 0)) return;
+      weighted += value * duration;
+      seconds += duration;
+    });
+    return seconds > 0 ? roundTo(weighted / seconds, 1) : null;
+  };
 
   return {
     startIndex,
@@ -1074,8 +1148,29 @@ function summarizeSegmentRange(records, range, shared, options) {
     avgPower: moving && powers.length ? roundTo(average(powers), 0) : null,
     hasHeartRate: heartRates.length > 0,
     hasPower: powers.length > 0,
+    hrCoveragePct: coveragePct((record) => asNumber(record.heart_rate) > 0),
+    powerCoveragePct,
+    gradeCoveragePct,
+    gradeWindowM: gradeSamples.length ? roundTo(median(gradeSamples.map((entry) => entry.windowDistanceM)), 0) : null,
+    gradeResidualM: gradeSamples.length ? roundTo(median(gradeSamples.map((entry) => entry.residualM)), 2) : null,
+    vpowerUse,
+    gravityFraction: estimates.length ? roundTo(gravityFraction, 2) : null,
+    gradeSensitivityWPerPct: estimates.length ? roundTo(median(estimates.map((entry) => entry.gradeSensitivityWPerPct)), 1) : null,
+    massSensitivityWPerKg: estimates.length ? roundTo(median(estimates.map((entry) => entry.massSensitivityWPerKg)), 1) : null,
+    dynamics: moving && rangeDurationSeconds(records, startIndex, endIndex) >= 600 ? {
+      firstHalfSpeed: halfAverage('speed', true), secondHalfSpeed: halfAverage('speed', false),
+      firstHalfHr: halfAverage('heart_rate', true), secondHalfHr: halfAverage('heart_rate', false),
+      firstHalfPower: halfAverage('power', true), secondHalfPower: halfAverage('power', false),
+    } : null,
     speedConfidence: confidenceSamples && highConfidence / confidenceSamples >= 0.8 ? 'high' : 'low',
     technical,
+    routePoints: [0, 0.25, 0.5, 0.75, 1].map((fraction) => {
+      const record = records[Math.round(startIndex + (endIndex - startIndex) * fraction)];
+      const latitude = asNumber(record?.position_lat);
+      const longitude = asNumber(record?.position_long);
+      return Number.isFinite(latitude) && Number.isFinite(longitude) && !(latitude === 0 && longitude === 0)
+        ? { latitude, longitude } : null;
+    }).filter(Boolean),
   };
 }
 
@@ -1086,10 +1181,12 @@ function buildActivitySegments(records, context = {}) {
 
   const options = context.thresholds || {};
   const stops = detectStops(records, options);
-  const grades = gradeSeriesPct(records, optionNumber(options, 'gradeSmoothWindow', 15));
+  const gradeSamples = computeGrade(records);
+  const grades = gradeSeriesPct(records, optionNumber(options, 'gradeSmoothWindow', 15), gradeSamples);
   const macros = segmentByGrade(records, { ...options, grades, stops });
   const shared = {
     grades,
+    gradeSamples,
     speedConfidence: estimateSpeedConfidence(records, options),
     altitudesM: smoothSeries(records.map((record) => {
       const altitude = asNumber(record?.altitude);
@@ -1111,11 +1208,12 @@ function buildActivitySegments(records, context = {}) {
 
     for (const range of ranges) {
       const summary = ranges.length === 1 ? macroSummary : summarizeSegmentRange(records, range, shared, options);
+      const rangeEffort = selectEffortSignal(summary, context);
       segments.push({
         ...summary,
-        effortBasis: effort.basis,
-        effortReason: effort.reason,
-        hrDriftPct: segmentHrDrift(records, range, summary, effort.basis, athlete, options),
+        effortBasis: rangeEffort.basis,
+        effortReason: rangeEffort.reason,
+        hrDriftPct: segmentHrDrift(records, range, summary, rangeEffort.basis, athlete, options),
       });
     }
   }
@@ -1126,7 +1224,7 @@ function buildActivitySegments(records, context = {}) {
 // Pw:HR drift needs a trusted power signal and enough time for a half-vs-half split to mean anything.
 function segmentHrDrift(records, range, summary, basis, athlete, options) {
   const minSeconds = optionNumber(options, 'hrDriftMinSeconds', 600);
-  if ((basis !== 'power' && basis !== 'vpower') || summary.durationS < minSeconds) {
+  if (basis !== 'power' || summary.durationS < minSeconds) {
     return null;
   }
 
@@ -1317,11 +1415,15 @@ function collapseShortStops(segments, options = {}) {
     const after = list[index + 2];
     const canMerge = before && pause && after
       && before.type !== 'stopped' && pause.type === 'stopped' && after.type === before.type
+      && before.effortBasis === after.effortBasis && Boolean(before.technical) === Boolean(after.technical)
       && pause.durationS < maxPauseSeconds;
 
     if (canMerge) {
       const weightBefore = before.durationS || 0;
       const weightAfter = after.durationS || 0;
+      const combinedDuration = weightBefore + pause.durationS + weightAfter;
+      const combinedCoverage = (field) => before[field] == null || after[field] == null ? null
+        : roundTo((before[field] * weightBefore + after[field] * weightAfter) / combinedDuration, 1);
       result.push({
         ...before,
         endIndex: after.endIndex,
@@ -1333,6 +1435,20 @@ function collapseShortStops(segments, options = {}) {
         avgSpeedKmh: weightedAverage(before.avgSpeedKmh, after.avgSpeedKmh, weightBefore, weightAfter),
         avgHr: weightedAverage(before.avgHr, after.avgHr, weightBefore, weightAfter),
         avgPower: weightedAverage(before.avgPower, after.avgPower, weightBefore, weightAfter),
+        hrCoveragePct: combinedCoverage('hrCoveragePct'),
+        powerCoveragePct: combinedCoverage('powerCoveragePct'),
+        gradeCoveragePct: combinedCoverage('gradeCoveragePct'),
+        vpowerUse: before.vpowerUse === 'conditional relative comparison' && after.vpowerUse === before.vpowerUse
+          && combinedCoverage('powerCoveragePct') >= 80 && combinedCoverage('gradeCoveragePct') >= 80
+          ? before.vpowerUse : [before.vpowerUse, after.vpowerUse].some((value) => value && value !== 'not assessed')
+            ? 'rough description only' : 'not assessed',
+        hrDriftPct: null,
+        dynamics: null,
+        gradeWindowM: null,
+        gradeResidualM: null,
+        gradeSensitivityWPerPct: null,
+        massSensitivityWPerKg: null,
+        routePoints: [],
         pausedS: pause.durationS,
       });
       index += 3;
@@ -1403,12 +1519,12 @@ function addEstimatedPowerWhenMissing(records, input = {}) {
     return { records, source: 'unavailable' };
   }
 
-  const estimatedPowerByElapsed = new Map(estimates.map((estimate) => [estimate.elapsed_time, estimate.power]));
+  const estimatedPowerByElapsed = new Map(estimates.map((estimate) => [estimate.elapsed_time, estimate]));
   return {
     records: records.map((record) => {
       const estimated = estimatedPowerByElapsed.get(asNumber(record?.elapsed_time));
       if (estimated !== undefined) {
-        return { ...record, power: estimated };
+        return { ...record, power: estimated.power, _powerEstimate: estimated };
       }
       // Standing still is a measurement of zero work, not a hole in the data. Leaving it
       // undefined would drop the stop from NP/TSS entirely and inflate them.
@@ -1552,24 +1668,17 @@ function calculateBikeStressScore(durationSec, xPower, relativeIntensity, ftp) {
   return calculateTrainingStressScore(durationSec, xPower, relativeIntensity, ftp);
 }
 
-function calculateIntervalsDecoupling(records, input) {
-  const ftp = asNumber(input?.ftp);
-  const restingHeartRate = asNumber(input?.restingHeartRate);
-  const maxHeartRate = asNumber(input?.maxHeartRate);
-  if (!Array.isArray(records) || records.length < 10
-      || !Number.isFinite(ftp) || ftp <= 0
-      || !Number.isFinite(restingHeartRate)
-      || !Number.isFinite(maxHeartRate)
-      || maxHeartRate <= restingHeartRate) {
+function calculateIntervalsDecoupling(records) {
+  if (!Array.isArray(records) || records.length < 10) {
     return null;
   }
 
   const samples = [];
-  for (let i = 0; i < records.length; i += 1) {
-    const t = asNumber(records[i]?.elapsed_time);
-    const p = asNumber(records[i]?.power);
-    const hr = asNumber(records[i]?.heart_rate);
-    if (!Number.isFinite(t) || !Number.isFinite(p) || !Number.isFinite(hr) || p < 0 || hr <= 0) {
+  for (const record of records) {
+    const t = asNumber(record?.elapsed_time);
+    const p = asNumber(record?.power);
+    const hr = asNumber(record?.heart_rate);
+    if (!Number.isFinite(t) || !Number.isFinite(p) || !Number.isFinite(hr) || p <= 0 || hr <= 0) {
       continue;
     }
     samples.push({ t, p, hr });
@@ -1579,55 +1688,89 @@ function calculateIntervalsDecoupling(records, input) {
     return null;
   }
 
-  const powerSeries = despikeSeries(samples.map((s) => s.p), { absThreshold: 250, ratioThreshold: 0.6 });
-  const hrSeries = despikeSeries(samples.map((s) => s.hr), { absThreshold: 25, ratioThreshold: 0.25 });
-  const smoothedPower = trailingTimeMovingAverage(samples.map((s, i) => ({ t: s.t, v: powerSeries[i] })), 60);
-  const smoothedHr = trailingTimeMovingAverage(samples.map((s, i) => ({ t: s.t, v: hrSeries[i] })), 60);
-
-  const hrDenominator = maxHeartRate - restingHeartRate;
-  const efficiencies = [];
-  for (let i = 0; i < samples.length; i += 1) {
-    const powerReservePct = clamp(smoothedPower[i] / ftp, 0, 2);
-    const hrReservePct = clamp((smoothedHr[i] - restingHeartRate) / hrDenominator, 0, 2);
-    if (powerReservePct < 0.05 || hrReservePct <= 0) {
-      continue;
-    }
-    efficiencies.push({ t: samples[i].t, value: hrReservePct / powerReservePct });
-  }
-
-  if (efficiencies.length < 8) {
-    return null;
-  }
-
-  const firstTime = efficiencies[0].t;
-  const lastTime = efficiencies[efficiencies.length - 1].t;
+  const firstTime = samples[0].t;
+  const lastTime = samples[samples.length - 1].t;
   const midpoint = firstTime + (lastTime - firstTime) / 2;
-  const firstHalf = efficiencies.filter((sample) => sample.t <= midpoint).map((sample) => sample.value);
-  const secondHalf = efficiencies.filter((sample) => sample.t > midpoint).map((sample) => sample.value);
+  const durations = sampleDurations(samples);
+  const summarizeHalf = (start, end) => {
+    const half = samples.filter((sample) => sample.t >= start && sample.t < end);
+    const halfDurations = durations.slice(samples.findIndex((sample) => sample.t >= start), samples.findIndex((sample) => sample.t >= end) < 0
+      ? samples.length
+      : samples.findIndex((sample) => sample.t >= end));
+    const duration = halfDurations.reduce((sum, value) => sum + value, 0);
+    const avgHr = weightedMean(half.map((sample) => sample.hr), halfDurations);
+    const np = calculateNormalizedPower(half.map((sample) => ({ elapsed_time: sample.t, power: sample.p })));
+    return half.length >= 4 && duration >= 300 && np > 0 && avgHr > 0
+      ? { efficiency: np / avgHr, duration }
+      : null;
+  };
+  const firstHalf = summarizeHalf(firstTime, midpoint);
+  const secondHalf = summarizeHalf(midpoint, lastTime + 1);
 
-  if (firstHalf.length < 4 || secondHalf.length < 4) {
+  if (!firstHalf || !secondHalf || firstHalf.efficiency <= 0) {
     return null;
   }
 
-  const firstAvg = average(firstHalf);
-  const secondAvg = average(secondHalf);
-  if (!Number.isFinite(firstAvg) || firstAvg <= 0 || !Number.isFinite(secondAvg)) {
+  if (!Number.isFinite(firstHalf.efficiency) || !Number.isFinite(secondHalf.efficiency)) {
     return null;
   }
 
-  return ((secondAvg - firstAvg) / firstAvg) * 100;
+  return ((firstHalf.efficiency - secondHalf.efficiency) / firstHalf.efficiency) * 100;
 }
 
-// Seconds each sample stands for. Capped so that the single sample after a recording gap
-// does not outweigh the whole ride; uniform 1 Hz data comes out as all-ones.
-function sampleDurations(samples, maxGapSeconds = 5) {
+// Preserve Smart Recording intervals while keeping exceptional gaps from dominating the ride.
+function sampleDurations(samples, maxGapSeconds = 30) {
+  const intervals = samples.slice(1)
+    .map((sample, index) => sample.t - samples[index].t)
+    .filter((duration) => Number.isFinite(duration) && duration > 0 && duration <= maxGapSeconds)
+    .sort((left, right) => left - right);
+  const middle = Math.floor(intervals.length / 2);
+  const typicalInterval = intervals.length
+    ? intervals.length % 2
+      ? intervals[middle]
+      : (intervals[middle - 1] + intervals[middle]) / 2
+    : 1;
+  const gapCap = Math.min(maxGapSeconds, Math.max(5, typicalInterval * 1.5));
+
   return samples.map((sample, index) => {
     if (index === 0) {
       return 1;
     }
     const dt = sample.t - samples[index - 1].t;
-    return Number.isFinite(dt) && dt > 0 ? Math.min(dt, maxGapSeconds) : 1;
+    return Number.isFinite(dt) && dt > 0 ? Math.min(dt, gapCap) : 1;
   });
+}
+
+function calculateRobustTrend(values) {
+  const clean = (Array.isArray(values) ? values : [])
+    .map(asNumber)
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (clean.length < 8) return null;
+
+  const median = (items) => {
+    const sorted = [...items].sort((left, right) => left - right);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  };
+  const midpoint = Math.floor(clean.length / 2);
+  const baseline = median(clean.slice(0, midpoint));
+  const recent = median(clean.slice(midpoint));
+  const changePct = ((recent - baseline) / baseline) * 100;
+  const center = median(clean);
+  const mad = median(clean.map((value) => Math.abs(value - center)));
+  const relativeNoisePct = center > 0 ? (1.4826 * mad / center) * 100 : 0;
+  const thresholdPct = Math.max(
+    2,
+    1.96 * relativeNoisePct * Math.sqrt((1 / midpoint) + (1 / (clean.length - midpoint)))
+  );
+
+  return {
+    baseline,
+    recent,
+    changePct,
+    thresholdPct,
+    direction: changePct > thresholdPct ? 'rising' : changePct < -thresholdPct ? 'falling' : 'within-noise',
+  };
 }
 
 function weightedMean(values, weights) {
@@ -1702,18 +1845,18 @@ function calculateBanisterTrimp(input) {
   const restingHeartRate = asNumber(input?.restingHeartRate);
   const maxHeartRate = asNumber(input?.maxHeartRate);
   const sex = String(input?.sex || '').toLowerCase();
+  const records = Array.isArray(input?.records) ? input.records : [];
+  const samples = records
+    .map((record) => ({ t: asNumber(record?.elapsed_time), hr: asNumber(record?.heart_rate) }))
+    .filter((sample) => Number.isFinite(sample.t) && Number.isFinite(sample.hr) && sample.hr > 0);
 
   if (!Number.isFinite(durationSec) || durationSec <= 0
-      || !Number.isFinite(avgHeartRate)
+      || (!(avgHeartRate > 0) && samples.length < 2)
       || !Number.isFinite(restingHeartRate)
       || !Number.isFinite(maxHeartRate)
       || maxHeartRate <= restingHeartRate) {
     return null;
   }
-
-  const deltaHrRatio = (avgHeartRate - restingHeartRate) / (maxHeartRate - restingHeartRate);
-  const clampedRatio = Math.max(0, Math.min(1.5, deltaHrRatio));
-  const durationMin = durationSec / 60;
 
   const male = { coeff: 0.64, exponent: 1.92 };
   const female = { coeff: 0.86, exponent: 1.67 };
@@ -1723,26 +1866,43 @@ function calculateBanisterTrimp(input) {
       ? male
       : { coeff: (male.coeff + female.coeff) / 2, exponent: (male.exponent + female.exponent) / 2 };
 
-  return durationMin * clampedRatio * factors.coeff * Math.exp(factors.exponent * clampedRatio);
+  const scoreAt = (heartRate) => {
+    const ratio = Math.max(0, Math.min(1.5, (heartRate - restingHeartRate) / (maxHeartRate - restingHeartRate)));
+    return ratio * factors.coeff * Math.exp(factors.exponent * ratio);
+  };
+  if (samples.length >= 2) {
+    const durations = sampleDurations(samples);
+    return samples.reduce((total, sample, index) => total + scoreAt(sample.hr) * durations[index] / 60, 0);
+  }
+  return (durationSec / 60) * scoreAt(avgHeartRate);
 }
 
 function calculateHrTss(input) {
   const durationSec = asNumber(input?.durationSec);
   const avgHeartRate = asNumber(input?.avgHeartRate);
   const restingHeartRate = asNumber(input?.restingHeartRate);
-  const maxHeartRate = asNumber(input?.maxHeartRate);
+  const lactateThresholdHeartRate = asNumber(input?.lactateThresholdHeartRate ?? input?.lthr);
+  const records = Array.isArray(input?.records) ? input.records : [];
+  const samples = records
+    .map((record) => ({ t: asNumber(record?.elapsed_time), hr: asNumber(record?.heart_rate) }))
+    .filter((sample) => Number.isFinite(sample.t) && Number.isFinite(sample.hr) && sample.hr > 0);
   if (!Number.isFinite(durationSec) || durationSec <= 0
-      || !Number.isFinite(avgHeartRate)
+      || (!(avgHeartRate > 0) && samples.length < 2)
       || !Number.isFinite(restingHeartRate)
-      || !Number.isFinite(maxHeartRate)
-      || maxHeartRate <= restingHeartRate) {
+      || !Number.isFinite(lactateThresholdHeartRate)
+      || lactateThresholdHeartRate <= restingHeartRate) {
     return null;
   }
 
-  const relativeIntensity = (avgHeartRate - restingHeartRate) / (maxHeartRate - restingHeartRate);
-  const clampedIntensity = Math.max(0, Math.min(1.5, relativeIntensity));
-  const durationHours = durationSec / 3600;
-  return durationHours * (clampedIntensity ** 2) * 100;
+  // Intensity is relative to the reserve between resting HR and threshold HR, so near-resting HR scores near zero.
+  const intensity = (heartRate) => Math.max(0, (heartRate - restingHeartRate) / (lactateThresholdHeartRate - restingHeartRate));
+  if (samples.length >= 2) {
+    const durations = sampleDurations(samples);
+    return samples.reduce((total, sample, index) => (
+      total + (intensity(sample.hr) ** 2) * durations[index] / 3600 * 100
+    ), 0);
+  }
+  return (durationSec / 3600) * (intensity(avgHeartRate) ** 2) * 100;
 }
 
 function maxOrZero(values) {
@@ -1808,6 +1968,7 @@ module.exports = {
   selectFtpEstimate,
   calculateTrainingStressScore,
   calculateXPower,
+  calculateRobustTrend,
   createNonce,
   downsamplePoints,
   escapeHtml,

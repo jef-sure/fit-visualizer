@@ -354,6 +354,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     restingHeartRate: athleteRestingHrNumber,
     sex: athleteSex,
     maxHeartRateForHrr: asNumber(hrConfig?.maxHeartRate),
+    heartRateThresholds: hrConfig?.thresholds,
+    powerSource: primaryPower.source,
   });
   const compSummary = hasOverlay
     ? buildSummary(comparisonPower.records, Array.isArray(compData.sessions) ? compData.sessions : [], {
@@ -361,6 +363,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       restingHeartRate: athleteRestingHrNumber,
       sex: athleteSex,
       maxHeartRateForHrr: NaN,
+      heartRateThresholds: null,
+      powerSource: comparisonPower.source,
     })
     : null;
   const mapId = isComparison ? 'fitMapComp' : 'fitMap';
@@ -1961,9 +1965,9 @@ function renderHeartRateZones(zoneData, ui) {
   const zoneLabels = {
     Recovery: ui.recovery,
     Endurance: ui.endurance,
-    Aerobic: ui.aerobic,
-    Anaerobic: ui.anaerobic,
-    Max: ui.maxZone,
+    Tempo: ui.aerobic,
+    Threshold: ui.anaerobic,
+    VO2max: ui.maxZone,
   };
   const rows = zoneData.zones.map((zone, colorIndex) => ({ zone, colorIndex })).reverse().map(({ zone: z, colorIndex: idx }) => {
     const fill = Math.max(0, Math.min(100, z.percent));

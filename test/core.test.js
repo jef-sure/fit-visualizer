@@ -17,6 +17,11 @@ const {
   summarizePromptBlocks,
 } = require('../analysis');
 const { ensureDatabaseSchema } = require('../database-schema');
+const { attachActivityZones, buildTrainingContext, compareSegmentStructures } = require('../training-context');
+const {
+  MODEL_PRICES, MODEL_PRICING_URL, MODEL_PRICE_CACHE_KEY, findModelPrice, parseModelPrices,
+  rankModelsByCost, restoreModelPriceCache, setModelPrices, updateModelPrices,
+} = require('../model-pricing');
 const { padYAxisRange } = require('../chart-geometry');
 const { computeStats, extractXYPoints, mapSegmentsToDistanceRanges } = require('../chart-data');
 const { buildChartClientPayload, buildOverlayOptions } = require('../chart-overlays');
@@ -26,6 +31,111 @@ const { createChartSvgRenderer } = require('../chart-svg');
 const { GLOSSARY, localizeGlossary } = require('../glossary');
 const { UI_STRINGS, formatUi, localizeUi } = require('../ui-strings');
 const { createManualActivity } = require('../manual-activity');
+const pricingMarkdown = `All prices are **per 1 million tokens**.
+
+| Model | Output | Tier | Cached input | Input |
+| --- | --- | --- | --- | --- |
+| [GPT-6 Luna](https://example.com) | $0.50 | Default | $0.01 | $0.10 |
+| GPT-6 Luna | $0.75 | Long context | $0.02 | $0.20 |
+| | | | | |
+
+| Model | Input | Cached input | Output |
+| --- | --- | --- | --- |
+| Claude Fable 5 | $10.00 | $1.00 | $50.00 |
+| Gemini Flash[^promo] | $0.75 | $0.075 | $3.75 |
+`;
+
+test('model price parsing uses named columns, default tiers and plain model names', () => {
+  const prices = parseModelPrices(pricingMarkdown);
+  assert.equal(prices.length, 3);
+  assert.deepEqual(prices[0], { key: 'gpt6luna', name: 'GPT-6 Luna', inputPrice: 0.1, outputPrice: 0.5 });
+  assert.equal(prices[2].name, 'Gemini Flash');
+  assert.throws(() => parseModelPrices('No prices available'), /units/);
+  assert.throws(() => parseModelPrices(pricingMarkdown.replace('$0.50', 'unknown')), /Unrecognized/);
+  assert.throws(() => parseModelPrices(pricingMarkdown.replace('Claude Fable 5', 'GPT-6 Luna')), /duplicate/);
+  assert.throws(() => parseModelPrices(pricingMarkdown.replace('| Input |', '| Input price |')), /columns/);
+  assert.throws(() => parseModelPrices(pricingMarkdown.replace('Default', 'Unknown tier')), /tier/);
+});
+
+test('model price update persists validated prices and restores them after restart', async () => {
+  const writes = [];
+  try {
+    const cache = await updateModelPrices({ update: async (...args) => writes.push(args) }, async (url, options) => {
+      assert.equal(url, MODEL_PRICING_URL);
+      assert.ok(options.signal instanceof AbortSignal);
+      return new Response(pricingMarkdown);
+    });
+    assert.equal(writes[0][0], MODEL_PRICE_CACHE_KEY);
+    assert.equal(writes[0][1], cache);
+    assert.equal(findModelPrice({ name: 'Gemini Flash' }).outputPrice, 3.75);
+    setModelPrices(MODEL_PRICES);
+    assert.equal(findModelPrice({ name: 'Gemini Flash' }), null);
+    assert.equal(restoreModelPriceCache(cache), true);
+    assert.equal(rankModelsByCost([{ name: 'Gemini Flash' }, { id: 'gpt-6-luna' }])[0].model.id, 'gpt-6-luna');
+    assert.equal(restoreModelPriceCache({ ...cache, sourceUrl: 'https://example.com' }), false);
+  } finally {
+    setModelPrices(MODEL_PRICES);
+  }
+});
+
+test('model price update preserves previous prices on network, format and storage failures', async () => {
+  let writes = 0;
+  const storage = { update: async () => { writes += 1; } };
+  const previous = findModelPrice({ id: 'gpt-6-luna' });
+  try {
+    await assert.rejects(updateModelPrices(storage, async () => { throw new Error('Offline'); }), /Offline/);
+    await assert.rejects(updateModelPrices(storage, async () => new Response('Unavailable', { status: 503 })), /HTTP 503/);
+    await assert.rejects(updateModelPrices(storage, async () => new Response('Page format changed')), /units/);
+    await assert.rejects(updateModelPrices(storage, async () => new Response('x'.repeat(1024 * 1024 + 1))), /too large/);
+    assert.equal(writes, 0);
+    await assert.rejects(updateModelPrices({ update: async () => { throw new Error('Disk full'); } }, async () => new Response(pricingMarkdown)), /Disk full/);
+    assert.equal(findModelPrice({ id: 'gpt-6-luna' }), previous);
+    assert.equal(restoreModelPriceCache({ version: 1, sourceUrl: MODEL_PRICING_URL, updatedAt: 'invalid', prices: [] }), false);
+  } finally {
+    setModelPrices(MODEL_PRICES);
+  }
+});
+
+test('model price update is contributed to the palette and routes through the command service', async () => {
+  const registered = new Map();
+  const errors = [];
+  let updates = 0;
+  let fail = false;
+  const originalLoad = Module._load;
+  const modulePath = require.resolve('../commands');
+  Module._load = function load(request, parent, isMain) {
+    if (request === 'vscode') return {
+      l10n: { t: (text) => text },
+      commands: { registerCommand: (name, handler) => { registered.set(name, handler); return { dispose() {} }; } },
+      window: { registerCustomEditorProvider: () => ({ dispose() {} }), showErrorMessage: (message) => errors.push(message) },
+    };
+    return originalLoad.call(this, request, parent, isMain);
+  };
+  try {
+    const loaded = new Module(modulePath, module);
+    loaded.filename = modulePath;
+    loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
+    loaded._compile(fs.readFileSync(modulePath, 'utf8'), modulePath);
+    loaded.exports.registerCommands({}, {
+      updateModelPriceTable: async () => {
+        updates += 1;
+        if (fail) throw new Error('Offline');
+      },
+    });
+  } finally {
+    Module._load = originalLoad;
+  }
+  const command = registered.get('fitVisualizer.updateModelPrices');
+  assert.equal(typeof command, 'function');
+  await command();
+  assert.equal(updates, 1);
+  fail = true;
+  await command();
+  assert.deepEqual(errors, ['FIT model price update failed: Offline']);
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  assert.ok(manifest.contributes.commands.some((entry) => entry.command === 'fitVisualizer.updateModelPrices' && entry.title === 'FIT: Update Model Prices'));
+  assert.equal(manifest.l10n, './l10n');
+});
 const {
   loadBundledTranslationBundle,
   loadGeneratedTranslationBundle,
@@ -48,8 +158,144 @@ function loadActivityWebviewForTest() {
     Module._load = originalLoad;
   }
 }
+
+function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = {}) {
+  const modulePath = require.resolve('../extension');
+  const originalLoad = Module._load;
+  Module._load = function load(request, parent, isMain) {
+    if (request === 'vscode') return {
+      env: { language: 'en' }, l10n: { t: (text) => text },
+      workspace: { getConfiguration: () => ({ get: () => undefined }) },
+      ...vscodeOverrides,
+    };
+    if (request === './fit-files' && parent.filename === modulePath) {
+      return { ...originalLoad.call(this, request, parent, isMain), ...fitFileOverrides };
+    }
+    return originalLoad.call(this, request, parent, isMain);
+  };
+  try {
+    const loaded = new Module(modulePath, module);
+    loaded.filename = modulePath;
+    loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
+    loaded._compile(fs.readFileSync(modulePath, 'utf8')
+      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+    return loaded.exports.__test;
+  } finally {
+    Module._load = originalLoad;
+  }
+}
+test('batch re-analysis includes stale and missing analyses together and respects confirmation', async () => {
+  const currentVersion = Number(/const ANALYSIS_VERSION = (\d+)/.exec(fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8'))[1]);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-batch-analysis-'));
+  const dbPath = path.join(directory, 'fit-data.sqlite');
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  ensureDatabaseSchema(db);
+  db.run(`INSERT INTO activities (id, file_path, file_name, start_time, source, sport, total_timer_s, total_distance_km)
+    VALUES (1, 'old.fit', 'old.fit', '2026-08-30T12:00:00.000Z', 'fit', 'cycling', 600, 5),
+           (2, 'new.fit', 'new.fit', '2026-09-01T12:00:00.000Z', 'fit', 'cycling', 600, 5),
+           (3, 'current.fit', 'current.fit', '2026-09-02T12:00:00.000Z', 'fit', 'cycling', 600, 5)`);
+  db.run("INSERT INTO activity_analysis (activity_id, analysis_text, analysis_version) VALUES (1, 'Old analysis', ?), (3, 'Current analysis', ?)", [currentVersion - 1, currentVersion]);
+  fs.writeFileSync(dbPath, Buffer.from(db.export()));
+  db.close();
+  let accept = false;
+  let requests = 0;
+  const reports = [];
+  const messages = [];
+  const internals = loadExtensionInternalsForTest({
+    workspace: { getConfiguration: () => ({ get: (key) => key === 'logLlmRequests' ? false : undefined }) },
+    l10n: { t: (text, ...values) => text.replace(/\{(\d+)\}/g, (_, index) => values[index]) },
+    ProgressLocation: { Notification: 15 },
+    LanguageModelChatMessage: { User: (content) => ({ content }) },
+    lm: { selectChatModels: async () => [{
+      id: 'gpt-6-luna', sendRequest: async () => {
+        requests += 1;
+        return { text: (async function* () { yield 'Updated test analysis'; })() };
+      },
+    }] },
+    window: {
+      showQuickPick: () => { throw new Error('No mode selection should be shown'); },
+      tabGroups: { activeTabGroup: { activeTab: null } },
+      showInformationMessage: async (message, options, action) => {
+        messages.push(message);
+        if (options?.modal) {
+          assert.match(message, /for 2 activities/);
+          assert.match(message, /outdated and missing/);
+          return accept ? action : undefined;
+        }
+      },
+      withProgress: async (options, task) => task({ report: (report) => reports.push(report) }, { isCancellationRequested: false }),
+    },
+  });
+  internals.setContext({ globalState: {
+    get: (key) => key === 'fitVisualizer.lastDatabasePath' ? dbPath : undefined,
+    update: async () => {},
+  } });
+  try {
+    await internals.reanalyzeOutdatedActivities();
+    assert.equal(requests, 0, 'Dismissing confirmation must not consume requests');
+    accept = true;
+    await internals.reanalyzeOutdatedActivities();
+    assert.equal(requests, 2);
+    assert.deepEqual(reports.map((report) => report.message), ['1/2: old.fit', '2/2: new.fit']);
+    assert.equal(messages.at(-1), 'Re-analysis finished: 2 of 2 updated, 0 failed.');
+    const updated = new SQL.Database(fs.readFileSync(dbPath));
+    try {
+      assert.deepEqual(updated.exec('SELECT activity_id, analysis_text, analysis_version FROM activity_analysis ORDER BY activity_id')[0].values,
+        [[1, 'Updated test analysis', currentVersion], [2, 'Updated test analysis', currentVersion], [3, 'Current analysis', currentVersion]]);
+    } finally {
+      updated.close();
+    }
+    await internals.reanalyzeOutdatedActivities();
+    assert.equal(requests, 2);
+    assert.equal(messages.at(-1), `All analyses already use version ${currentVersion}.`);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('FIT indexing reports progress and a persistent completion summary including failures', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-index-feedback-'));
+  const lines = [];
+  const reports = [];
+  const events = [];
+  const internals = loadExtensionInternalsForTest({
+    l10n: { t: (text, ...values) => text.replace(/\{(\d+)\}/g, (_, index) => values[index]) },
+    ProgressLocation: { Notification: 15 },
+    window: {
+      createOutputChannel: () => ({ clear() {}, show() {}, appendLine: (line) => { lines.push(line); events.push(line); } }),
+      withProgress: async (options, task) => {
+        assert.equal(options.location, 15);
+        assert.equal(options.title, 'Indexing FIT files');
+        const result = await task({ report: (report) => reports.push(report) });
+        events.push('progress finished');
+        return result;
+      },
+    },
+  }, {
+    parseFitFile: async (file) => {
+      if (file.endsWith('bad.fit')) throw new Error('Unreadable FIT');
+      return { records: [], sessions: [] };
+    },
+  });
+  try {
+    const result = await internals.indexFitUris([
+      { fsPath: path.join(directory, 'good.fit') }, { fsPath: path.join(directory, 'bad.fit') },
+    ], path.join(directory, 'fit-data.sqlite'), 'Indexing two FIT files...');
+    assert.deepEqual(result, { saved: 1, failed: 1 });
+    assert.equal(lines.at(-1), 'FIT DB index complete: 1 indexed, 1 failed.');
+    assert.match(lines.at(-2), /Failed: .*bad.fit -> Unreadable FIT/);
+    assert.deepEqual(reports.filter((report) => report.message).map((report) => report.message), ['1/2: good.fit', '2/2: bad.fit']);
+    assert.equal(reports.reduce((sum, report) => sum + (report.increment || 0), 0), 100);
+    assert.equal(events.at(-2), 'progress finished');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 const {
   calculateAutoHeartRateProfile,
+  calculatePeakHeartRates,
+  estimateLactateThresholdHeartRate,
   computeHeartRateZones,
   getHeartRateZoneIndex,
 } = require('../heart-rate');
@@ -62,6 +308,7 @@ const {
   calculateAutoFtp,
   calculateBikeStressScore,
   calculateHrTss,
+  calculateRobustTrend,
   calculateHistoricalMeanMaximalPower,
   calculateIntensityFactor,
   calculateIntervalsDecoupling,
@@ -480,6 +727,18 @@ test('activity summary falls back to records and preserves unavailable workload 
   assert.equal(summary.trainingStressScore, null);
 });
 
+test('activity summary omits power-HR decoupling when power is motion-estimated', () => {
+  const records = Array.from({ length: 1200 }, (_, elapsed_time) => ({
+    elapsed_time,
+    power: 200,
+    heart_rate: 140,
+  }));
+  const session = [{ total_timer_time: 1200 }];
+
+  assert.equal(buildSummary(records, session, { ftp: 250, powerSource: 'estimated' }).decouplingPct, null);
+  assert.ok(Number.isFinite(buildSummary(records, session, { ftp: 250, powerSource: 'measured' }).decouplingPct));
+});
+
 test('chart model builds a shared geometry for primary and comparison series', () => {
   const chart = buildLineChart(
     [{ distance: 0, speed: 10 }, { distance: 2, speed: 20 }],
@@ -619,8 +878,10 @@ test('stored analyses stay visible and reusable after a version bump', () => {
   assert.match(source, /if \(!force\) \{\s*const existing = await getCachedAnalysisForCurrentVersion\(dbPath, numId\);/);
   assert.equal(source.match(/analysis_version = \?/g).length, 1);
   assert.match(source, /const analysis = selId \? await getLatestAnalysisAnyVersion\(dbPath, selId\) : null;/);
-  assert.match(source, /const previousAnalysis = \(await getLatestAnalysisAnyVersion\(dbPath, numId\)\)\?\.text/);
-  assert.match(source, /const baseAnalysis = \(await getLatestAnalysisAnyVersion\(dbPath, activityId\)\)\?\.text/);
+  assert.match(source, /const previousResult = hasManualHrOverrides \? null : await getLatestAnalysisAnyVersion\(dbPath, numId\)/);
+  assert.match(source, /previousResult\?\.version >= ANALYSIS_VERSION/);
+  assert.match(source, /const previousResult = hasManualHrOverrides \? null : await getLatestAnalysisAnyVersion\(dbPath, activityId\)/);
+  assert.match(source, /const baseAnalysis = hasCurrentAnalysis \? previousResult\.text : null/);
   const webviewSource = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
   assert.match(webviewSource, /escapeHtml\(ui\.olderAnalysis\)/);
 });
@@ -688,18 +949,45 @@ test('bulk re-analysis runs one Copilot request at a time', () => {
   assert.match(source, /async function appendActivityChatTurn[\s\S]*?return enqueueLlmTask\(async \(\) => \{/);
 });
 
-test('extracting computeGrade keeps estimatePowerFromMotion output identical', () => {
-  // Snapshot captured from the pre-refactor implementation. The acceleration term and the
-  // wider default CdA arrived later, so they are switched off here to keep guarding the refactor.
-  const expected = [
-    [1, 654.331735], [2, 579.278761], [5, 247.575428], [6, 0],
-    [7, 0], [8, 0], [9, 0], [11, 0],
-  ];
-  const actual = estimatePowerFromMotion(gradeFixtureRecords(), {
-    riderMassKg: 75, bikeMassKg: 10, dragArea: 0.25, includeAcceleration: false,
-  }).map((entry) => [entry.elapsed_time, Number(entry.power.toFixed(6))]);
+function constantGradeRecords(grade = 0.06, noise = false, interval = 1) {
+  return Array.from({ length: 121 }, (_, index) => ({
+    elapsed_time: index * interval, speed: 18 / interval, distance: index * 0.005,
+    altitude: (100 + index * 5 * grade + (noise ? Math.sin(index * 2) * 0.3 + (index === 50 ? 8 : 0) : 0)) / 1000,
+  }));
+}
 
-  assert.deepEqual(actual, expected);
+test('computeGrade spatial smoothing preserves noisy steep climbs and does not need GPS', () => {
+  const records = constantGradeRecords(0.22, true);
+  const grades = computeGrade(records).slice(10, -10).filter(Boolean);
+  assert.ok(grades.length > 90);
+  assert.ok(grades.every((sample) => Math.abs(sample.grade - 0.22) < 0.025));
+  const powers = estimatePowerFromMotion(records, { riderMassKg: 75, bikeMassKg: 10 });
+  assert.ok(powers.length > 90, 'real slopes above 18% remain usable');
+  assert.ok(powers.every((sample) => sample.power > 800 && sample.power < 1100));
+});
+
+test('computeGrade supports sparse recording and preserves changes in terrain', () => {
+  const sparse = computeGrade(constantGradeRecords(0.08, false, 15));
+  assert.ok(Math.abs(sparse[60].grade - 0.08) < 1e-9);
+  const records = constantGradeRecords(0);
+  records.forEach((record, index) => { record.altitude = (100 + Math.max(0, index - 60) * 0.5) / 1000; });
+  const grades = computeGrade(records);
+  assert.ok(Math.abs(grades[40].grade) < 1e-9);
+  assert.ok(Math.abs(grades[80].grade - 0.1) < 1e-9);
+});
+
+test('computeGrade does not bridge pauses, resets, or insufficient spatial coverage', () => {
+  assert.ok(computeGrade(constantGradeRecords().slice(0, 4)).every((sample) => sample === null));
+  const records = constantGradeRecords();
+  records[60].speed = 0;
+  records[60].altitude = 10;
+  const grades = computeGrade(records);
+  assert.equal(grades[60], null);
+  assert.equal(grades[61], null);
+  assert.ok(Math.abs(grades[55].grade - 0.06) < 1e-9);
+  records[60].speed = 18;
+  records[60].elapsed_time = 2000;
+  assert.equal(computeGrade(records)[60], null);
 });
 
 test('motion power charges for accelerating the rider and bike', () => {
@@ -730,7 +1018,7 @@ test('motion power charges for accelerating the rider and bike', () => {
 });
 
 test('computeGrade aligns with input records and reports slope as a fraction', () => {
-  const records = gradeFixtureRecords();
+  const records = constantGradeRecords();
   const grades = computeGrade(records);
 
   assert.equal(grades.length, records.length);
@@ -738,26 +1026,23 @@ test('computeGrade aligns with input records and reports slope as a fraction', (
   assert.equal(grades[1].elapsed_time, 1);
   assert.equal(grades[1].dt, 1);
   assert.ok(grades[1].grade > 0, 'climbing section has positive grade');
-  assert.ok(grades[8].grade < 0, 'descending section has negative grade');
+  assert.ok(Math.abs(grades[60].grade - 0.06) < 1e-9);
   assert.ok(Math.abs(grades[1].grade) < 1, 'grade is a fraction, not a percentage');
 });
 
-test('computeGrade skips records without a usable position or altitude', () => {
-  const grades = computeGrade([
-    { elapsed_time: 0, speed: 20, altitude: 0.1, distance: 0, position_lat: 52, position_long: 21 },
-    { elapsed_time: 1, speed: 20, altitude: 0.101, distance: 0.005, position_lat: 0, position_long: 0 },
-    { elapsed_time: 2, speed: 20, altitude: 0.102, distance: 0.01, position_lat: 52, position_long: 21 },
-    { elapsed_time: 3, speed: 20, distance: 0.015, position_lat: 52, position_long: 21 },
-  ]);
-
-  assert.deepEqual(grades.map((entry) => entry === null), [true, true, false, true]);
-  assert.equal(grades[2].dt, 2);
+test('computeGrade skips missing altitude and starts a new spatial window', () => {
+  const records = constantGradeRecords();
+  delete records[60].altitude;
+  const grades = computeGrade(records);
+  assert.equal(grades[60], null);
+  assert.equal(grades[61], null);
+  assert.ok(grades[70]);
 });
 
 test('record insert stores grade only for meaningful movement', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /const grades = computeGrade\(records\);/);
-  assert.match(source, /grade\.dt > 0 && grade\.dt <= 5 && grade\.distanceM >= 1\s*\?\s*roundTo\(grade\.grade \* 100, 2\)/);
+  assert.match(source, /grade\.dt > 0 && grade\.dt <= 30 && grade\.distanceM > 0\s*\?\s*roundTo\(grade\.grade \* 100, 2\)/);
   assert.match(source, /gradePct, null, null,/);
 });
 
@@ -955,7 +1240,7 @@ test('bottom-up segmentation finds level changes and ignores noise', () => {
 });
 
 test('effort signal follows the sport and the reliability of the segment', () => {
-  const climb = { type: 'climb', avgGrade: 6, hasPower: true, hasHeartRate: true };
+  const climb = { type: 'climb', avgGrade: 6, hasPower: true, hasHeartRate: true, vpowerUse: 'conditional relative comparison' };
   assert.equal(selectEffortSignal(climb, { sport: 'cycling', powerSource: 'estimated' }).basis, 'vpower');
   assert.equal(selectEffortSignal(climb, { sport: 'cycling', powerSource: 'measured' }).basis, 'power');
 
@@ -985,7 +1270,8 @@ test('activity segments combine terrain, effort basis and aggregates', () => {
   assert.equal(segments[segments.length - 1].endIndex, records.length - 1);
 
   const climb = segments.find((segment) => segment.type === 'climb');
-  assert.equal(climb.effortBasis, 'vpower');
+  assert.equal(climb.effortBasis, 'hr');
+  assert.equal(climb.vpowerUse, 'not assessed');
   assert.ok(climb.avgGrade > 5 && climb.avgGrade < 7);
   assert.ok(climb.elevGainM > 0);
   // Terrain boundaries shift by a sample or two because of the hysteresis.
@@ -1011,6 +1297,127 @@ test('short continuous climbs are not fragmented into effort micro-segments', ()
 
   assert.equal(climbs.length, 1);
   assert.ok(climbs[0].durationS > 300);
+});
+
+test('estimated segment effort includes quality gates and shared spatial grade', () => {
+  const records = constantGradeRecords(0.1).map((record) => ({ ...record, grade: -12, heart_rate: 140 }));
+  const power = addEstimatedPowerWhenMissing(records, { riderMassKg: 75, bikeMassKg: 10 });
+  const segments = buildActivitySegments(power.records, { sport: 'cycling', powerSource: power.source });
+  const climb = segments.find((segment) => segment.type === 'climb');
+  assert.ok(climb);
+  assert.equal(climb.effortBasis, 'vpower');
+  assert.equal(climb.vpowerUse, 'conditional relative comparison');
+  assert.ok(climb.gradeWindowM >= 30);
+  assert.ok(climb.gradeCoveragePct >= 80);
+  assert.equal(climb.hrCoveragePct, 100);
+  assert.equal(selectEffortSignal({ ...climb, vpowerUse: 'not assessed' }, { sport: 'cycling', powerSource: 'estimated' }).basis, 'hr');
+});
+
+test('long segments expose half-by-half dynamics without labelling HR change as recovery', () => {
+  const records = terrainRecords([[0, 800]], { speedKmh: 24,
+    heartRateFor: (elapsed) => elapsed < 400 ? 130 : 135 });
+  const segments = buildActivitySegments(records, { sport: 'cycling' });
+  assert.equal(segments.length, 1);
+  assert.equal(segments[0].dynamics.firstHalfHr, 130);
+  assert.ok(segments[0].dynamics.secondHalfHr >= 134);
+  assert.equal(segments[0].hrDriftPct, null);
+});
+
+test('rough flat vpower does not create pseudo-intervals and coverage uses time rather than record count', () => {
+  const noHr = addEstimatedPowerWhenMissing(constantGradeRecords(0, true), { riderMassKg: 75, bikeMassKg: 10 });
+  const segments = buildActivitySegments(noHr.records, { sport: 'cycling', powerSource: noHr.source });
+  assert.equal(segments.length, 1);
+  assert.equal(segments[0].effortBasis, 'none');
+  const sparse = Array.from({ length: 20 }, (_, index) => {
+    const elapsed_time = index < 10 ? index : 9 + (index - 9) * 10;
+    return { elapsed_time, distance: elapsed_time * 0.005, altitude: 0.1, speed: 18,
+      heart_rate: index < 10 ? 130 : null };
+  });
+  const summary = buildActivitySegments(sparse, { sport: 'cycling' });
+  assert.equal(summary.length, 1);
+  assert.ok(summary[0].hrCoveragePct < 12 && summary[0].hrCoveragePct > 5);
+});
+
+test('segment comparisons use ordered terrain and duration, not identical effort', () => {
+  const segment = { index: 0, type: 'climb', durationS: 600, distanceKm: 2, avgGrade: 6, avgHr: 130 };
+  const prior = { ...segment, index: 3, avgHr: 170, avgPower: 400 };
+  const comparison = compareSegmentStructures([segment], [prior]);
+  assert.equal(comparison.matches.length, 1);
+  assert.equal(comparison.matchedDurationPct, 100);
+  assert.equal(comparison.matches[0].route, 'route identity not established');
+  assert.equal(compareSegmentStructures([segment], [{ ...prior, type: 'flat' }]).matches.length, 0);
+});
+
+test('training windows preserve volume without comparable rides and separate sports and equal periods', () => {
+  const activities = [
+    { activityId: 1, startTime: '2026-08-24', sport: 'cycling', durationS: 3600, distanceKm: 40 },
+    { activityId: 2, startTime: '2026-08-23', sport: 'running', durationS: 1800, distanceKm: 5 },
+    { activityId: 3, startTime: '2026-08-15', sport: 'cycling', durationS: 7200, distanceKm: 80 },
+    { activityId: 4, startTime: '2026-08-26', sport: 'cycling', durationS: 9999, distanceKm: 999 },
+  ];
+  const context = buildTrainingContext(activities, '2026-08-25', 'cycling');
+  assert.equal(context.windowDays, 90);
+  assert.equal(context.comparisons.length, 0);
+  assert.equal(context.volume[0].sports.find((row) => row.sport === 'cycling').durationS, 3600);
+  assert.equal(context.volume[0].sports.find((row) => row.sport === 'running').durationS, 1800);
+  assert.equal(context.volume[1].sports[0].durationS, 7200);
+  assert.equal(context.recentHistory.length, 2);
+  assert.equal(context.durationTrend, null);
+  assert.match(context.coverageNote, /not rest days/);
+});
+
+test('adaptive training context includes covered intensity with dated thresholds', () => {
+  const records = Array.from({ length: 60 }, (_, elapsed_time) => ({ elapsed_time, heart_rate: 140 }));
+  const activity = attachActivityZones({ activityId: 1, startTime: '2026-08-20', sport: 'cycling', durationS: 60 },
+    records, { maxHeartRate: 180, thresholds: [120, 130, 150, 160] });
+  const context = buildTrainingContext([activity], '2026-08-25', 'cycling');
+  assert.equal(context.volume[0].sports[0].coveredHrSeconds, 60);
+  assert.equal(context.volume[0].sports[0].zoneSeconds[2], 60);
+  const frequent = Array.from({ length: 8 }, (_, index) => ({ ...activity, startTime: `2026-08-${10 + index}` }));
+  assert.equal(buildTrainingContext(frequent, '2026-08-25', 'cycling').windowDays, 28);
+});
+
+test('peak sustained heart rate is time-weighted and broken by missing HR or recording gaps', () => {
+  const records = [
+    ...Array.from({ length: 600 }, (_, elapsed_time) => ({ elapsed_time, heart_rate: elapsed_time >= 100 && elapsed_time < 160 ? 180 : 140 })),
+    { elapsed_time: 600, heart_rate: null },
+    ...Array.from({ length: 30 }, (_, index) => ({ elapsed_time: 700 + index * 5, heart_rate: 175 })),
+  ];
+  const peaks = calculatePeakHeartRates(records);
+  assert.deepEqual(peaks, [{ seconds: 60, bpm: 180 }, { seconds: 300, bpm: 148 }]);
+  const splitByGap = [...Array.from({ length: 40 }, (_, elapsed_time) => ({ elapsed_time, heart_rate: 190 })),
+    ...Array.from({ length: 40 }, (_, index) => ({ elapsed_time: 100 + index, heart_rate: 190 }))];
+  assert.deepEqual(calculatePeakHeartRates(splitByGap), []);
+
+  const activity = (startTime, bpm) => attachActivityZones({ activityId: startTime, startTime, sport: 'cycling', durationS: 120 },
+    Array.from({ length: 120 }, (_, elapsed_time) => ({ elapsed_time, heart_rate: bpm })), null);
+  const context = buildTrainingContext([activity('2026-06-20', 185), activity('2026-08-20', 170)], '2026-08-25', 'cycling');
+  assert.deepEqual(context.peakHeartRates, [{ seconds: 60,
+    best28: { startTime: '2026-08-20', bpm: 170 }, best90: { startTime: '2026-06-20', bpm: 185 } }]);
+  assert.equal(context.recentHistory[0].peakHr, undefined);
+});
+
+test('analysis prompt adds session-type evidence: intensity distribution, peak HR history and climb VAM', () => {
+  const records = Array.from({ length: 1300 }, (_, elapsed_time) => ({ elapsed_time, heart_rate: elapsed_time < 600 ? 120 : 165 }));
+  const context = buildTrainingContext([attachActivityZones({ activityId: 1, startTime: '2026-08-20', sport: 'cycling', durationS: 400 },
+    Array.from({ length: 400 }, (_, elapsed_time) => ({ elapsed_time, heart_rate: 160 })), { maxHeartRate: 180 })], '2026-08-25', 'cycling');
+  const segments = [
+    { index: 0, type: 'climb', effortBasis: 'hr', startElapsed: 0, endElapsed: 600, durationS: 600, avgGrade: 6, avgHr: 150, elevGainM: 90 },
+    { index: 1, type: 'climb', effortBasis: 'hr', startElapsed: 600, endElapsed: 690, durationS: 90, avgGrade: 6, avgHr: 160, elevGainM: 30 },
+  ];
+  const prompt = generateAnalysisPrompt({ sessions: [{ start_time: '2026-08-25', sport: 'cycling' }], records, segments },
+    { total_activities: 1, trainingContext: context }, { maxHeartRate: 180 }, null, [], [], 'ru');
+  assert.match(prompt, /Intensity distribution: low \(Recovery\+Endurance\) 46%, moderate \(Tempo\) 0%, high \(Threshold\+VO2max\) 54%/);
+  assert.match(prompt, /high \(Threshold\+VO2max\) 100%/, 'period rows include the same grouping');
+  assert.match(prompt, /- 5 min: 165 bpm; prior same-sport best: 28 and 90 days 160 bpm \(2026-08-20\)/);
+  assert.match(prompt, /- 20 min: 146 bpm\n/);
+  assert.match(prompt, /\+90 m, VAM ~540 m\/h/);
+  assert.doesNotMatch(prompt, /\+30 m, VAM/);
+  assert.match(prompt, /Classify session type \(recovery, endurance, tempo, threshold, VO2max\/anaerobic, mixed or unstructured\)/);
+  assert.match(prompt, /stimulus mix over periods/);
+  const comparison = generateComparisonPrompt({ sessions: [{}], records }, { sessions: [{}], records: [] }, 'ru');
+  assert.match(comparison, /Peak Sustained Heart Rate \(This Workout\)/);
+  assert.doesNotMatch(comparison, /Peak Sustained Heart Rate \(Compared Activity\)|prior same-sport best/);
 });
 
 test('continuous flat terrain merges adjacent micro-segments with similar heart rate', () => {
@@ -1078,7 +1485,7 @@ test('power model coefficients are configurable and reach every estimation call 
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /function getPowerModelOptions\(\)/);
   const callSites = source.match(/addEstimatedPowerWhenMissing\([\s\S]*?\}\);/g) || [];
-  assert.equal(callSites.length, 2);
+  assert.equal(callSites.length, 3);
   for (const callSite of callSites) {
     assert.match(callSite, /\.\.\.getPowerModelOptions\(\)/);
   }
@@ -1091,7 +1498,7 @@ test('heart-rate zones use semantic order and stable boundaries', () => {
 
   assert.deepEqual(
     result.zones.map((zone) => zone.name),
-    ['Recovery', 'Endurance', 'Aerobic', 'Anaerobic', 'Max']
+    ['Recovery', 'Endurance', 'Tempo', 'Threshold', 'VO2max']
   );
   assert.deepEqual(result.zones.map((zone) => zone.seconds), [2, 1, 1, 1, 1]);
   assert.equal(getHeartRateZoneIndex(180, result.thresholds), 4);
@@ -1120,6 +1527,14 @@ test('auto HR profile uses sex age resting HR and observed maxima', () => {
   assert.deepEqual(result.thresholds, [134, 147, 160, 173]);
   assert.equal(result.formulaMaxHeartRate, 180);
   assert.equal(result.observedMaxHeartRate, 186);
+});
+
+test('auto HR profile uses the Tanaka max-HR estimate across sex selections', () => {
+  for (const sex of ['male', 'female', 'other']) {
+    const result = calculateAutoHeartRateProfile({ sex, age: 50, restingHeartRate: 60 });
+    assert.equal(result.formulaMaxHeartRate, 173);
+    assert.equal(result.maxHeartRate, 173);
+  }
 });
 
 test('shared formatting utilities preserve display behavior', () => {
@@ -1329,12 +1744,14 @@ test('motion power ignores zero-distance spikes and caps estimates', () => {
   }));
 
   const estimated = estimatePowerFromMotion(records, { riderMassKg: 75, bikeMassKg: 10 });
-  assert.equal(estimated.length, 2);
-  assert.ok(estimated.every((record) => record.power <= 1200));
+  assert.equal(estimated.length, 0);
+  const steep = estimatePowerFromMotion(constantGradeRecords(0.4), { riderMassKg: 75, bikeMassKg: 10 });
+  assert.ok(steep.length > 0);
+  assert.ok(steep.every((record) => record.power === 1200 && record.capped));
 });
 
 test('summary power fallback preserves measured power and estimates missing power', () => {
-  const missingPower = [0, 1, 2].map((elapsed_time) => ({
+  const missingPower = Array.from({ length: 20 }, (_, elapsed_time) => ({
     elapsed_time,
     distance: elapsed_time * 0.01,
     speed: 36,
@@ -1390,6 +1807,23 @@ test('normalized power weights samples by elapsed time, not sample count', () =>
   const normalizedPower = calculateNormalizedPower([...dense, ...sparse]);
   // Sample counting would let the 601 dense samples swamp the 120 sparse ones and land near 190 W.
   assert.ok(normalizedPower < 175, `expected the sparse half to carry its own time, got ${normalizedPower}`);
+});
+
+test('normalized power handles Garmin-style 10- and 15-second recording intervals', () => {
+  const dense = Array.from({ length: 1201 }, (_, elapsed_time) => ({
+    elapsed_time,
+    power: elapsed_time < 600 ? 100 : 300,
+  }));
+  const denseNp = calculateNormalizedPower(dense);
+  for (const interval of [10, 15]) {
+    const sparse = Array.from({ length: 1200 / interval + 1 }, (_, index) => ({
+      elapsed_time: index * interval,
+      power: index * interval < 600 ? 100 : 300,
+    }));
+    const sparseNp = calculateNormalizedPower(sparse);
+    assert.ok(Math.abs(sparseNp - denseNp) / denseNp < 0.02,
+      `${interval}-second recording should stay close to 1 Hz NP: ${sparseNp} vs ${denseNp}`);
+  }
 });
 
 test('normalized power weights variable efforts above arithmetic mean', () => {
@@ -1523,7 +1957,7 @@ test('Intervals-style decoupling increases with heart-rate drift at constant pow
   assert.ok(decoupling > 0);
 });
 
-test('Banister TRIMP and hrTSS are computed from HR reserve intensity', () => {
+test('Banister TRIMP uses HR reserve and hrTSS uses threshold HR', () => {
   const input = {
     durationSec: 3600,
     avgHeartRate: 150,
@@ -1533,15 +1967,51 @@ test('Banister TRIMP and hrTSS are computed from HR reserve intensity', () => {
   };
 
   const trimp = calculateBanisterTrimp(input);
-  const hrTss = calculateHrTss(input);
+  const hrTss = calculateHrTss({ ...input, lactateThresholdHeartRate: 170 });
 
   assert.ok(trimp > 0);
-  assert.ok(hrTss > 0);
-  assert.ok(hrTss < 100);
+  // Intensity is measured in the reserve between resting and threshold HR: (150-50)/(170-50).
+  assert.ok(Math.abs(hrTss - (((150 - 50) / (170 - 50)) ** 2) * 100) < 1e-9);
+  // One hour exactly at threshold is 100 by definition; near-resting HR must score near zero.
+  assert.ok(Math.abs(calculateHrTss({ ...input, avgHeartRate: 170, lactateThresholdHeartRate: 170 }) - 100) < 1e-9);
+  assert.ok(calculateHrTss({ ...input, avgHeartRate: 60, lactateThresholdHeartRate: 170 }) < 1);
 
   // Without an HR profile neither score is computable, and that must not look like a zero workload.
   assert.equal(calculateBanisterTrimp({ durationSec: 3600, avgHeartRate: 150 }), null);
   assert.equal(calculateHrTss({ durationSec: 3600, avgHeartRate: 150 }), null);
+  // A ride with no heart-rate data at all is unscored, not zero.
+  assert.equal(calculateBanisterTrimp({ ...input, avgHeartRate: 0 }), null);
+  assert.equal(calculateHrTss({ ...input, avgHeartRate: 0, lactateThresholdHeartRate: 170 }), null);
+});
+
+test('estimated threshold HR uses the middle of the Threshold zone or 85% of max', () => {
+  assert.equal(estimateLactateThresholdHeartRate(171, [127, 138, 149, 160]), 155);
+  assert.equal(estimateLactateThresholdHeartRate(171, null), 145);
+  assert.equal(estimateLactateThresholdHeartRate(NaN, null), null);
+});
+
+test('TRIMP and hrTSS integrate nonlinear HR intensity across recording intervals', () => {
+  const records = Array.from({ length: 181 }, (_, index) => ({
+    elapsed_time: index * 10,
+    heart_rate: index >= 60 && index < 120 ? 160 : 100,
+  }));
+  const base = { durationSec: 1800, restingHeartRate: 50, maxHeartRate: 190, sex: 'male', records };
+  const trimp = calculateBanisterTrimp({ ...base, avgHeartRate: 120 });
+  const hrTss = calculateHrTss({ ...base, avgHeartRate: 120, lactateThresholdHeartRate: 170 });
+  const constantTrimp = calculateBanisterTrimp({ ...base, records: [], avgHeartRate: 120 });
+  const constantHrTss = calculateHrTss({ ...base, records: [], avgHeartRate: 120, lactateThresholdHeartRate: 170 });
+
+  assert.ok(trimp > constantTrimp, 'the high-HR interval must count more under the nonlinear TRIMP curve');
+  assert.ok(hrTss > constantHrTss, 'squaring each interval must preserve intensity spikes');
+});
+
+test('robust trend adapts its threshold to history noise and requires enough rides', () => {
+  assert.equal(calculateRobustTrend([10, 11, 12, 13, 14, 15, 16]), null);
+  const steady = calculateRobustTrend([20, 20.1, 19.9, 20, 20.1, 19.9, 20, 20.1]);
+  const noisy = calculateRobustTrend([20, 15, 25, 18, 24, 16, 23, 17]);
+
+  assert.equal(steady.direction, 'within-noise');
+  assert.ok(noisy.thresholdPct > steady.thresholdPct);
 });
 
 test('decoupling reports null when it cannot be computed but keeps a genuine zero', () => {
@@ -1751,7 +2221,7 @@ test('Copilot analysis accepts a configured language-model vendor and defaults b
   assert.deepEqual(selectors, [{ vendor: 'example-provider' }, { vendor: 'copilot' }]);
 });
 
-test('Copilot analysis prefers an Auto model family when preferCheapModel is set', async () => {
+test('Copilot analysis prefers an Auto model family when no available model has a known price', async () => {
   const selectors = [];
   const vscode = {
     lm: {
@@ -1760,7 +2230,7 @@ test('Copilot analysis prefers an Auto model family when preferCheapModel is set
         if (selector.family === 'auto') {
           return [{ id: 'auto-router', sendRequest: async () => ({ text: asyncChunks(['auto']) }) }];
         }
-        return [{ id: 'gpt-expensive', sendRequest: async () => ({ text: asyncChunks(['default']) }) }];
+        return [{ id: 'mystery-model', sendRequest: async () => ({ text: asyncChunks(['default']) }) }];
       },
     },
     LanguageModelChatMessage: { User: (content) => content },
@@ -1785,8 +2255,8 @@ test('Copilot analysis falls back to a name-marker heuristic when Auto is unavai
           return [];
         }
         return [
-          { id: 'gpt-5-expensive', sendRequest: async () => ({ text: asyncChunks(['expensive']) }) },
-          { id: 'claude-haiku-4.5', sendRequest: async () => ({ text: asyncChunks(['cheap']) }) },
+          { id: 'unknown-expensive', sendRequest: async () => ({ text: asyncChunks(['expensive']) }) },
+          { id: 'unknown-haiku-model', sendRequest: async () => ({ text: asyncChunks(['cheap']) }) },
         ];
       },
     },
@@ -1797,12 +2267,42 @@ test('Copilot analysis falls back to a name-marker heuristic when Auto is unavai
   assert.equal(result, 'cheap');
 });
 
+test('Copilot analysis picks the cheapest model by published price', async () => {
+  const pick = (id) => ({ id, sendRequest: async () => ({ text: asyncChunks([id]) }) });
+  const vscode = {
+    lm: {
+      selectChatModels: async () => [
+        pick('claude-fable-5'), pick('gpt-5.4'), pick('claude-haiku-4.5'), pick('gpt-6-luna'), pick('gpt-5.6-sol'),
+      ],
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+  const logged = [];
+  const result = await requestCopilotAnalysis(vscode, 'test', {
+    preferCheapModel: true,
+    onCompleted: (entry) => logged.push(entry),
+  });
+  assert.equal(result, 'gpt-6-luna');
+  assert.equal(logged[0].modelId, 'gpt-6-luna');
+});
+
+test('model price lookup handles versioned ids, display names and mini/nano variants', () => {
+  assert.equal(findModelPrice({ id: 'gpt-5.4-mini' }).name, 'GPT-5.4 mini');
+  assert.equal(findModelPrice({ id: 'gpt-5.4-nano-2026-03-01' }).name, 'GPT-5.4 nano');
+  assert.equal(findModelPrice({ id: 'x', name: 'Claude Fable 5.1' }).name, 'Claude Fable 5.1');
+  assert.equal(findModelPrice({ family: 'claude-sonnet-5.5' }).name, 'Claude Sonnet 5.5');
+  assert.equal(findModelPrice({ id: 'mystery-model' }), null);
+
+  const ranked = rankModelsByCost([{ id: 'claude-fable-5' }, { id: 'unknown' }, { id: 'gpt-5.4-nano' }, { id: 'gpt-6-luna' }]);
+  assert.deepEqual(ranked.map((entry) => entry.model.id), ['gpt-6-luna', 'gpt-5.4-nano', 'claude-fable-5']);
+});
+
 test('Copilot analysis keeps the default model when preferCheapModel is off or no marker matches', async () => {
   const vscode = {
     lm: {
       selectChatModels: async () => [
-        { id: 'gpt-5-expensive', sendRequest: async () => ({ text: asyncChunks(['default']) }) },
-        { id: 'gpt-5-also-expensive', sendRequest: async () => ({ text: asyncChunks(['also default']) }) },
+        { id: 'unknown-model-a', sendRequest: async () => ({ text: asyncChunks(['default']) }) },
+        { id: 'unknown-model-b', sendRequest: async () => ({ text: asyncChunks(['also default']) }) },
       ],
     },
     LanguageModelChatMessage: { User: (content) => content },
@@ -1813,7 +2313,7 @@ test('Copilot analysis keeps the default model when preferCheapModel is off or n
   const vscodeAutoDisabled = {
     lm: {
       selectChatModels: async (selector) => (selector.family === 'auto' ? [] : [
-        { id: 'gpt-5-expensive', sendRequest: async () => ({ text: asyncChunks(['default']) }) },
+        { id: 'unknown-model-a', sendRequest: async () => ({ text: asyncChunks(['default']) }) },
       ]),
     },
     LanguageModelChatMessage: { User: (content) => content },
@@ -1939,11 +2439,13 @@ test('LLM request logging is configurable and wired into both call sites', () =>
 test('cheap analysis model preference is configurable and applied only to one-off analysis', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
   const properties = manifest.contributes.configuration.properties;
-  assert.equal(properties['fitVisualizer.preferCheapAnalysisModel'].default, false);
-  assert.deepEqual(properties['fitVisualizer.cheapModelMarkers'].default, ['haiku', 'mini', 'flash', 'nano', 'lite', 'small']);
+  assert.equal(properties['fitVisualizer.preferCheapAnalysisModel'].default, true);
+  assert.deepEqual(properties['fitVisualizer.cheapModelMarkers'].default, ['haiku', 'mini', 'flash', 'nano', 'lite', 'small', 'luna']);
 
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /function getPreferCheapAnalysisModel\(\)/);
+  // Unset means on: only an explicit false opts out.
+  assert.match(source, /get\('preferCheapAnalysisModel'\) !== false/);
   assert.match(source, /function getCheapModelMarkers\(\)/);
 
   // Only the one-off analysis call site should read the cheap-model preference; chat keeps the picker's model.
@@ -2041,6 +2543,37 @@ test('analysis prompt uses the dated heart-rate profile', () => {
   assert.doesNotMatch(prompt, /Do not assign HR zones because/);
 });
 
+test('AI prompts omit whole-ride power estimates and label the hrTSS threshold as an estimate', () => {
+  const fitData = { sessions: [{
+    power_source: 'estimated',
+    avg_power: 220, max_power: 900, normalized_power: 250, ftp: 180,
+    intensity_factor: 1.39, training_stress_score: 190, xpower: 240,
+    relative_intensity_gc: 1.33, bike_stress_score: 177, decoupling_pct: 12,
+    hr_tss: 88, lactate_threshold_hr: 160,
+  }] };
+  const prompt = generateAnalysisPrompt(fitData, { total_activities: 0 });
+  const chat = generateAnalysisChatPrompt(fitData, {}, {}, '', [], 'why?');
+
+  for (const text of [prompt, chat]) {
+    assert.doesNotMatch(text, /Average Power: 220|Normalized Power: 250|Intensity Factor: 1\.39|TSS: 190|xPower \(GC\): 240/);
+    assert.match(text, /hrTSS: 88/);
+    assert.match(text, /Estimated threshold HR used for hrTSS: 160 bpm/);
+    assert.match(text, /hrTSS uses an estimated threshold HR \(middle of the Threshold zone\)/);
+  }
+});
+
+test('AI context ignores manually overridden HR and stale analysis history', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /Object\.hasOwn\(sourceSession, '_device_avg_hr'\) \? sourceSession\._device_avg_hr : sourceSession\.avg_hr/);
+  assert.match(source, /Object\.hasOwn\(sourceSession, '_device_max_hr'\) \? sourceSession\._device_max_hr : sourceSession\.max_hr/);
+  assert.match(source, /_hasManualHrOverrides:[\s\S]*?activity\.manual_avg_hr != null[\s\S]*?activity\.manual_max_hr != null/);
+  assert.match(source, /a\.manual_avg_hr IS NULL AND a\.manual_max_hr IS NULL/);
+  assert.match(source, /aa\.analysis_version >= \?/);
+  assert.match(source, /previousResult\?\.version >= ANALYSIS_VERSION\s*\? storedChat\s*:\s*storedChat\.filter\(\(entry\) => entry\?\.role === 'user'\)/);
+  assert.match(source, /COALESCE\(activities\.sport, ''\) = COALESCE\(selected\.sport, ''\)/);
+  assert.match(source, /calculateRobustTrend\(activities\.map\(\(activity\) => activity\[field\]\)\)/);
+});
+
 test('empty fields are dropped from the prompt instead of becoming N/A', () => {
   assert.equal(
     formatFieldsSkippingEmpty([['Distance', '20.0', 'km'], ['Cadence', null], ['TSS', undefined], ['Power', '']]),
@@ -2052,10 +2585,87 @@ test('empty fields are dropped from the prompt instead of becoming N/A', () => {
   assert.doesNotMatch(sparse, /Avg Cadence/);
   assert.doesNotMatch(sparse, /xPower/);
   assert.match(sparse, /- Distance: 20\.10 km/);
-  assert.match(sparse, /Fields that are absent were not measured/);
+  assert.match(sparse, /Absent fields may be unmeasured, withheld, unavailable or inapplicable/);
 
   const chat = generateAnalysisChatPrompt({ sessions: [{ total_distance_km: 20.1 }] }, {}, {}, '', [], 'why?');
   assert.doesNotMatch(chat, /N\/A/);
+});
+
+test('SQL training context keeps older user reports, excludes later activities and uses dated profiles', async () => {
+  const SQL = await initSqlJs({ locateFile: (file) => path.join(__dirname, '..', 'vendor', 'sql-wasm', file) });
+  const db = new SQL.Database();
+  const internals = loadExtensionInternalsForTest();
+  try {
+    ensureDatabaseSchema(db);
+    db.run(`INSERT INTO activities (id, file_path, start_time, sport, total_timer_s, total_distance_km) VALUES
+      (1, 'current.fit', '2026-08-25', 'cycling', 600, 10),
+      (2, 'previous.fit', '2026-08-20', 'cycling', 600, 40),
+      (3, 'future.fit', '2026-08-26', 'cycling', 9999, 999),
+      (4, 'old.fit', '2026-04-01', 'cycling', 600, 10)`);
+    db.run(`INSERT INTO heart_rate_profiles (effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start) VALUES
+      ('2026-08-01', 180, 120, 130, 150, 160), ('2026-08-30', 210, 140, 160, 180, 200)`);
+    db.run('INSERT INTO activity_analysis_chat (activity_id, chat_json) VALUES (?, ?)',
+      [4, JSON.stringify([{ role: 'user', ts: '2026-04-02', content: 'Several goals; endurance and enjoying the ride.' }])]);
+    db.run('INSERT INTO activity_analysis_chat (activity_id, chat_json) VALUES (?, ?)',
+      [3, JSON.stringify([{ role: 'user', content: 'Future activity must not appear.' }])]);
+    const context = internals.getTrainingContextFromDb(db, 1, { segments: [] });
+    assert.equal(context.volume[0].sports[0].durationS, 600);
+    assert.equal(context.volume[0].sports[0].distanceKm, 40);
+    assert.equal(context.recentHistory.length, 1);
+    assert.equal(context.userReports.length, 1);
+    assert.match(context.userReports[0].content, /Several goals/);
+    assert.equal(internals.getProfileHeartRateConfig(db, '2026-08-20').maxHeartRate, 180);
+    assert.equal(internals.getProfileHeartRateConfig(db, '2026-07-01').maxHeartRate, null);
+  } finally {
+    db.close();
+  }
+});
+
+test('analysis preparation never falls back from absent device HR to manual overrides', async () => {
+  const SQL = await initSqlJs({ locateFile: (file) => path.join(__dirname, '..', 'vendor', 'sql-wasm', file) });
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-analysis-test-'));
+  const dbPath = path.join(directory, 'test.sqlite');
+  const db = new SQL.Database();
+  ensureDatabaseSchema(db);
+  fs.writeFileSync(dbPath, Buffer.from(db.export()));
+  db.close();
+  try {
+    const prepared = await loadExtensionInternalsForTest().prepareAnalysisData(dbPath, { records: [], sessions: [{
+      start_time: '2026-08-25', sport: 'cycling', avg_hr: 190, max_hr: 191,
+      _device_avg_hr: null, _device_max_hr: null, _source: 'fit', _hasManualHrOverrides: true,
+    }] }, 1);
+    assert.equal(prepared.sessions[0].avg_hr, null);
+    assert.equal(prepared.sessions[0].max_hr, null);
+    assert.doesNotMatch(generateAnalysisPrompt(prepared, {}), /190 bpm|191 bpm/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('sports prompts preserve multiple goals, dated corrections and evidence limits in analysis and chat', () => {
+  const data = { sessions: [{ start_time: '2026-08-25', sport: 'running', total_distance_km: 10,
+    decoupling_pct: null }], records: [{ temperature: null }] };
+  const context = buildTrainingContext([{ startTime: '2026-08-20', sport: 'running', durationS: 3600, distanceKm: 40 }], '2026-08-25', 'running');
+  const summary = { total_activities: 0, trainingContext: context };
+  const history = [{ role: 'user', content: 'No single goal; returning after an operation with restrictions.', ts: '2026-08-24' }];
+  const analysis = generateAnalysisPrompt(data, summary, {}, null, history, [], 'ru');
+  const chat = generateAnalysisChatPrompt(data, summary, {}, '', history, 'What direction is emerging?', 'ru');
+  for (const prompt of [analysis, chat]) {
+    assert.match(prompt, /Goals may be absent, multiple, or change over time/);
+    assert.match(prompt, /postoperative healing, medical clearance/);
+    assert.match(prompt, /Repeated AI claims are not independent corroboration/);
+    assert.match(prompt, /Training Volume and Covered Intensity/);
+    assert.match(prompt, /Historical baseline anchored at 2026-08-25T00:00:00\.000Z/);
+    assert.match(prompt, /current activity is excluded from every historical total/);
+    assert.match(prompt, /rolling windows, not calendar weeks/);
+    assert.match(prompt, /identical start\/end boundaries, sport, inclusion rules and data coverage/);
+    assert.match(prompt, /comparison unverified, not erroneous/);
+    assert.match(prompt, /Missing detail in the current summary does not disprove an earlier observation/);
+    assert.match(prompt, /returning after an operation with restrictions/);
+    assert.doesNotMatch(prompt, /cycling workout|Average Temperature: 0|Power:HR decoupling \(EF\): 0/);
+  }
+  assert.match(analysis, /Session Character and Stimulus/);
+  assert.doesNotMatch(analysis, /\*\*Heart Rate & Recovery\*\*/);
 });
 
 test('analysis prompts use the VS Code language and leave unknown locales alone', () => {
@@ -2064,10 +2674,29 @@ test('analysis prompts use the VS Code language and leave unknown locales alone'
   assert.match(responseLanguageInstruction('pt_BR'), /Respond in Brazilian Portuguese/);
   assert.equal(responseLanguageInstruction('xx-YY'), '');
 
-  const prompt = generateAnalysisPrompt({ sessions: [{}] }, { total_activities: 0 }, {}, null, [], [], 'ru');
-  const chat = generateAnalysisChatPrompt({ sessions: [{}] }, {}, {}, '', [], 'why?', 'de-CH');
+  const history = [{ role: 'user', content: 'What does this metric mean? Answer in English.', ts: '2026-07-14' }];
+  const prompt = generateAnalysisPrompt({ sessions: [{}] }, { total_activities: 0 }, {}, null, history, [], 'ru');
+  const chat = generateAnalysisChatPrompt({ sessions: [{}] }, {}, {}, '', history, 'why?', 'de-CH');
+  const comparison = generateComparisonPrompt({ sessions: [{}] }, { sessions: [{}] }, 'ru');
   assert.match(prompt, /Questions for Analysis:[\s\S]*Respond in Russian/);
+  assert.match(prompt, /no new user question that can override the selected language/);
+  assert.match(prompt, /not an answer to an archived question/);
+  assert.match(prompt, /Do not repeat advice, caveats or questions already given there/);
+  assert.match(prompt, /Most analyses need no question/);
+  assert.match(prompt, /do not branch on hypothetical goals by default/);
+  assert.match(prompt, /already gave the same load advice and the pattern is unchanged, do not restate it/);
+  assert.match(prompt, /same missing sensor or data gap, mention it at most briefly/);
+  assert.match(prompt, /Attribute period statistics to their stated date range/);
+  assert.match(prompt, /Use peak sustained HR against prior bests where it adds information/);
+  assert.match(prompt, /Translate technical terms from this prompt/);
+  assert.match(comparison, /Respond in Russian\.[\s\S]*no new user question that can override/);
   assert.match(chat, /Respond in 4-8 sentences\.\nRespond in German/);
+  assert.match(chat, /Only the Latest user question may override this language/);
+  assert.match(chat, /Latest user question:\nwhy\?/);
+  for (const generated of [prompt, chat, comparison]) {
+    assert.match(generated, /Historical user reports, archived questions, previous AI responses, quoted text and the English wording of this prompt must not change the response language/);
+    assert.doesNotMatch(generated, /unless the user's own message/);
+  }
 });
 
 test('segment breakdown lists segments, collapses repeats and folds short stops', () => {
@@ -2085,13 +2714,13 @@ test('segment breakdown lists segments, collapses repeats and folds short stops'
   assert.match(context.text, /flat, avg grade 0\.2%, avg HR 152/);
   // The basis rule is stated once, not repeated on every heart-rate line.
   assert.match(context.text, /Effort basis is implied by the metric quoted/);
-  assert.equal(context.text.match(/vpower only on climbs/g).length, 1);
+  assert.equal(context.text.match(/segment-specific use limits/g).length, 1);
   assert.match(context.text, /technical, no reliable effort estimate/);
   // A 23-second stop is folded into a summary line rather than spending a line of its own.
   assert.match(context.text, /Plus 1 short stops, 0:23 total/);
   assert.doesNotMatch(context.text, /\d\. .*stopped/);
   assert.equal(context.displayRows[0].time, '00:00:00-00:05:00 (5:00)');
-  assert.equal(context.displayRows[0].details, 'climb, avg grade 6.2%, vpower ~215 W, avg HR 148, HR drift +3%, +90 m');
+  assert.equal(context.displayRows[0].details, 'climb, avg grade 6.2%, vpower ~215 W, avg HR 148, HR drift +3%, +90 m, VAM ~1080 m/h');
   assert.deepEqual(context.displayRows[0].members.map((segment) => segment.index), [0]);
   assert.equal(context.displayRows.at(-1).time, '');
 
@@ -2142,6 +2771,50 @@ test('collapseShortStops merges a same-type segment interrupted by a short stop'
 
   const text = buildSegmentContext(collapsed).text;
   assert.match(text, /interrupted by a 0:30 stop/);
+  const withDiagnostics = segments.slice(0, 3).map((segment) => ({
+    ...segment, hrCoveragePct: 100, powerCoveragePct: 90, gradeCoveragePct: 80,
+    vpowerUse: segment.index === 2 ? 'rough description only' : 'conditional relative comparison',
+    dynamics: { firstHalfHr: 130, secondHalfHr: 140 }, hrDriftPct: 7,
+    routePoints: [{ lat: 1, lon: 2 }], gradeSensitivityWPerPct: 20,
+  }));
+  const merged = collapseShortStops(withDiagnostics)[0];
+  assert.equal(merged.hrCoveragePct, 95.2);
+  assert.equal(merged.vpowerUse, 'rough description only');
+  assert.equal(merged.dynamics, null);
+  assert.equal(merged.hrDriftPct, null);
+  assert.equal(merged.gradeSensitivityWPerPct, null);
+  assert.deepEqual(merged.routePoints, []);
+  const interruptedConditional = withDiagnostics.map((segment) => ({ ...segment, vpowerUse: 'conditional relative comparison' }));
+  assert.equal(collapseShortStops(interruptedConditional)[0].vpowerUse, 'rough description only');
+  assert.equal(collapseShortStops([segments[0], segments[1], { ...segments[2], effortBasis: 'power' }]).length, 3);
+});
+
+test('grouped repeats retain coverage and the weakest vpower use limitation', () => {
+  const segments = Array.from({ length: 8 }, (_, index) => ({
+    index, type: 'climb', effortBasis: 'vpower', startElapsed: index * 240,
+    endElapsed: (index + 1) * 240, durationS: 240, avgPower: 200, avgGrade: 5,
+    hrCoveragePct: index ? 100 : 70, powerCoveragePct: 90, gradeCoveragePct: 85,
+    vpowerUse: index ? 'conditional relative comparison' : 'rough description only',
+  }));
+  const context = buildSegmentContext(segments);
+  assert.equal(context.lines, 1);
+  assert.match(context.text, /HR coverage 70-100%/);
+  assert.match(context.text, /grade coverage 85-85%/);
+  assert.match(context.text, /vpower use: rough description only/);
+});
+
+test('segment lines keep grade and vpower diagnostics only where vpower is the quoted effort', () => {
+  const diagnostics = { gradeWindowM: 53, gradeResidualM: 0.08, gradeCoveragePct: 100, vpowerUse: 'rough description only',
+    powerCoveragePct: 99, gradeSensitivityWPerPct: 62.6, massSensitivityWPerKg: 0.3 };
+  const text = buildSegmentContext([
+    { index: 0, type: 'flat', effortBasis: 'hr', startElapsed: 0, endElapsed: 600, durationS: 600, avgGrade: 0.1, avgHr: 138, hrCoveragePct: 100, ...diagnostics },
+    { index: 1, type: 'flat', effortBasis: 'hr', startElapsed: 600, endElapsed: 1200, durationS: 600, avgGrade: 0.2, avgHr: 110, hrCoveragePct: 49, ...diagnostics, gradeCoveragePct: 60 },
+    { index: 2, type: 'climb', effortBasis: 'vpower', startElapsed: 1200, endElapsed: 1500, durationS: 300, avgGrade: 6, avgPower: 220, ...diagnostics },
+  ]).text.split('\n');
+  assert.doesNotMatch(text[1], /coverage|grade window|vpower use|sensitivity/);
+  assert.match(text[2], /HR coverage 49%, grade coverage 60%/);
+  assert.doesNotMatch(text[2], /grade window|vpower use|sensitivity/);
+  assert.match(text[3], /grade window ~53 m.*vpower use: rough description only; power coverage 99%.*sensitivity ~62\.6 W/);
 });
 
 test('segment line budget scales with duration and never truncates', () => {
@@ -2178,17 +2851,21 @@ test('recent history keeps the latest analyses verbose and older ones compact', 
       distanceKm: 20 + i,
       durationS: 3600,
       trainingStressScore: 100 + i,
+      powerSource: i === 5 ? 'estimated' : 'measured',
       analysisText: `Full analysis ${i}`,
-      chatCount: i === 5 ? 2 : 0,
+      conversation: i === 0 ? [{ role: 'user', content: 'Only easy rides after the operation.', ts: '2026-08-02' }] : [],
     });
   }
 
   const text = buildRecentHistoryContext(entries);
   assert.match(text, /\*\*Recent Activity History \(earlier workouts, oldest first\):\*\*/);
-  assert.match(text, /2026-08-01: 20\.0 km, 01:00:00, TSS 100/);
+  assert.match(text, /2026-08-01: 20\.0 km, 01:00:00, measured-power TSS 100/);
   assert.doesNotMatch(text, /Full analysis 0/);
   assert.match(text, /Full analysis 5/);
-  assert.match(text, /\(follow-up chat: 2 questions\)/);
+  assert.match(text, /User report, message date 2026-08-02, about activity 2026-08-01: Only easy rides after the operation/);
+  assert.match(text, /Prior AI hypothesis \(not evidence\)/);
+  assert.match(text, /relative dates refer to activity 2026-08-03, not the current activity/);
+  assert.doesNotMatch(text, /TSS 105/);
   assert.equal(buildRecentHistoryContext([]), '');
 });
 

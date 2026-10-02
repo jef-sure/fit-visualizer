@@ -17,6 +17,7 @@ function registerCommands(context, services) {
     resolveFitUri,
     selectDatabaseFolder,
     showActivityBrowserInPanel,
+    updateModelPriceTable,
   } = services;
 
   const register = (command, errorPrefix, handler) => vscode.commands.registerCommand(
@@ -44,6 +45,11 @@ function registerCommands(context, services) {
 
   const indexAll = register('fitVisualizer.indexAll', 'FIT DB index failed', () => indexFitFolder(false));
   const indexNew = register('fitVisualizer.indexNew', 'FIT DB index failed', () => indexFitFolder(true));
+  const updateModelPrices = register(
+    'fitVisualizer.updateModelPrices',
+    vscode.l10n.t('FIT model price update failed'),
+    () => updateModelPriceTable()
+  );
 
   const reanalyzeOutdated = register(
     'fitVisualizer.reanalyzeOutdated',
@@ -65,7 +71,7 @@ function registerCommands(context, services) {
     await rememberDatabasePath(dbPath);
     const result = await indexFitUris([targetUri], dbPath, 'Indexing one FIT file...');
     vscode.window.showInformationMessage(
-      `FIT DB index complete: ${result.saved} indexed, ${result.failed} failed.`
+      vscode.l10n.t('FIT DB index complete: {0} indexed, {1} failed.', result.saved, result.failed)
     );
   });
 
@@ -88,7 +94,7 @@ function registerCommands(context, services) {
     }
   );
 
-  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, customEditor];
+  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, updateModelPrices, customEditor];
 }
 
 function createFitEditorProvider(context, services) {

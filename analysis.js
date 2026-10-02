@@ -1,5 +1,6 @@
 const { formatHms, groupSimilarSegments, segmentLineBudget, collapseShortStops } = require('./utils');
-const { computeHeartRateZones } = require('./heart-rate');
+const { calculatePeakHeartRates, computeHeartRateZones } = require('./heart-rate');
+const { rankModelsByCost } = require('./model-pricing');
 
 function formatPositive(value, digits) {
   const num = Number(value);
@@ -8,6 +9,7 @@ function formatPositive(value, digits) {
 
 // Zero is a real reading for signed metrics like decoupling, so only a missing value is dropped.
 function formatFinite(value, digits) {
+  if (value === null || value === undefined || value === '') return null;
   const num = Number(value);
   return Number.isFinite(num) ? num.toFixed(digits) : null;
 }
@@ -58,7 +60,23 @@ function describeSegment(segment) {
     segment.avgSpeedKmh != null ? `${segment.avgSpeedKmh} km/h` : null,
     segment.distanceKm != null ? `${segment.distanceKm} km` : null,
     segment.type === 'climb' && segment.elevGainM ? `+${segment.elevGainM} m` : null,
+    segment.type === 'climb' && segment.elevGainM >= 25 && segment.durationS - (segment.pausedS || 0) >= 120
+      ? `VAM ~${Math.round(segment.elevGainM / (segment.durationS - (segment.pausedS || 0)) * 3600)} m/h` : null,
     segment.pausedS != null ? `interrupted by a ${formatClock(segment.pausedS)} stop` : null,
+    segment.hrCoveragePct != null && segment.hrCoveragePct < 100 ? `HR coverage ${segment.hrCoveragePct}%` : null,
+    // Grade/vpower diagnostics only matter where vpower is the quoted effort.
+    segment.effortBasis === 'vpower' && segment.gradeWindowM != null ? `grade window ~${segment.gradeWindowM} m, residual ~${segment.gradeResidualM} m, coverage ${segment.gradeCoveragePct}%` : null,
+    segment.effortBasis !== 'vpower' && segment.gradeCoveragePct != null && segment.gradeCoveragePct < 80 ? `grade coverage ${segment.gradeCoveragePct}%` : null,
+    segment.effortBasis === 'vpower' && segment.vpowerUse && segment.vpowerUse !== 'not assessed' ? `vpower use: ${segment.vpowerUse}; power coverage ${segment.powerCoveragePct}%` : null,
+    segment.effortBasis === 'vpower' && segment.gradeSensitivityWPerPct != null ? `local uncapped sensitivity ~${segment.gradeSensitivityWPerPct} W per grade percentage point, ~${segment.massSensitivityWPerKg} W/kg mass (not error bounds)` : null,
+    segment.dynamics ? joinNonEmpty([
+      segment.dynamics.firstHalfSpeed != null && segment.dynamics.secondHalfSpeed != null
+        ? `speed ${segment.dynamics.firstHalfSpeed}->${segment.dynamics.secondHalfSpeed} km/h` : null,
+      segment.dynamics.firstHalfHr != null && segment.dynamics.secondHalfHr != null
+        ? `HR ${segment.dynamics.firstHalfHr}->${segment.dynamics.secondHalfHr} bpm` : null,
+      segment.effortBasis === 'power' && segment.dynamics.firstHalfPower != null && segment.dynamics.secondHalfPower != null
+        ? `measured power ${segment.dynamics.firstHalfPower}->${segment.dynamics.secondHalfPower} W` : null,
+    ], '; ') + ' (temporal halves; descriptive, not a fitness/recovery test)' : null,
   ]);
 }
 
@@ -73,10 +91,20 @@ function describeRepeat(row) {
     const effortRange = efforts.length
       ? `${Math.min(...efforts)}-${Math.max(...efforts)}${sample.effortBasis === 'hr' ? ' bpm' : ' W'}`
       : null;
+    const coverageRange = (field, label) => {
+      const values = members.map((member) => member[field]).filter((value) => value != null);
+      return values.length ? `${label} coverage ${Math.min(...values)}-${Math.max(...values)}%${values.length < members.length ? '; some unknown' : ''}` : null;
+    };
+    const vpowerUses = members.map((member) => member.vpowerUse);
+    const hasVpower = vpowerUses.some((value) => value && value !== 'not assessed');
     pattern.push(joinNonEmpty([
       `~${formatClock(durations.reduce((sum, value) => sum + value, 0) / durations.length)}`,
       sample.type,
       effortRange ? `${sample.effortBasis === 'hr' ? 'HR' : sample.effortBasis} ${effortRange}` : null,
+      coverageRange('hrCoveragePct', 'HR'),
+      coverageRange('gradeCoveragePct', 'grade'),
+      hasVpower ? `vpower use: ${vpowerUses.every((value) => value === 'conditional relative comparison') ? 'conditional relative comparison' : 'rough description only'}` : null,
+      hasVpower ? coverageRange('powerCoveragePct', 'power') : null,
     ], ' '));
   }
   return `${row.repeats}x [ ${pattern.join(' | ')} ]`;
@@ -115,7 +143,7 @@ function buildSegmentContext(segments, options = {}) {
   const bases = new Set(list.map((segment) => segment.effortBasis));
   const notes = [
     bases.has('vpower') && bases.has('hr')
-      ? 'Effort basis is implied by the metric quoted: vpower only on climbs, where gravity dominates and the physical model is trustworthy; heart rate everywhere else.'
+      ? 'Effort basis is implied by the metric quoted. vpower is a motion estimate with segment-specific use limits, not measured power; HR describes internal response, not mechanical work.'
       : null,
     'Segments marked technical or stopped have no reliable effort estimate; never compare vpower numbers against HR numbers directly.',
   ].filter(Boolean).join('\n');
@@ -142,17 +170,117 @@ function buildRecentHistoryContext(entries, options = {}) {
     const summary = joinNonEmpty([
       entry.distanceKm != null ? `${Number(entry.distanceKm).toFixed(1)} km` : null,
       entry.durationS != null ? formatHms(Math.round(entry.durationS)) : null,
-      entry.trainingStressScore != null ? `TSS ${Number(entry.trainingStressScore).toFixed(0)}` : null,
+      entry.trainingStressScore != null && entry.powerSource === 'measured' ? `measured-power TSS ${Number(entry.trainingStressScore).toFixed(0)}` : null,
+      entry.avgHr != null ? `FIT avg HR ${Number(entry.avgHr).toFixed(0)} bpm` : null,
+      entry.elevationM != null ? `ascent ${Number(entry.elevationM).toFixed(0)} m` : null,
+      entry.hrProfileDate ? `HR profile ${entry.hrProfileDate}` : null,
+      entry.source ? `source ${entry.source}` : null,
     ]);
-
-    if (index < detailedFrom) {
-      return `${date}: ${summary || 'analysed'}`;
-    }
-    const chatNote = entry.chatCount ? `\n  (follow-up chat: ${entry.chatCount} questions)` : '';
-    return `${date}${summary ? ` (${summary})` : ''}:\n${String(entry.analysisText || '').trim()}${chatNote}`;
+    const interpretation = index >= detailedFrom && String(entry.analysisText || '').trim()
+      ? `\n  Prior AI hypothesis (not evidence), relative dates refer to activity ${date}, not the current activity: ${String(entry.analysisText).trim()}` : '';
+    const conversation = (Array.isArray(entry.conversation) ? entry.conversation : [])
+      .filter((turn) => turn?.role === 'user' && String(turn.content || '').trim())
+      .map((turn) => `\n  User report, message date ${turn.ts || 'unknown'}, about activity ${date}: ${String(turn.content).trim()}`).join('');
+    return `${date}: ${summary || 'no numeric summary'}${interpretation}${conversation}`;
   });
 
   return `**Recent Activity History (earlier workouts, oldest first):**\n${rendered.join('\n\n')}`;
+}
+
+function formatConversation(history) {
+  return (Array.isArray(history) ? history : [])
+    .filter((entry) => entry && (entry.role === 'user' || entry.role === 'assistant') && String(entry.content || '').trim())
+    .slice(-24).map((entry) => `${entry.role === 'user' ? 'User report' : 'Assistant hypothesis'} (${entry.ts || 'message date unknown'}): ${String(entry.content).trim()}`).join('\n');
+}
+
+function buildTrainingHistoryContext(context) {
+  if (!context) return '';
+  const volume = context.volume.map((period) => {
+    const dates = `${period.start} to ${period.end} (end exclusive)`;
+    const sports = period.sports.map((row) => joinNonEmpty([
+      `${row.sport || 'unspecified sport'}: ${row.activities} imported activities`,
+      `${formatHms(Math.round(row.durationS))} recorded timer time (${row.durationKnownActivities}/${row.activities} durations known)`,
+      `${row.distanceKm.toFixed(1)} km`, `${row.activeDays} recorded active days`,
+      row.zonedActivities ? `${row.zonedActivities}/${row.activities} activities with covered HR zones; covered time ${formatHms(Math.round(row.coveredHrSeconds))}; zone 1-5 seconds ${row.zoneSeconds.map(Math.round).join(', ')}; ${intensityDistribution(row.zoneSeconds)}`
+        : 'HR-zone distribution unavailable, not zero intensity',
+    ])).join('\n');
+    return `${period.days}-day period ${dates}:\n${sports || 'No imported activities; this does not establish rest.'}`;
+  }).join('\n\n');
+  const describeTrend = (label, trend) => trend
+    ? `${label}: ${trend.direction}, change ${trend.changePct.toFixed(1)}%, heuristic noise threshold ${trend.thresholdPct.toFixed(1)}%; not a significance test or fitness measure`
+    : `${label}: insufficient observations`;
+  const matches = context.comparisons.map((candidate) => {
+    const rows = candidate.matches.map((match) => {
+      const values = (segment) => joinNonEmpty([
+        `${formatClock(segment.durationS)}, grade ${segment.avgGrade}%`,
+        segment.avgSpeedKmh != null ? `${segment.avgSpeedKmh} km/h` : null,
+        segment.avgHr != null ? `HR ${segment.avgHr} bpm (${segment.hrCoveragePct}% coverage)` : null,
+        segment.effortBasis === 'power' || segment.effortBasis === 'vpower'
+          ? `${segment.effortBasis} ${segment.avgPower} W (${segment.vpowerUse})` : null,
+      ]);
+      return `- current segment ${match.currentIndex + 1} vs prior segment ${match.priorIndex + 1}: ${match.type}; duration ratio ${match.durationRatio.toFixed(2)}, grade difference ${match.gradeDifference.toFixed(1)} percentage points; ${match.route}. Current: ${values(match.current)}. Prior: ${values(match.prior)}.`;
+    }).join('\n');
+    return `Reference ${String(candidate.startTime).slice(0, 10)}: structurally matched ${candidate.matchedDurationPct.toFixed(0)}% of eligible moving duration (not a confidence score).\n${rows}`;
+  }).join('\n\n');
+  const interruptions = context.interruptions.map((gap) =>
+    `No imported same-sport activity between ${String(gap.before).slice(0, 10)} and ${String(gap.after).slice(0, 10)} (~${gap.gapDays.toFixed(0)} days); possible change of phase or missing records, cause unknown.`).join('\n');
+  const reports = (context.userReports || []).map((report) =>
+    `Activity ${String(report.startTime).slice(0, 10)}, message ${report.ts || 'date unknown'}, user report: ${report.content}`).join('\n');
+  return joinNonEmpty([
+    `**Training Volume and Covered Intensity:**\nHistorical baseline anchored at ${context.windowEnd}: all periods end at or before the current activity start; the current activity is excluded from every historical total. These are rolling windows, not calendar weeks.\n${volume}\n${context.intensityNote}\n${context.coverageNote}`,
+    `**Adaptive Observation Window:**\n${context.windowDays} days: ${context.windowStart.slice(0, 10)} to ${context.windowEnd.slice(0, 10)}; ${context.activities} same-sport activities. Window selection is not evidence of fitness.\n${describeTrend('Duration pattern', context.durationTrend)}\n${describeTrend('Distance pattern', context.distanceTrend)}\n${interruptions}`,
+    matches ? `**Candidate Segment Comparisons:**\n${matches}\nMatching uses ordered terrain, duration and distance, not equal HR/power. Similar structure does not establish identical route, intent, weather or training stimulus; consider intensity separately.` : '**Candidate Segment Comparisons:** No eligible matches; training-volume context remains available.',
+    reports ? `**Dated User Context Across Activities:**\n${reports}\nMessage date and activity date are different. Reports may describe another effective period; do not apply later circumstances retrospectively without support.` : null,
+  ], '\n\n');
+}
+
+function buildDataQualityContext(fitData, heartRateConfig = fitData.analysisHeartRateConfig) {
+  const quality = fitData.analysisQuality || {};
+  const lines = formatFieldsSkippingEmpty([
+    ['HR provenance', quality.hrSource], ['Altitude provenance', quality.altitudeSource],
+    ['Mass provenance', quality.massSource], ['Rider mass used', formatPositive(quality.riderMassKg, 1), 'kg'],
+    ['Bike mass used', formatFinite(quality.bikeMassKg, 1), 'kg'], ['FTP provenance', quality.ftpSource],
+    ['HR profile provenance', heartRateConfig?.source || (heartRateConfig ? 'supplied profile; derivation not retained' : null)],
+  ]);
+  return lines ? `**Measurement and Estimate Provenance:**\n${lines}\nGrade residual/window diagnostics describe local consistency, not calibrated uncertainty. Unknown wind, surface, mass error and sensor bias can still affect vpower. HR zone names do not establish tested lactate threshold or VO2max.` : '';
+}
+
+function buildLapContext(fitData) {
+  const laps = Array.isArray(fitData.laps) ? fitData.laps : [];
+  if (laps.length < 2) return '';
+  const measuredPower = fitData.sessions?.[0]?.power_source === 'measured';
+  const rows = laps.slice(0, 40).map((lap, index) => `${index + 1}. ${joinNonEmpty([
+    lap.total_timer_time > 0 ? formatHms(Math.round(lap.total_timer_time)) : null,
+    lap.total_distance > 0 ? `${Number(lap.total_distance).toFixed(2)} km` : null,
+    lap.avg_hr > 0 ? `HR ${Number(lap.avg_hr).toFixed(0)} bpm` : null,
+    measuredPower && lap.avg_power > 0 ? `device avg power ${Number(lap.avg_power).toFixed(0)} W` : null,
+    lap.avg_cadence > 0 ? `cadence ${Number(lap.avg_cadence).toFixed(0)}` : null,
+    lap.lap_trigger ? `trigger ${lap.lap_trigger}` : null,
+  ])}`).join('\n');
+  return `**Device-recorded Laps:**\n${rows}\n${laps.length > 40 ? `First 40 of ${laps.length} laps shown. ` : ''}Lap boundaries can be automatic and do not establish intended intervals.`;
+}
+
+function sportsEvidenceRules() {
+  return [
+    'Separate recorded observations, calculated estimates, user reports, and AI hypotheses. Support important conclusions with specific supplied evidence.',
+    'Use general sports knowledge to explain possible mechanisms, not to invent circumstances. Offer relevant alternative explanations and what would distinguish them.',
+    'Goals may be absent, multiple, or change over time. Infer likely training direction from repeated patterns, not the athlete\'s intentions; distinguish a single session from a sustained pattern.',
+    'Distinguish changes in training behaviour, likely training stimulus, and demonstrated performance/fitness change. Faster speed or lower HR alone does not establish improved fitness.',
+    'Consider endurance, intense efforts, pacing, variability and enjoyment/return to activity where relevant; do not force one goal or assume increasing load is always desirable.',
+    'Re-evaluate previous AI hypotheses against facts and user corrections. Repeated AI claims are not independent corroboration; explicitly revise unsupported earlier conclusions.',
+    'Historical volume totals exclude the current activity. Never add the current session to a historical total or declare a contradiction by comparing totals with different activity membership.',
+    'Relative periods in an earlier analysis are anchored to that earlier activity date. Rolling windows shift between analyses; equal duration does not mean identical boundaries. Before declaring an earlier aggregate wrong, verify identical start/end boundaries, sport, inclusion rules and data coverage. If earlier boundaries are unavailable, mark the comparison unverified, not erroneous.',
+    'Revise an earlier conclusion only with relevant new facts, user corrections or genuinely comparable evidence. Missing detail in the current summary does not disprove an earlier observation.',
+    'Use dated user context to distinguish phases. After a reported operation, illness or changed restrictions, do not mix earlier training into the current baseline as if circumstances were unchanged. Imported gaps alone do not prove a phase change.',
+    'FIT data cannot establish postoperative healing, medical clearance or safe load progression. Respect reported clinician restrictions; do not prescribe progression from HR/speed alone.',
+    'Compare volume over equal periods and intensity only with known coverage and compatible dated thresholds. Missing imported activity is not a rest day; TSS, hrTSS and TRIMP are different scales, not independent proofs or additive totals.',
+    'vpower use limits apply per segment. Relative comparisons require similar route/conditions and assumptions; do not use rough vpower for absolute performance, FTP zones or whole-session load claims.',
+    'Temperature may be device temperature, not ambient air temperature. Absent fields may be unmeasured, withheld, unavailable or inapplicable; distinguish unknown from zero.',
+    'Describe meaningful findings and their practical implications rather than narrating every metric. Ask a focused question only when its answer would materially change the interpretation or advice.',
+    'Classify session type (recovery, endurance, tempo, threshold, VO2max/anaerobic, mixed or unstructured) only from HR zone distribution, peak sustained HR, measured power and segment structure, citing the evidence; without HR or measured power state that it cannot be determined.',
+    'Judge the stimulus mix over periods from covered intensity distribution (for example mostly low, pyramidal, polarized or mostly moderate) and the variety of session types; partial HR coverage limits this judgement.',
+    'Peak HR and VAM describe the demand of this session. Compare them across activities only on similar climbs or efforts and conditions; VAM depends on climb length, gradient, wind and pacing.',
+  ];
 }
 
 function buildZoneContext(records, heartRateConfig) {
@@ -166,7 +294,30 @@ function buildZoneContext(records, heartRateConfig) {
   const lines = zoneData.zones
     .map((zone) => `- ${zone.name} (${zone.range}): ${formatHms(zone.seconds)} (${zone.percent.toFixed(0)}%)`)
     .join('\n');
-  return `**Time in Heart-Rate Zones (percentages cover time at/above 50% of max HR; time below is excluded):**\n${lines}`;
+  return `**Time in Heart-Rate Zones (percentages cover time at/above 50% of max HR; time below is excluded):**\n${lines}\nIntensity distribution: ${intensityDistribution(zoneData.zones.map((zone) => zone.seconds))}.`;
+}
+
+// Approximate three-zone grouping of the five %HRmax zones, not lactate-tested boundaries.
+function intensityDistribution(zoneSeconds) {
+  const total = zoneSeconds.reduce((sum, value) => sum + value, 0);
+  if (!(total > 0)) return 'intensity distribution unavailable';
+  const pct = (value) => Math.round(100 * value / total);
+  return `low (Recovery+Endurance) ${pct(zoneSeconds[0] + zoneSeconds[1])}%, moderate (Tempo) ${pct(zoneSeconds[2])}%, high (Threshold+VO2max) ${pct(zoneSeconds[3] + zoneSeconds[4])}% (approximate three-zone grouping)`;
+}
+
+function buildPeakHeartRateContext(records, trainingContext, label = '') {
+  const peaks = calculatePeakHeartRates(records);
+  if (!peaks.length) return '';
+  const history = new Map((trainingContext?.peakHeartRates || []).map((row) => [row.seconds, row]));
+  const prior = (best) => (best ? `${best.bpm} bpm (${String(best.startTime).slice(0, 10)})` : 'none');
+  const lines = peaks.map((peak) => {
+    const row = history.get(peak.seconds);
+    const same = row?.best28 && row.best90 && row.best28.bpm === row.best90.bpm && row.best28.startTime === row.best90.startTime;
+    return `- ${peak.seconds >= 3600 ? `${peak.seconds / 3600} h` : `${peak.seconds / 60} min`}: ${peak.bpm} bpm${!row ? ''
+      : same ? `; prior same-sport best: 28 and 90 days ${prior(row.best28)}`
+      : `; prior same-sport best: 28 days ${prior(row.best28)}, 90 days ${prior(row.best90)}`}`;
+  }).join('\n');
+  return `**Peak Sustained Heart Rate${label ? ` (${label})` : ''} (highest time-weighted rolling averages):**\n${lines}\nPeaks show the hardest sustained parts of the session. They depend on effort, heat, fatigue, hydration and sensor; higher or lower peaks than before do not establish a fitness change.${history.size ? ' Prior bests cover only earlier activities with detailed records.' : ''}`;
 }
 
 async function requestCopilotAnalysis(vscode, prompt, options = {}) {
@@ -231,12 +382,17 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
 }
 
 // Bare model names for widely known budget/small tiers; not tied to any one vendor's naming scheme.
-const DEFAULT_CHEAP_MODEL_MARKERS = ['haiku', 'mini', 'flash', 'nano', 'lite', 'small'];
+const DEFAULT_CHEAP_MODEL_MARKERS = ['haiku', 'mini', 'flash', 'nano', 'lite', 'small', 'luna'];
 
-// Undocumented but cheap when it works: an explicit family:'auto' request, a name-marker heuristic, then models[0].
+// Cheapest model by published price; Auto and name markers cover models missing from the price table.
 async function selectPreferredModel(vscode, vendor, models, options) {
   if (!options.preferCheapModel) {
     return models[0];
+  }
+
+  const ranked = rankModelsByCost(models);
+  if (ranked.length) {
+    return ranked[0].model;
   }
 
   try {
@@ -313,7 +469,7 @@ function delay(ms) {
   });
 }
 
-function responseLanguageInstruction(locale) {
+function responseLanguageInstruction(locale, isChat = false) {
   const languages = {
     cs: 'Czech', de: 'German', en: 'English', es: 'Spanish', fr: 'French', hu: 'Hungarian',
     it: 'Italian', ja: 'Japanese', ko: 'Korean', pl: 'Polish', 'pt-br': 'Brazilian Portuguese',
@@ -321,9 +477,11 @@ function responseLanguageInstruction(locale) {
   };
   const normalized = String(locale || '').trim().toLowerCase().replace(/_/g, '-');
   const language = languages[normalized] || languages[normalized.split('-')[0]];
-  return language
-    ? `Respond in ${language}, unless the user's own message is written in a different language; then respond in that language instead.`
-    : '';
+  if (!language) return '';
+  const currentQuestionRule = isChat
+    ? ' Only the Latest user question may override this language: if it is written in a different language or explicitly requests another response language, use that language.'
+    : ' This response has no new user question that can override the selected language.';
+  return `Respond in ${language}.${currentQuestionRule} Historical user reports, archived questions, previous AI responses, quoted text and the English wording of this prompt must not change the response language. Translate technical terms from this prompt (for example elapsed time, rolling window, pacing) into the response language; keep only standard abbreviations such as HR zones, VAM or VO2max.`;
 }
 
 function buildWorkoutFields(session, records) {
@@ -331,7 +489,9 @@ function buildWorkoutFields(session, records) {
   const powerSource = session.power_source === 'estimated'
     ? 'estimated from motion data'
     : session.power_source === 'measured' ? 'measured' : null;
+  const wholeRidePowerIsEstimated = powerSource === 'estimated from motion data';
   const text = formatFieldsSkippingEmpty([
+    ['Sport', session.sport], ['Sub-sport', session.sub_sport],
     ['Date', activityDateTime.date],
     ['Start Time', activityDateTime.time],
     ['Average Temperature', averageTemperature(records), 'C'],
@@ -342,18 +502,19 @@ function buildWorkoutFields(session, records) {
     ['Max Speed', formatPositive(session.max_speed_kmh, 2), 'km/h'],
     ['Avg Cadence', formatPositive(session.avg_cadence, 0), 'rpm'],
     ['Calories', formatPositive(session.total_calories, 0), 'kcal'],
-    ['Average Power', formatPositive(session.avg_power, 0), 'W'],
-    ['Max Power', formatPositive(session.max_power, 0), 'W'],
-    ['Normalized Power', formatPositive(session.normalized_power, 0), 'W'],
-    ['FTP Used for Power Metrics', formatPositive(session.ftp, 0), 'W'],
-    ['Intensity Factor', formatPositive(session.intensity_factor, 2)],
-    ['TSS', formatPositive(session.training_stress_score, 1)],
-    ['xPower (GC)', formatPositive(session.xpower, 0), 'W'],
-    ['RI (GC)', formatPositive(session.relative_intensity_gc, 2)],
-    ['BikeStress (GC)', formatPositive(session.bike_stress_score, 1)],
-    ['Decoupling % (Intervals)', formatFinite(session.decoupling_pct, 1)],
+    ['Average Power', wholeRidePowerIsEstimated ? null : formatPositive(session.avg_power, 0), 'W'],
+    ['Max Power', wholeRidePowerIsEstimated ? null : formatPositive(session.max_power, 0), 'W'],
+    ['Normalized Power', wholeRidePowerIsEstimated ? null : formatPositive(session.normalized_power, 0), 'W'],
+    ['FTP Used for Power Metrics', wholeRidePowerIsEstimated ? null : formatPositive(session.ftp, 0), 'W'],
+    ['Intensity Factor', wholeRidePowerIsEstimated ? null : formatPositive(session.intensity_factor, 2)],
+    ['TSS', wholeRidePowerIsEstimated ? null : formatPositive(session.training_stress_score, 1)],
+    ['xPower (GC)', wholeRidePowerIsEstimated ? null : formatPositive(session.xpower, 0), 'W'],
+    ['RI (GC)', wholeRidePowerIsEstimated ? null : formatPositive(session.relative_intensity_gc, 2)],
+    ['BikeStress (GC)', wholeRidePowerIsEstimated ? null : formatPositive(session.bike_stress_score, 1)],
+    ['Power:HR decoupling (EF)', wholeRidePowerIsEstimated ? null : formatFinite(session.decoupling_pct, 1)],
     ['TRIMP', formatPositive(session.trimp, 1)],
     ['hrTSS', formatPositive(session.hr_tss, 1)],
+    ['Estimated threshold HR used for hrTSS', formatPositive(session.lactate_threshold_hr, 0), 'bpm'],
     ['Avg Heart Rate', formatPositive(session.avg_hr, 0), 'bpm'],
     ['Max Heart Rate', formatPositive(session.max_hr, 0), 'bpm'],
     ['Elevation Gain', formatPositive(session.total_ascent_m, 0), 'm'],
@@ -368,7 +529,7 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
   const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records);
   const priorActivityCount = Number(progressSummary?.total_activities || 0);
   const hasBaseline = priorActivityCount > 0;
-  const hasTrendEvidence = priorActivityCount >= 3;
+  const hasTrendEvidence = priorActivityCount >= 8;
   const hasHeartRateProfile = Number.isFinite(heartRateConfig?.maxHeartRate);
   const heartRateProfileContext = hasHeartRateProfile
     ? `**Heart Rate Profile Effective for This Workout:**\n${formatFieldsSkippingEmpty([
@@ -396,8 +557,8 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
     ['Avg Speed of Those Rides', formatPositive(progressSummary?.weekly_avg_speed_kmh, 1), 'km/h'],
     ['Speed Trend (comparable rides)', progressSummary?.trend_speed || null],
     ['HR Trend (comparable rides)', progressSummary?.trend_heart_rate || null],
-    ['28-day Ride Count (all distances)', progressSummary?.consistency_pct != null
-      ? `${progressSummary.consistency_pct.toFixed(0)}% of a 16-ride benchmark` : null],
+    ['Rides in previous 28 days (same sport)', progressSummary?.rides_28_days],
+    ['Active days in previous 28 days', progressSummary?.active_days_28_days],
     ['Last Comparable Activity', progressSummary?.last_activity_date
       ? new Date(progressSummary.last_activity_date).toLocaleDateString() : null],
   ]);
@@ -405,25 +566,22 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
     ['Best Speed', formatPositive(progressSummary?.best_speed_kmh, 1), 'km/h'],
     ['Best Elevation Gain', formatPositive(progressSummary?.best_elevation_m, 0), 'm'],
   ]);
-  const summaryContext = hasBaseline
+  const summaryContext = progressSummary?.trainingContext
+    ? buildTrainingHistoryContext(progressSummary.trainingContext)
+    : hasBaseline
     ? joinNonEmpty([
       baselineFields ? `**Comparable Prior Training Baseline:**\n${baselineFields}` : null,
       loadFields ? `**Recent Prior Training Load (7 days before this workout, all ride distances):**\n${loadFields}` : null,
       recordFields ? `**Personal Records Among Comparable Rides Before This Workout:**\n${recordFields}` : null,
     ], '\n\n')
-    : '**Comparable Training History:** No earlier activities within 75%-125% of this workout\'s distance are available. This workout establishes the initial baseline for rides of this distance.';
+    : joinNonEmpty(['**Comparable Training History:** No earlier activities within 75%-125% of this workout\'s distance are available. This workout establishes the initial baseline for rides of this distance.',
+      loadFields ? `**Recent Imported Activity Context (independent of distance matching):**\n${loadFields}` : null], '\n\n');
   const priorAnalysisContext = String(previousAnalysis || '').trim()
-    ? `**Previous Workout Analysis:**\n${String(previousAnalysis).trim()}`
+    ? `**Previous Workout Analysis (AI hypothesis, not evidence):**\n${String(previousAnalysis).trim()}`
     : '';
-  const safeFollowUpHistory = Array.isArray(followUpHistory)
-    ? followUpHistory
-      .filter((entry) => entry && (entry.role === 'user' || entry.role === 'assistant'))
-      .slice(-8)
-      .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${String(entry.content || '').trim()}`)
-      .filter((line) => line.length > 0)
-    : [];
-  const followUpContext = safeFollowUpHistory.length
-    ? `**Follow-up Conversation About This Analysis:**\n${safeFollowUpHistory.join('\n')}`
+  const safeFollowUpHistory = formatConversation(followUpHistory);
+  const followUpContext = safeFollowUpHistory
+    ? `**Follow-up Conversation About This Analysis:**\n${safeFollowUpHistory}`
     : '';
   const zoneContext = buildZoneContext(fitData.records, heartRateConfig);
   const segmentContext = buildSegmentContext(fitData.segments).text;
@@ -433,12 +591,15 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
   // Data first, interpretation rules last: without a system role, closeness to the question is the only lever.
   const body = joinNonEmpty([
     joinNonEmpty([`**This Workout:**\n${workoutFields}`, segmentContext], '\n\n'),
+    buildLapContext(fitData),
     powerSource === 'estimated from motion data'
-      ? '**Data Quality Note:** Power metrics are motion-estimated (from speed, altitude, and mass) and may be physiologically implausible, especially peak values. These figures and derived metrics (NP, IF, TSS, xPower, RI, BikeStress, Decoupling) should be disregarded for training-load decisions. Use heart-rate trends and effort perception instead.'
+      ? '**Data Quality Note:** Whole-ride power is estimated from motion and is not supplied as a reliable training-load metric. Any vpower shown for climbs is only a rough terrain-specific estimate; do not treat it as measured power.'
       : null,
     summaryContext,
     heartRateProfileContext,
     zoneContext,
+    buildPeakHeartRateContext(fitData.records, progressSummary?.trainingContext),
+    buildDataQualityContext(fitData, heartRateConfig),
     historyContext,
     priorAnalysisContext,
     followUpContext,
@@ -446,26 +607,35 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
 
   const evidenceRules = [
     'Use only the supplied workout and prior-history data. Never use later activities.',
-    `There are ${priorActivityCount} earlier activities within 75%-125% of this workout's distance. Rides outside that range are excluded from all comparisons. ${hasBaseline ? 'A comparison against these distance-compatible rides is possible.' : 'Do not compare this workout to a baseline; describe it as the initial baseline for rides of this distance.'}`,
-    hasTrendEvidence
-      ? 'There are enough prior activities for cautious trend observations, but only when the supplied trend fields support them.'
+    'Write a fresh analysis of this activity, not an answer to an archived question. Earlier user messages are historical context, not current requests.',
+    'Focus on what is new or different compared with recent activities and their prior analyses. Do not repeat advice, caveats or questions already given there unless this activity adds new evidence.',
+    'Mention a standard data limitation (missing HR, device temperature, estimated power, unknown intent) only where it changes a specific conclusion, and at most once.',
+    'Do not ask about intent, goal or perceived effort if the user already answered it or recent prior analyses already asked without an answer; state the working assumption instead. Most analyses need no question.',
+    'If recent analyses already pointed out the same missing sensor or data gap, mention it at most briefly and do not make it the practical step again.',
+    'Attribute period statistics to their stated date range, never to a single activity inside it.',
+    progressSummary?.trainingContext ? 'Use supplied segment matches as candidates for discussion, not proof of identical training conditions. Historical distance-only aggregates are not the controlling baseline.'
+      : `There are ${priorActivityCount} earlier activities within 75%-125% of this workout's distance. ${hasBaseline ? 'A comparison against these distance-compatible rides is possible, but distance alone does not establish comparable effort, terrain or conditions.' : 'Do not infer a distance-compatible baseline; describe this workout on its own and use any separately supplied recent context.'}`,
+    hasTrendEvidence && !progressSummary?.trainingContext
+      ? 'Activity counts alone do not establish a fitness trend; supplied speed/HR trends are descriptive and confounded by terrain, intensity and conditions.'
+      : progressSummary?.trainingContext ? 'Use the stated observation window and covered history for tentative pattern observations; sample count or heuristic noise thresholds do not prove fitness changes.'
       : 'There is not enough history to claim improvement, decline, stability, consistency, or a plateau.',
     'Do not infer recovery status, aerobic control, fatigue, overreaching, or heart-rate recovery from average and maximum HR alone.',
     hasHeartRateProfile
       ? 'Use the supplied dated heart-rate profile and the supplied time-in-zone distribution for zone statements; do not substitute generic thresholds.'
       : 'Do not assign HR zones because no athlete-specific thresholds or maximum HR are supplied.',
     'Do not prescribe bpm targets from an observed peak HR. Prefer effort/RPE guidance and label it as general guidance.',
+    'hrTSS uses an estimated threshold HR (middle of the Threshold zone), not a directly tested LTHR value; treat it as approximate.',
     hasSegments
       ? 'Segments state which signal their effort is based on. Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.'
       : null,
     historyContext
-      ? 'Entries under Recent Activity History are past analyses of other workouts, not measurements of this one; treat them as chronology.'
+      ? 'Entries under Recent Activity History include facts, user reports and past analyses of other workouts, not measurements of this one; past analyses are revisable hypotheses.'
       : null,
     'State data limitations directly instead of filling gaps with plausible claims.',
-    'Fields that are absent were not measured. Do not speculate about them.',
+    ...sportsEvidenceRules(),
   ].filter(Boolean).map((rule) => `- ${rule}`).join('\n');
 
-  return `Analyze this cycling workout in context of my training progress.
+  return `Analyze this ${session.sport || 'sports'} activity as a thoughtful sports coach in the context of the athlete's evolving practice. An activity may be recreational, have several goals, or have no stated goal.
 
 ${body}
 
@@ -473,74 +643,38 @@ ${body}
 ${evidenceRules}
 
 **Questions for Analysis:**
-1. **Baseline Context**: What can responsibly be said relative to the available prior history?
-2. **Fitness Trend**: Is there enough evidence to assess a trend? If not, say what future data would make this possible.
-3. **Heart Rate & Recovery**: Describe only what the supplied HR summary shows and what cannot be inferred from it.
-4. **Recommendations**: What should I focus on for the next rides?
+1. **Session Character and Stimulus**: Classify the session type from the evidence and name the qualities it likely stimulates. Distinguish observed work from inferred direction and stated intentions.
+2. **Execution and Comparable Segments**: What matters about pacing, sustained work, changes within segments, repeats and interruptions? Use peak sustained HR against prior bests where it adds information. Explain differences and limits of any candidate comparisons.
+3. **Current Training Direction**: What patterns, stimulus mix across session types and intensity distribution, or possible phase changes are supported by the dated history? Consider multiple simultaneous priorities; discuss fitness or recovery only where evidence permits.
+4. **Practical Next Step**: Recommend the option best supported by the observed pattern and dated user context, with the reason. Choose what this activity most informs: execution (pacing, climbs, starts, stops), route or format choice, data capture, or next-session load. If recent analyses already gave the same load advice and the pattern is unchanged, do not restate it; pick another relevant point. Add an alternative only if a specific plausible circumstance would change the advice; do not branch on hypothetical goals by default. Not a universal progression plan.
 
-Provide a concise, actionable analysis with 2-3 sentences per question. Do not repeat the input data verbatim.
+Provide a concise, actionable analysis with 2-4 sentences per section. Explain implications rather than merely retelling the input. Do not fill unsupported topics with boilerplate or mandatory recovery claims.
 ${responseLanguageInstruction(locale)}`;
 }
 
 function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, baseAnalysis, history, userQuestion, locale) {
   const session = fitData.sessions?.[0] || {};
-  const activityDateTime = formatActivityDateTime(session.start_time);
-  const priorActivityCount = Number(progressSummary?.total_activities || 0);
-  const hasHeartRateProfile = Number.isFinite(heartRateConfig?.maxHeartRate);
-  const powerSource = session.power_source === 'estimated'
-    ? 'estimated from motion data'
-    : session.power_source === 'measured' ? 'measured' : null;
-  const workoutFields = formatFieldsSkippingEmpty([
-    ['Date', activityDateTime.date],
-    ['Start time', activityDateTime.time],
-    ['Average temperature', averageTemperature(fitData.records), 'C'],
-    ['Distance', session.total_distance_km?.toFixed(2), 'km'],
-    ['Duration', session.total_timer_s ? formatHms(Math.round(session.total_timer_s)) : null],
-    ['Avg speed', formatPositive(session.avg_speed_kmh, 2), 'km/h'],
-    ['Max speed', formatPositive(session.max_speed_kmh, 2), 'km/h'],
-    ['Average power', formatPositive(session.avg_power, 0), 'W'],
-    ['Max power', formatPositive(session.max_power, 0), 'W'],
-    ['Normalized power', formatPositive(session.normalized_power, 0), 'W'],
-    ['FTP used for power metrics', formatPositive(session.ftp, 0), 'W'],
-    ['Intensity factor', formatPositive(session.intensity_factor, 2)],
-    ['TSS', formatPositive(session.training_stress_score, 1)],
-    ['xPower (GC)', formatPositive(session.xpower, 0), 'W'],
-    ['RI (GC)', formatPositive(session.relative_intensity_gc, 2)],
-    ['BikeStress (GC)', formatPositive(session.bike_stress_score, 1)],
-    ['Decoupling % (Intervals)', formatFinite(session.decoupling_pct, 1)],
-    ['TRIMP', formatPositive(session.trimp, 1)],
-    ['hrTSS', formatPositive(session.hr_tss, 1)],
-    ['Avg heart rate', formatPositive(session.avg_hr, 0), 'bpm'],
-    ['Max heart rate', formatPositive(session.max_hr, 0), 'bpm'],
-    ['Elevation gain', formatPositive(session.total_ascent_m, 0), 'm'],
-    ['Elevation loss', formatPositive(session.total_descent_m, 0), 'm'],
-    ['Power source', powerSource],
-    ['Comparable prior activities', priorActivityCount],
-    ['HR profile', hasHeartRateProfile
-      ? `max HR ${heartRateConfig.maxHeartRate} bpm, zones ${Array.isArray(heartRateConfig.thresholds) ? heartRateConfig.thresholds.join(', ') : 'auto-derived'}`
-      : null],
-  ]);
-  const safeHistory = Array.isArray(history)
-    ? history
-      .filter((entry) => entry && (entry.role === 'user' || entry.role === 'assistant'))
-      .slice(-8)
-      .map((entry) => `${entry.role === 'user' ? 'User' : 'Assistant'}: ${String(entry.content || '').trim()}`)
-      .filter((line) => line.length > 0)
-    : [];
+  const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records);
+  const safeHistory = formatConversation(history);
   const segmentContext = buildSegmentContext(fitData.segments).text;
 
   const body = joinNonEmpty([
     `Workout facts for this activity:\n${workoutFields}`,
     buildZoneContext(fitData.records, heartRateConfig),
+    buildPeakHeartRateContext(fitData.records, progressSummary?.trainingContext),
+    buildDataQualityContext(fitData, heartRateConfig),
+    buildLapContext(fitData),
+    buildTrainingHistoryContext(progressSummary?.trainingContext),
+    buildRecentHistoryContext(progressSummary?.trainingContext?.recentHistory),
     powerSource === 'estimated from motion data'
-      ? '**Data Quality Note:** Power metrics are motion-estimated (from speed, altitude, and mass) and may be physiologically implausible, especially peak values. These figures and derived metrics (NP, IF, TSS, xPower, RI, BikeStress, Decoupling) should be disregarded for training-load decisions. Use heart-rate trends and effort perception instead.'
+      ? '**Data Quality Note:** Whole-ride power is estimated from motion and is not supplied as a reliable training-load metric. Any vpower shown for climbs is only a rough terrain-specific estimate; do not treat it as measured power.'
       : null,
     segmentContext,
-    `Initial analysis:\n${baseAnalysis || 'No initial analysis has been generated yet.'}`,
-    `Conversation so far:\n${safeHistory.length ? safeHistory.join('\n') : '(no previous messages)'}`,
+    `Initial analysis (AI hypothesis to re-evaluate):\n${baseAnalysis || 'No current initial analysis is available.'}`,
+    `Conversation so far:\n${safeHistory || '(no previous messages)'}`,
   ], '\n\n');
 
-  return `You are continuing a coaching chat about one cycling workout.
+  return `You are continuing a sports coaching discussion about a ${session.sport || 'sports'} activity and the athlete's evolving practice. Address the user's question rather than repeating a fixed report.
 
 ${body}
 
@@ -548,13 +682,15 @@ Latest user question:
 ${String(userQuestion || '').trim()}
 
 Rules:
-- Use only provided workout/history data. Fields that are absent were not measured; do not speculate about them.
+- Use provided workout/history facts; do not invent personal circumstances or later activities.
+- hrTSS uses an estimated threshold HR (middle of the Threshold zone), not a directly tested LTHR value; treat it as approximate.
 - If the user says the route was not flat, explicitly use elevation gain/loss context and explain what can and cannot be inferred without full grade distribution.${segmentContext ? '\n- Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.' : ''}
 - Be specific and concise.
 - If the data is insufficient for a claim, say so and ask one clarifying follow-up.
+${sportsEvidenceRules().map((rule) => `- ${rule}`).join('\n')}
 
 Respond in 4-8 sentences.
-${responseLanguageInstruction(locale)}`;
+${responseLanguageInstruction(locale, true)}`;
 }
 
 // Directed: "This Workout" is the activity under review, "Another Compared Activity" is what it is checked against.
@@ -568,14 +704,22 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
   const hasSegments = Boolean(segmentContext) || Boolean(comparedSegmentContext);
 
   const dataQualityNote = (label, source) => (source === 'estimated from motion data'
-    ? `**Data Quality Note (${label}):** Power metrics are motion-estimated and may be physiologically implausible, especially peak values. Disregard NP/IF/TSS/xPower/RI/BikeStress/Decoupling for training-load decisions on this activity; use heart-rate trends and effort perception instead.`
+    ? `**Data Quality Note (${label}):** Whole-ride power is estimated from motion and is not supplied as a reliable training-load metric. Any vpower shown for climbs is only a rough terrain-specific estimate; do not treat it as measured power.`
     : null);
 
   const body = joinNonEmpty([
     joinNonEmpty([`**This Workout:**\n${workoutFields}`, segmentContext], '\n\n'),
     dataQualityNote('This Workout', powerSource),
+    buildZoneContext(fitData.records, fitData.analysisHeartRateConfig),
+    buildPeakHeartRateContext(fitData.records, null, 'This Workout'),
+    buildDataQualityContext(fitData),
+    buildLapContext(fitData),
     joinNonEmpty([`**Another Compared Activity:**\n${comparedWorkoutFields}`, comparedSegmentContext], '\n\n'),
     dataQualityNote('Compared Activity', comparedPowerSource),
+    buildZoneContext(comparedFitData.records, comparedFitData.analysisHeartRateConfig),
+    buildPeakHeartRateContext(comparedFitData.records, null, 'Compared Activity'),
+    buildDataQualityContext(comparedFitData),
+    buildLapContext(comparedFitData),
   ], '\n\n');
 
   const evidenceRules = [
@@ -585,7 +729,8 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
     hasSegments
       ? 'Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.'
       : null,
-    'Use only the supplied data for both activities. Fields that are absent were not measured; do not speculate about them.',
+    'Use only the supplied facts for both activities. Similar distance does not establish comparability; discuss route, terrain, structure, intensity and source quality separately. Equal HR/power is not required to identify candidate corresponding segments.',
+    ...sportsEvidenceRules(),
   ].filter(Boolean).map((rule) => `- ${rule}`).join('\n');
 
   return `Compare "This Workout" against "Another Compared Activity" segment by segment, focusing on differences in pacing, effort and terrain handling.
@@ -613,7 +758,8 @@ function formatActivityDateTime(value) {
 function averageTemperature(records) {
   const temperatures = Array.isArray(records)
     ? records
-      .map((record) => Number(record?.temperature))
+      .filter((record) => record?.temperature !== null && record?.temperature !== undefined && record?.temperature !== '')
+      .map((record) => Number(record.temperature))
       .filter((temperature) => Number.isFinite(temperature))
     : [];
   if (!temperatures.length) {

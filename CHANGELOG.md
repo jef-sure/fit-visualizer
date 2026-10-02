@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.14.0 - 2026-10-02
+
+### Upgrade Notes
+
+- Re-index existing FIT files with **FIT: Index All Files**, then run **FIT: Re-analyze Outdated Analyses** to refresh saved AI analyses (analysis format 17). **Index New Files** does not refresh existing records.
+- Indexing is local; optional AI re-analysis sends context through GitHub Copilot and may consume your allowance.
+
+### Added
+
+- AI analysis is more sports-specific: it classifies the session type (recovery, endurance, tempo, threshold, VO2max/anaerobic, mixed) from evidence, and receives a low/moderate/high intensity distribution for the session and 7/28-day periods, peak sustained heart rate over 1/5/20/60 minutes with prior same-sport bests over 28 and 90 days, and VAM for climbs of at least 2 minutes and 25 m.
+- **FIT: Update Model Prices** downloads and validates GitHub's official default-tier token prices, persists a local extension cache and applies it to subsequent analysis requests. Network, format or storage failures preserve the previous prices.
+- Rewritten English and Russian documentation with real activity analysis and dialogue examples, data-quality limits, privacy details and upgrade instructions.
+
+### Changed
+
+- Bulk re-analysis now includes both outdated and missing analyses automatically, with one confirmation of the request count instead of a mode selector. Current analyses remain untouched.
+- Grade for motion power and terrain now shares a robust spatial height/distance fit (30-120 m windows), with recording breaks, quality diagnostics, applicability limits and grade/mass sensitivity instead of a blanket 18% slope rejection.
+- AI analysis, chat and comparison distinguish observations, user reports and revisable AI hypotheses; support absent/multiple/changing goals; and avoid treating postoperative recovery as something FIT can establish.
+- AI context includes equal 7/28-day volume periods, covered HR intensity by sport, an adaptive 28/56/90-day observation window, candidate ordered segment comparisons, long-segment dynamics and device laps.
+- Dated user reports from earlier activity chats survive stale analyses and numeric history windows. The AI cache format is now version 17; old analyses need re-analysis.
+- Automatic maximum heart rate now uses the Tanaka estimate; manually entered HR overrides are excluded from AI context and automatic profiles.
+- One-off AI analysis now uses the cheapest available Copilot model by default, ranked by GitHub's published per-token prices (built-in table in `model-pricing.js`). Previously the setting was off by default and the first listed model answered, which in practice was an expensive one. Set `fitVisualizer.preferCheapAnalysisModel` to `false` to restore the old behavior. Chat and comparison are unchanged.
+- TRIMP and hrTSS are integrated over recorded heart-rate samples; hrTSS is measured relative to the reserve between resting HR and an estimated threshold HR (middle of the Threshold zone).
+- Power:HR decoupling uses normalized power relative to average HR across ride halves and is unavailable without measured power.
+- Power-metric sample weighting adapts to normal recording cadence, preserving Garmin Smart Recording intervals while limiting exceptional gaps.
+- AI comparisons use prior activities of the same sport, robust trends adapt their threshold to historical variability, and motion-estimated whole-ride power metrics are omitted from AI prompts.
+
+### Fixed
+
+- Segment lines in AI prompts show grade/vpower diagnostics only where vpower is the quoted effort, and HR/grade coverage only when incomplete. The segment-budget log warning now counts the rows the prompt actually shows.
+- AI analyses focus on what is new versus recent activities, recommend the step best supported by the observed pattern instead of branching on hypothetical goals, avoid repeating standard caveats, and no longer re-ask intent questions already asked or answered. The practical step may address execution, route, data capture or load, and identical load advice is not restated while the pattern is unchanged. A data gap already reported is not repeated as the practical step, period statistics stay attached to their date ranges, and technical terms are translated into the response language.
+- Fresh AI analyses and comparisons use the VS Code language regardless of archived messages or earlier AI replies. Only the latest chat question may change the chat response language; fresh analyses do not answer archived questions.
+- AI prompts explicitly exclude the current activity from historical totals and anchor relative dates in earlier analyses to their activity dates. Shifted rolling windows or missing summary detail are not grounds to declare earlier figures wrong; corrections require comparable periods and evidence.
+- FIT indexing now shows progress and writes a persistent completion summary with indexed/failed counts to its Output channel, in addition to the completion notification. Indexing and price-update feedback use the bundled English/Russian translations.
+- Earlier activities no longer use a later dated HR profile, and missing original FIT HR cannot fall back to a manual override.
+- Rough flat/descent vpower no longer creates effort pseudo-intervals without HR; segment coverage and half-by-half dynamics use recording-time weights.
+- Grouped repeats retain coverage and vpower limitations; segments merged across short stops no longer inherit first-part dynamics or route samples. Spatially validated grade is retained for recording intervals up to 30 seconds.
+- Missing decoupling or temperature is no longer formatted as a measured zero in AI prompts.
+- Corrected heart-rate zone names and six untranslated Russian UI labels.
+- Prevented stale analyses and their old model replies from feeding into re-analysis prompts.
+
 ## 0.13.32 - 2026-10-02
 
 ### Fixed

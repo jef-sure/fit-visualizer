@@ -1,8 +1,8 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.13.32",
-  "description": "Visualize cycling and running FIT files and get AI-assisted training analysis",
+  "version": "0.14.0",
+  "description": "FIT file viewer and analyzer: charts, map, climb/descent segments, heart-rate zones, ride history and AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
     "vscode": "^1.95.0"
@@ -13,6 +13,7 @@
   ],
   "icon": "icon.png",
   "main": "./extension.js",
+  "l10n": "./l10n",
   "contributes": {
     "customEditors": [
       {
@@ -57,6 +58,10 @@
       {
         "command": "fitVisualizer.reanalyzeOutdated",
         "title": "FIT: Re-analyze Outdated Analyses"
+      },
+      {
+        "command": "fitVisualizer.updateModelPrices",
+        "title": "FIT: Update Model Prices"
       }
     ],
     "menus": {
@@ -104,14 +109,24 @@
         },
         "fitVisualizer.preferCheapAnalysisModel": {
           "type": "boolean",
-          "default": false,
-          "description": "For one-off activity analysis (not chat), prefer a cheaper/smaller language model over whichever model the Copilot picker currently uses. Tries an Auto model family first, then a model-name heuristic, then falls back to the default model. Neither path is officially guaranteed by the VS Code API."
+          "default": true,
+          "description": "For one-off activity analysis (not chat), use the cheapest available Copilot model by published per-token price instead of whichever model Copilot lists first. Run FIT: Update Model Prices to refresh the local price table from GitHub. Unknown models fall back to an Auto model family, then to a model-name heuristic. Turn off to use the default model. None of this is officially guaranteed by the VS Code API."
         },
         "fitVisualizer.cheapModelMarkers": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["haiku", "mini", "flash", "nano", "lite", "small"],
-          "description": "Model name substrings (case-insensitive) used to pick a cheaper model when fitVisualizer.preferCheapAnalysisModel is enabled and no Auto model family is available."
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "haiku",
+            "mini",
+            "flash",
+            "nano",
+            "lite",
+            "small",
+            "luna"
+          ],
+          "description": "Model name substrings (case-insensitive) used to pick a cheaper model when fitVisualizer.preferCheapAnalysisModel is enabled and none of the available models is in the current local price table."
         },
         "fitVisualizer.powerModel.dragArea": {
           "type": "number",
@@ -209,23 +224,23 @@
     }
   },
   "scripts": {
-    "check": "node --check extension.js && node --check activity-summary.js && node --check activity-webview.js && node --check analysis.js && node --check chart-data.js && node --check chart-geometry.js && node --check chart-overlays.js && node --check commands.js && node --check database-schema.js && node --check dynamic-localization.js && node --check fit-files.js && node --check heart-rate.js && node --check ui-strings.js && node --check utils.js && node --test test/core.test.js",
+    "check": "node --check extension.js && node --check activity-summary.js && node --check activity-webview.js && node --check analysis.js && node --check chart-data.js && node --check chart-geometry.js && node --check chart-overlays.js && node --check commands.js && node --check database-schema.js && node --check dynamic-localization.js && node --check fit-files.js && node --check heart-rate.js && node --check model-pricing.js && node --check training-context.js && node --check ui-strings.js && node --check utils.js && node --test test/core.test.js",
     "lint": "npm run check",
     "package": "vsce package"
   },
   "keywords": [
+    "fit file viewer",
     "fit",
     "garmin",
     "cycling",
     "running",
-    "visualization",
     "wahoo",
     "polar",
     "coros",
     "cycplus",
     "copilot"
   ],
-  "author": "",
+  "author": "Anton Petrusevich",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -234,7 +249,8 @@
   "type": "commonjs",
   "dependencies": {
     "fit-file-parser": "^4.1.0",
-    "leaflet": "^1.9.4"
+    "leaflet": "^1.9.4",
+    "markdown-it": "^15.0.2"
   },
   "devDependencies": {
     "@types/vscode": "^1.95.0",

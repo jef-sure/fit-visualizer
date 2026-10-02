@@ -1,9 +1,9 @@
 const HEART_RATE_ZONES = Object.freeze([
   { name: 'Recovery', low: 0.50, high: 0.60 },
   { name: 'Endurance', low: 0.60, high: 0.70 },
-  { name: 'Aerobic', low: 0.70, high: 0.80 },
-  { name: 'Anaerobic', low: 0.80, high: 0.90 },
-  { name: 'Max', low: 0.90, high: Number.POSITIVE_INFINITY },
+  { name: 'Tempo', low: 0.70, high: 0.80 },
+  { name: 'Threshold', low: 0.80, high: 0.90 },
+  { name: 'VO2max', low: 0.90, high: Number.POSITIVE_INFINITY },
 ]);
 
 function computeHeartRateZones(records, maxHeartRate, customThresholds) {
@@ -133,7 +133,7 @@ function calculateAutoHeartRateProfile(input) {
     throw new Error('Resting heart rate must be between 30 and 120 bpm.');
   }
 
-  const formulaMax = Math.round(getFormulaMaxHeartRate(sex, age));
+  const formulaMax = Math.round(getFormulaMaxHeartRate(age));
   const observed = Number.isFinite(observedMaxHeartRate) && observedMaxHeartRate >= 100
     ? Math.round(observedMaxHeartRate)
     : null;
@@ -159,19 +159,73 @@ function calculateAutoHeartRateProfile(input) {
   };
 }
 
-function getFormulaMaxHeartRate(sex, age) {
-  if (sex === 'female') {
-    return 226 - age;
+// Proxy for lactate-threshold HR: middle of the Threshold zone (zone 4 start to zone 5 start), or 85% of max HR.
+function estimateLactateThresholdHeartRate(maxHeartRate, thresholds) {
+  const max = Number(maxHeartRate);
+  if (!Number.isFinite(max) || max <= 0) {
+    return null;
   }
-  if (sex === 'male') {
-    return 220 - age;
+  if (Array.isArray(thresholds) && thresholds.length === 4 && thresholds.every((value) => Number.isFinite(Number(value)))) {
+    return Math.round((Number(thresholds[2]) + Number(thresholds[3])) / 2);
   }
-  return 223 - age;
+  return Math.round(max * 0.85);
+}
+
+function getFormulaMaxHeartRate(age) {
+  return 208 - (0.7 * age);
+}
+
+const PEAK_HEART_RATE_WINDOWS = Object.freeze([60, 300, 1200, 3600]);
+
+// Highest time-weighted HR per window; missing HR or a recording gap over 30 s breaks the window.
+function calculatePeakHeartRates(records, windows = PEAK_HEART_RATE_WINDOWS) {
+  const list = Array.isArray(records) ? records : [];
+  const durations = estimateRecordDurations(list);
+  const runs = [];
+  let run = [];
+  for (let index = 0; index < list.length; index += 1) {
+    const heartRate = Number(list[index].heart_rate);
+    if (!Number.isFinite(heartRate) || heartRate <= 0) {
+      if (run.length) runs.push(run);
+      run = [];
+      continue;
+    }
+    run.push({ heartRate, seconds: durations[index] });
+    const gap = Number(list[index + 1]?.elapsed_time) - Number(list[index].elapsed_time);
+    if (Number.isFinite(gap) && (gap <= 0 || gap > 30)) {
+      runs.push(run);
+      run = [];
+    }
+  }
+  if (run.length) runs.push(run);
+
+  return windows.map((windowSeconds) => {
+    let best = null;
+    for (const samples of runs) {
+      let start = 0;
+      let seconds = 0;
+      let weighted = 0;
+      for (const sample of samples) {
+        seconds += sample.seconds;
+        weighted += sample.heartRate * sample.seconds;
+        while (seconds - samples[start].seconds >= windowSeconds) {
+          seconds -= samples[start].seconds;
+          weighted -= samples[start].heartRate * samples[start].seconds;
+          start += 1;
+        }
+        if (seconds >= windowSeconds && (best === null || weighted / seconds > best)) best = weighted / seconds;
+      }
+    }
+    return best === null ? null : { seconds: windowSeconds, bpm: Math.round(best) };
+  }).filter(Boolean);
 }
 
 module.exports = {
   calculateAutoHeartRateProfile,
+  calculatePeakHeartRates,
+  estimateLactateThresholdHeartRate,
   HEART_RATE_ZONES,
+  PEAK_HEART_RATE_WINDOWS,
   computeHeartRateZones,
   getHeartRateZoneIndex,
 };

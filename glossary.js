@@ -13,7 +13,7 @@ const GLOSSARY = {
   xpower: 'xPower: GoldenCheetah\'s exponentially weighted estimate of the physiological cost of variable power.',
   relativeIntensity: 'Relative Intensity (RI): xPower divided by FTP.',
   bikeStress: 'BikeStress: GoldenCheetah\'s power-based training-load score using xPower and Relative Intensity.',
-  decoupling: 'Decoupling: the change in the relationship between power and heart rate from the first half of a ride to the second.',
+  decoupling: 'Decoupling: Power:HR efficiency-factor change between the first and second halves of a ride, calculated from measured power and heart rate.',
   trimp: 'TRIMP: a heart-rate-based training impulse score that combines duration and heart-rate intensity.',
   hrTss: 'hrTSS: a heart-rate-based estimate of training stress when power-based TSS is unavailable.',
   averageHeartRate: 'Average heart rate: the arithmetic mean of available heart-rate samples.',
