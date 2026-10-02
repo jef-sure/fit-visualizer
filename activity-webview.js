@@ -568,7 +568,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <h2>${escapeHtml(ui.speedVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
       <label class="segmentBandControls"><input id="${mapId}SegmentBands" type="checkbox" checked> ${escapeHtml(ui.showTerrainBands)}</label>
       ${renderStatsRow(speedChart.stats, ui.kilometersPerHour, false, ui)}${hasOverlay && speedChart.compStats ? renderStatsRow(speedChart.compStats, ui.kilometersPerHour, true, ui) : ''}
-      ${renderOverlayControls(mapId + 'SpeedSvg', speedOverlays)}
+      ${speedChart.points.length >= 2 ? renderOverlayControls(mapId + 'SpeedSvg', speedOverlays) : ''}
       ${renderScaledLineChartSvg(speedChart, 'lineA', ui.distanceKm, ui.avgSpeedKmh, true, { svgId: mapId + 'SpeedSvg', segmentBands: chartSegments })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -577,7 +577,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <h2>${escapeHtml(ui.heartRateVsDistance)}</h2>
       ${renderStatsRow(hrChart.stats, ui.beatsPerMinute, false, ui)}
       ${renderHeartRateZones(hrZones, ui)}
-      ${renderOverlayControls(mapId + 'HrSvg', hrOverlays)}
+      ${hrChart.points.length >= 2 ? renderOverlayControls(mapId + 'HrSvg', hrOverlays) : ''}
       ${renderScaledLineChartSvg(hrChart, 'lineB', ui.distanceKm, ui.avgHrBpm, true, { svgId: mapId + 'HrSvg', zoneThresholds: hrZones.enabled ? hrZones.thresholds : null, segmentBands: chartSegments })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -585,7 +585,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     <section class="chart resizable" data-resize-target="${mapId}AltSvg" data-resize-key="fitviz_alt_height" data-min-height="200" data-max-height="1200">
       <h2>${escapeHtml(ui.altitudeVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
       ${renderStatsRow(altitudeChart.stats, 'm', false, ui)}${hasOverlay && altitudeChart.compStats ? renderStatsRow(altitudeChart.compStats, 'm', true, ui) : ''}
-      ${renderOverlayControls(mapId + 'AltSvg', altitudeOverlays)}
+      ${altitudeChart.points.length >= 2 ? renderOverlayControls(mapId + 'AltSvg', altitudeOverlays) : ''}
       ${renderScaledLineChartSvg(altitudeChart, 'lineC', ui.distanceKm, ui.elevationGainM, true, { svgId: mapId + 'AltSvg', segmentBands: chartSegments })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -1270,22 +1270,47 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         return payload.plotBottom - ((y - payload.yMin) / range) * (payload.plotBottom - payload.plotTop);
       }
 
-      function redrawTicks(svg, payload, targetXCount, targetYCount) {
+      function withinRange(ticks, min, max) {
+        var epsilon = Math.abs(ticks.step) * 1e-6;
+        return ticks.values.filter(function (v) { return v >= min - epsilon && v <= max + epsilon; });
+      }
+
+      // Densest Y grid (preferring at least 6 ticks) that still leaves two non-colliding labels.
+      function fitYTickCount(payload, plotHeightPx) {
+        var range = (payload.yMax - payload.yMin) || 1;
+        var fallback = 2;
+        for (var count = clampCount(plotHeightPx / 30, 6, 18); count >= 2; count--) {
+          var ticks = buildTicksClient(payload.yMin, payload.yMax, count);
+          var n = withinRange(ticks, payload.yMin, payload.yMax).length;
+          var every = Math.max(1, Math.ceil((TICK_FONT_PX + 4) / (((ticks.step / range) * plotHeightPx) || 1)));
+          if (n >= 2 && Math.floor((n - 1) / every) + 1 >= 2) return count;
+          if (n >= 2 && fallback === 2) fallback = count;
+        }
+        return fallback;
+      }
+
+      function redrawTicks(svg, payload, targetXCount, targetYCount, xScale, yScale) {
         var xTicks = buildTicksClient(payload.xMin, payload.xMax, targetXCount);
         var yTicks = buildTicksClient(payload.yMin, payload.yMax, targetYCount);
+        var xLabelY = payload.plotBottom + (TICK_FONT_PX + 5) / (yScale || 1);
+        var yLabelX = payload.plotLeft - 6 / (xScale || 1);
 
-        var xHtml = xTicks.values.map(function (v) {
+        var xHtml = withinRange(xTicks, payload.xMin, payload.xMax).map(function (v) {
           var px = scaleX(payload, v).toFixed(1);
           return '<g><line class="gridline" x1="' + px + '" y1="' + payload.plotTop + '" x2="' + px + '" y2="' + payload.plotBottom + '" />'
-            + '<text class="tick" x="' + px + '" y="' + (payload.plotBottom + 16) + '" text-anchor="middle">'
+            + '<text class="tick" x="' + px + '" y="' + xLabelY.toFixed(1) + '" text-anchor="middle">'
             + escapeHtmlClient(formatTickClient(v, xTicks.step)) + '</text></g>';
         }).join('');
-        var yHtml = yTicks.values.map(function (v) {
+        var yValues = withinRange(yTicks, payload.yMin, payload.yMax);
+        var ySpacingPx = (yTicks.step / ((payload.yMax - payload.yMin) || 1)) * (payload.plotBottom - payload.plotTop) * (yScale || 1);
+        // Too low for every label: keep every grid line but label only every n-th tick.
+        var yLabelEvery = Math.min(Math.max(1, Math.ceil((TICK_FONT_PX + 4) / (ySpacingPx || 1))), Math.max(1, yValues.length - 1));
+        var yHtml = yValues.map(function (v, index) {
           var py = scaleY(payload, v).toFixed(1);
-          var labelY = Math.max(payload.plotTop + 12, Math.min(payload.plotBottom - 4, parseFloat(py) + 4)).toFixed(1);
+          var labelled = (yValues.length - 1 - index) % yLabelEvery === 0;
           return '<g><line class="gridline" x1="' + payload.plotLeft + '" y1="' + py + '" x2="' + payload.plotRight + '" y2="' + py + '" />'
-            + '<text class="tick" x="' + (payload.plotLeft - 8) + '" y="' + labelY + '" text-anchor="end">'
-            + escapeHtmlClient(formatTickClient(v, yTicks.step)) + '</text></g>';
+            + (labelled ? '<text class="tick" x="' + yLabelX.toFixed(1) + '" y="' + py + '" dy="0.35em" text-anchor="end">'
+            + escapeHtmlClient(formatTickClient(v, yTicks.step)) + '</text>' : '') + '</g>';
         }).join('');
 
         var xGroup = svg.querySelector('.xTicksGroup');
@@ -1294,32 +1319,37 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         if (yGroup) yGroup.innerHTML = yHtml;
       }
 
+      // preserveAspectRatio="none" stretches X and Y differently, so every text node undoes both around its anchor.
       function updateChartTextScale(svg, payload, rect) {
         if (!rect || !(rect.width > 0) || !(rect.height > 0) || !(payload.width > 0) || !(payload.height > 0)) return;
         var xScale = rect.width / payload.width;
         var yScale = rect.height / payload.height;
-        var textScale = Math.max(0.1, Math.min(xScale, yScale));
+        var unscale = ' scale(' + (1 / xScale).toFixed(4) + ' ' + (1 / yScale).toFixed(4) + ')';
 
-        function setReadableFont(selector, cssPx, strokePx) {
-          svg.querySelectorAll(selector).forEach(function (el) {
-            el.style.fontSize = (cssPx / textScale).toFixed(2) + 'px';
-            if (strokePx) el.style.strokeWidth = (strokePx / textScale).toFixed(2) + 'px';
-          });
+        function unstretch(el, cssPx, x, y) {
+          if (!el || !Number.isFinite(x) || !Number.isFinite(y)) return;
+          el.style.fontSize = cssPx + 'px';
+          el.setAttribute('transform', 'translate(' + x + ' ' + y + ')' + unscale + ' translate(' + (-x) + ' ' + (-y) + ')');
         }
 
-        setReadableFont('.tick', 10);
-        setReadableFont('.crosshairLabel', 13, 3);
-
+        svg.querySelectorAll('.tick, .overlayTick').forEach(function (el) {
+          unstretch(el, TICK_FONT_PX, parseFloat(el.getAttribute('x')), parseFloat(el.getAttribute('y')));
+        });
         var axisX = svg.querySelector('.axisLabelX');
-        if (axisX) {
-          var axisXx = parseFloat(axisX.getAttribute('x'));
-          var axisXy = parseFloat(axisX.getAttribute('y'));
-          axisX.style.fontSize = '12px';
-          if (isFinite(axisXx) && isFinite(axisXy)) {
-            axisX.setAttribute('transform', 'translate(' + axisXx + ' ' + axisXy + ') scale('
-              + (1 / xScale).toFixed(4) + ' ' + (1 / yScale).toFixed(4) + ') translate('
-              + (-axisXx) + ' ' + (-axisXy) + ')');
-          }
+        if (axisX) unstretch(axisX, AXIS_TITLE_FONT_PX, parseFloat(axisX.getAttribute('x')), parseFloat(axisX.getAttribute('y')));
+        var axisY = svg.querySelector('.axisLabelY');
+        if (axisY) {
+          axisY.style.fontSize = AXIS_TITLE_FONT_PX + 'px';
+          axisY.setAttribute('transform', 'translate(' + (16 / xScale).toFixed(2) + ' ' + ((payload.plotTop + payload.plotBottom) / 2).toFixed(1) + ')' + unscale + ' rotate(-90)');
+          // On a very low panel the rotated title would overflow the plot; the section heading names the metric anyway.
+          axisY.style.display = '';
+          axisY.style.display = axisY.getBBox().width > (payload.plotBottom - payload.plotTop) * yScale ? 'none' : '';
+        }
+        var crosshairLabel = svg.querySelector('.crosshairLabel');
+        var crosshairAnchor = crosshairLabel && crosshairLabel.querySelector('.crosshairLabelX');
+        if (crosshairAnchor) {
+          unstretch(crosshairLabel, 13, parseFloat(crosshairAnchor.getAttribute('x')), parseFloat(crosshairAnchor.getAttribute('y')));
+          crosshairLabel.style.strokeWidth = '3px';
         }
       }
 
@@ -1341,8 +1371,19 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
       // Max 2 at once: more than that on top of the main line becomes unreadable.
       var OVERLAY_PALETTE = ['#e67e22', '#00acc1'];
+      // Gutter is always sized for every overlay axis so toggling overlays never resizes the plot.
+      var TICK_FONT_PX = 13;
+      var AXIS_TITLE_FONT_PX = 14;
+      var OVERLAY_AXIS_COLUMN_PX = 50;
+      var OVERLAY_GUTTER_PX = 8 + OVERLAY_PALETTE.length * OVERLAY_AXIS_COLUMN_PX;
+      var PLAIN_RIGHT_GUTTER_PX = 16;
+      // Rotated axis title plus the widest Y tick label.
+      var LEFT_GUTTER_PX = 72;
+      // Half a tick label above the top grid line; X tick labels plus the axis title below.
+      var TOP_GUTTER_PX = 14;
+      var BOTTOM_GUTTER_PX = 50;
 
-      function initOverlayControls(svgId, payload, instance) {
+      function initOverlayControls(svgId, payload, instance, svg) {
         var controls = document.querySelector('.overlayControls[data-overlay-for="' + svgId + '"]');
         if (!controls || !payload.overlays) return;
         var active = {};
@@ -1352,9 +1393,12 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
         function overlayAxisId(metricKey) { return svgId + '_overlay_axis_' + metricKey; }
 
-        function drawOverlay(metricKey, color) {
+        function drawOverlay(metricKey, color, axisX) {
           var series = payload.overlays[metricKey];
-          if (!series || !instance.overlayGroup || !instance.overlayYAxisGroup) return;
+          if (!series || !instance.overlayGroup || !instance.overlayYAxisGroup) return null;
+          var chartRect = svg.getBoundingClientRect();
+          var xScale = chartRect.width / payload.width;
+          var minLabelGap = (TICK_FONT_PX + 6) / ((chartRect.height / payload.height) || 1);
           var range = (series.max - series.min) || 1;
           var pts = series.points.map(function (p) {
             var px = scaleX(payload, p[0]);
@@ -1364,24 +1408,25 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           var existing = instance.overlayGroup.querySelector('#' + overlayLineId(metricKey));
           if (existing) {
             existing.setAttribute('points', pts);
-            return;
+            existing.setAttribute('stroke', color);
+          } else {
+            var poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+            poly.setAttribute('id', overlayLineId(metricKey));
+            poly.setAttribute('points', pts);
+            poly.setAttribute('fill', 'none');
+            poly.setAttribute('stroke', color);
+            poly.setAttribute('stroke-width', '2');
+            poly.setAttribute('vector-effect', 'non-scaling-stroke');
+            poly.setAttribute('opacity', '0.9');
+            instance.overlayGroup.appendChild(poly);
           }
-          var poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-          poly.setAttribute('id', overlayLineId(metricKey));
-          poly.setAttribute('points', pts);
-          poly.setAttribute('fill', 'none');
-          poly.setAttribute('stroke', color);
-          poly.setAttribute('stroke-width', '2');
-          poly.setAttribute('vector-effect', 'non-scaling-stroke');
-          poly.setAttribute('opacity', '0.9');
-          instance.overlayGroup.appendChild(poly);
 
+          var existingAxis = instance.overlayYAxisGroup.querySelector('#' + overlayAxisId(metricKey));
+          if (existingAxis) existingAxis.parentNode.removeChild(existingAxis);
           var axis = document.createElementNS('http://www.w3.org/2000/svg', 'g');
           axis.setAttribute('id', overlayAxisId(metricKey));
           axis.setAttribute('class', 'overlayYAxis');
           axis.style.color = color;
-          var axisOffset = Object.keys(active).indexOf(metricKey) * 34;
-          var axisX = payload.plotRight + 8 + axisOffset;
           var axisLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
           axisLine.setAttribute('class', 'overlayAxisLine');
           axisLine.setAttribute('x1', axisX);
@@ -1392,18 +1437,21 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           var ticks = Array.isArray(series.yTicks) ? series.yTicks : buildTicksClient(series.min, series.max, 18).values;
           var tickStep = Number.isFinite(series.yStep) ? series.yStep : buildTicksClient(series.min, series.max, 18).step;
           var tickRange = (series.max - series.min) || 1;
+          var tickEpsilon = Math.abs(tickStep) * 1e-6;
           var visibleTicks = [];
-          ticks.forEach(function (value) {
+          ticks.filter(function (value) {
+            return value >= series.min - tickEpsilon && value <= series.max + tickEpsilon;
+          }).forEach(function (value) {
             var currentPy = payload.plotBottom - ((value - series.min) / tickRange) * (payload.plotBottom - payload.plotTop);
-            var currentLabelY = Math.max(payload.plotTop + 12, Math.min(payload.plotBottom - 4, currentPy + 4));
+            var currentLabelY = currentPy + 4;
             if (!visibleTicks.length) {
               visibleTicks.push(value);
               return;
             }
             var previousValue = visibleTicks[visibleTicks.length - 1];
             var previousPy = payload.plotBottom - ((previousValue - series.min) / tickRange) * (payload.plotBottom - payload.plotTop);
-            var previousLabelY = Math.max(payload.plotTop + 12, Math.min(payload.plotBottom - 4, previousPy + 4));
-            if (Math.abs(currentLabelY - previousLabelY) >= 18) {
+            var previousLabelY = previousPy + 4;
+            if (Math.abs(currentLabelY - previousLabelY) >= minLabelGap) {
               visibleTicks.push(value);
             } else if (value === 0 && previousValue !== 0) {
               visibleTicks[visibleTicks.length - 1] = value;
@@ -1413,20 +1461,43 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             var py = payload.plotBottom - ((value - series.min) / range) * (payload.plotBottom - payload.plotTop);
             var tickLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
             tickLine.setAttribute('class', 'overlayAxisTick');
-            tickLine.setAttribute('x1', axisX - 4);
+            tickLine.setAttribute('x1', axisX - 4 / xScale);
             tickLine.setAttribute('x2', axisX);
             tickLine.setAttribute('y1', py.toFixed(1));
             tickLine.setAttribute('y2', py.toFixed(1));
             axis.appendChild(tickLine);
             var text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
             text.setAttribute('class', 'overlayTick');
-            text.setAttribute('x', axisX + 6);
-            text.setAttribute('y', Math.max(payload.plotTop + 12, Math.min(payload.plotBottom - 4, py + 4)).toFixed(1));
+            text.setAttribute('x', axisX + 6 / xScale);
+            text.setAttribute('y', py.toFixed(1));
+            text.setAttribute('dy', '0.35em');
             text.textContent = formatTickClient(value, tickStep);
             axis.appendChild(text);
           });
           instance.overlayYAxisGroup.appendChild(axis);
+          updateChartTextScale(svg, payload, chartRect);
+          return axis;
         }
+
+        function redrawActiveOverlayAxes() {
+          Object.keys(active).forEach(function (metricKey) {
+            var axis = instance.overlayYAxisGroup.querySelector('#' + overlayAxisId(metricKey));
+            if (axis) axis.parentNode.removeChild(axis);
+          });
+          var xScale = (instance.lastRect || svg.getBoundingClientRect()).width / payload.width;
+          if (!(xScale > 0)) return;
+          // Each palette color owns a fixed column, so one axis never moves when the other toggles.
+          var previousRight = 0;
+          OVERLAY_PALETTE.forEach(function (color, slot) {
+            var metricKey = Object.keys(active).filter(function (key) { return active[key] === color; })[0];
+            if (!metricKey) return;
+            var axisX = Math.max(payload.plotRight + (8 + slot * OVERLAY_AXIS_COLUMN_PX) / xScale, previousRight + 6 / xScale);
+            var axis = drawOverlay(metricKey, color, axisX);
+            var box = axis && axis.getBBox ? axis.getBBox() : null;
+            previousRight = box && box.width > 0 ? box.x + box.width : axisX;
+          });
+        }
+        instance.redrawOverlays = redrawActiveOverlayAxes;
 
         function removeOverlay(metricKey) {
           var el = instance.overlayGroup && instance.overlayGroup.querySelector('#' + overlayLineId(metricKey));
@@ -1445,6 +1516,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           }
           checkbox.addEventListener('change', function () {
             if (checkbox.checked) {
+              if (active[metricKey]) return;
               if (Object.keys(active).length >= 2) {
                 checkbox.checked = false;
                 return;
@@ -1452,11 +1524,12 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
               var usedColors = Object.keys(active).map(function (key) { return active[key]; });
               var color = OVERLAY_PALETTE.filter(function (c) { return usedColors.indexOf(c) === -1; })[0] || OVERLAY_PALETTE[0];
               active[metricKey] = color;
-              drawOverlay(metricKey, color);
+              redrawActiveOverlayAxes();
               checkbox.parentElement.style.color = color;
             } else {
               delete active[metricKey];
               removeOverlay(metricKey);
+              redrawActiveOverlayAxes();
               checkbox.parentElement.style.color = '';
             }
           });
@@ -1468,7 +1541,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         var svg = document.getElementById(svgId);
         if (!payload || !svg) return;
 
-        var pxXs = payload.points.map(function (p) { return scaleX(payload, p[0]); });
+        var basePlotLeft = payload.plotLeft;
+        var basePlotRight = payload.plotRight;
+        var basePlotTop = payload.plotTop;
+        var basePlotBottom = payload.plotBottom;
         var dataXs = payload.points.map(function (p) { return p[0]; });
         var line = svg.querySelector('.crosshair');
         var dot = svg.querySelector('.crosshairDot');
@@ -1476,9 +1552,74 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         var labelX = label && label.querySelector('.crosshairLabelX');
         var labelY = label && label.querySelector('.crosshairLabelY');
         var capture = svg.querySelector('.crosshairCapture');
-        var instance = { payload: payload, pxXs: pxXs, dataXs: dataXs,
+        var instance = { payload: payload, pxXs: [], dataXs: dataXs,
           overlayGroup: svg.querySelector('.overlayGroup'), overlayYAxisGroup: svg.querySelector('.overlayYAxisGroup') };
         instances[svgId] = instance;
+
+        // Gutters are in CSS px so labels fit at any panel width.
+        function applyLayout(rect) {
+          if (!rect || !(rect.width > 0) || !(rect.height > 0)) return;
+          instance.lastRect = rect;
+          var xScale = rect.width / payload.width;
+          var yScale = rect.height / payload.height;
+          var plotLeft = LEFT_GUTTER_PX / xScale;
+          var rightGutterPx = payload.overlays ? OVERLAY_GUTTER_PX : PLAIN_RIGHT_GUTTER_PX;
+          var plotRight = Math.max(plotLeft + 60 / xScale, payload.width - rightGutterPx / xScale);
+          var plotTop = TOP_GUTTER_PX / yScale;
+          var plotBottom = Math.max(plotTop + 40 / yScale, payload.height - BOTTOM_GUTTER_PX / yScale);
+          payload.plotLeft = plotLeft;
+          payload.plotRight = plotRight;
+          payload.plotTop = plotTop;
+          payload.plotBottom = plotBottom;
+          instance.segmentBandTop = plotBottom - 9 * ((plotBottom - plotTop) / (basePlotBottom - basePlotTop));
+          var layerScaleX = (plotRight - plotLeft) / (basePlotRight - basePlotLeft);
+          var layerScaleY = (plotBottom - plotTop) / (basePlotBottom - basePlotTop);
+          svg.querySelectorAll('.chartDataLayer').forEach(function (layer) {
+            layer.setAttribute('transform', 'translate(' + (plotLeft - basePlotLeft * layerScaleX).toFixed(4) + ' ' + (plotTop - basePlotTop * layerScaleY).toFixed(4)
+              + ') scale(' + layerScaleX.toFixed(4) + ' ' + layerScaleY.toFixed(4) + ')');
+          });
+          var axisLineX = svg.querySelector('.axisLineX');
+          if (axisLineX) {
+            axisLineX.setAttribute('x1', plotLeft.toFixed(1));
+            axisLineX.setAttribute('x2', plotRight.toFixed(1));
+            axisLineX.setAttribute('y1', plotBottom.toFixed(1));
+            axisLineX.setAttribute('y2', plotBottom.toFixed(1));
+          }
+          var axisLineY = svg.querySelector('.axisLineY');
+          if (axisLineY) {
+            axisLineY.setAttribute('x1', plotLeft.toFixed(1));
+            axisLineY.setAttribute('x2', plotLeft.toFixed(1));
+            axisLineY.setAttribute('y1', plotTop.toFixed(1));
+            axisLineY.setAttribute('y2', plotBottom.toFixed(1));
+          }
+          var axisLabelX = svg.querySelector('.axisLabelX');
+          if (axisLabelX) {
+            axisLabelX.setAttribute('x', ((plotLeft + plotRight) / 2).toFixed(1));
+            axisLabelX.setAttribute('y', (payload.height - 6 / yScale).toFixed(1));
+          }
+          if (capture) {
+            capture.setAttribute('x', plotLeft.toFixed(1));
+            capture.setAttribute('y', plotTop.toFixed(1));
+            capture.setAttribute('width', (plotRight - plotLeft).toFixed(1));
+            capture.setAttribute('height', (plotBottom - plotTop).toFixed(1));
+          }
+          if (line) {
+            line.setAttribute('y1', plotTop.toFixed(1));
+            line.setAttribute('y2', plotBottom.toFixed(1));
+          }
+          if (labelX && labelY) {
+            var labelTop = plotTop + 14 / yScale;
+            labelX.setAttribute('y', labelTop.toFixed(1));
+            labelY.setAttribute('y', (labelTop + 14).toFixed(1));
+          }
+          instance.pxXs = payload.points.map(function (p) { return scaleX(payload, p[0]); });
+          var plotWidthPx = (plotRight - plotLeft) * xScale;
+          var plotHeightPx = (payload.plotBottom - payload.plotTop) * yScale;
+          var yTickCount = fitYTickCount(payload, plotHeightPx);
+          redrawTicks(svg, payload, clampCount(plotWidthPx / 72, 4, 18), yTickCount, xScale, yScale);
+          if (instance.redrawOverlays) instance.redrawOverlays();
+          updateChartTextScale(svg, payload, rect);
+        }
 
         instance.showAt = function (index) {
           if (index < 0 || index >= payload.points.length || !line || !dot) return;
@@ -1491,6 +1632,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           line.style.display = '';
           dot.setAttribute('cx', px);
           dot.setAttribute('cy', py);
+          if (instance.lastRect) {
+            dot.setAttribute('transform', 'translate(' + px + ' ' + py + ') scale('
+              + (payload.width / instance.lastRect.width).toFixed(4) + ' ' + (payload.height / instance.lastRect.height).toFixed(4) + ') translate(' + (-px) + ' ' + (-py) + ')');
+          }
           dot.style.display = '';
           if (label && labelX && labelY) {
             // Anchored near the plot top (not the point itself) so it never overlaps the line/dot
@@ -1526,7 +1671,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         };
 
         function showSegmentTooltip(event, local) {
-          if (!segmentTooltip || local.y < payload.plotBottom - 9) return;
+          if (!segmentTooltip || local.y < instance.segmentBandTop) return;
           var segment = chartSegments.find(function (candidate) {
             return local.x >= scaleX(payload, candidate.startDistanceKm) && local.x <= scaleX(payload, candidate.endDistanceKm);
           });
@@ -1547,7 +1692,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             if (!ctm) return;
             var local = pt.matrixTransform(ctm.inverse());
             showSegmentTooltip(evt, local);
-            var hoveredIdx = nearestIndex(pxXs, local.x);
+            var hoveredIdx = nearestIndex(instance.pxXs, local.x);
             var dataX = payload.points[hoveredIdx][0];
             // All three charts share the distance axis, so one hover moves every crosshair.
             svgIds.forEach(function (id) {
@@ -1573,16 +1718,13 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             if (Math.abs(rect.width - lastWidth) < 1 && Math.abs(rect.height - lastHeight) < 1) return;
             lastWidth = rect.width;
             lastHeight = rect.height;
-            instance.lastRect = rect;
-            var plotWidthPx = (payload.plotRight - payload.plotLeft) * (rect.width / payload.width);
-            var plotHeightPx = (payload.plotBottom - payload.plotTop) * (rect.height / payload.height);
-            redrawTicks(svg, payload, clampCount(plotWidthPx / 72, 4, 18), clampCount(plotHeightPx / 30, 6, 18));
-            updateChartTextScale(svg, payload, rect);
+            applyLayout(rect);
           });
           observer.observe(svg);
         }
 
-        initOverlayControls(svgId, payload, instance);
+        initOverlayControls(svgId, payload, instance, svg);
+        applyLayout(svg.getBoundingClientRect());
         svg.querySelectorAll('.segmentBand[data-segment-index]').forEach(function (band) {
           band.addEventListener('mousemove', function (event) {
             var segment = chartSegments.find(function (candidate) { return String(candidate.index) === band.getAttribute('data-segment-index'); });
@@ -1664,13 +1806,13 @@ function sharedCss() {
     .zoneLine1 { stroke:var(--hr-zone-recovery); } .zoneLine2 { stroke:var(--hr-zone-endurance); }
     .zoneLine3 { stroke:var(--hr-zone-aerobic); } .zoneLine4 { stroke:var(--hr-zone-anaerobic); }
     .zoneLine5 { stroke:var(--hr-zone-max); }
-    .tick { fill:var(--muted); font-size:10px; }
-    .axisLabel { fill:var(--ink); font-size:11px; font-weight:bold; letter-spacing:0.03em; text-transform:uppercase; }
+    .tick { fill:var(--muted); font-size:13px; }
+    .axisLabel { fill:var(--ink); font-size:14px; font-weight:bold; letter-spacing:0.03em; text-transform:uppercase; }
     .routeStart { fill:var(--vscode-testing-iconPassed); } .routeEnd { fill:var(--vscode-testing-iconFailed); }
-    .kmMarker { stroke:color-mix(in srgb,var(--ink) 30%,transparent); stroke-width:1; stroke-dasharray:2 5; }
+    .kmMarker { stroke:color-mix(in srgb,var(--ink) 30%,transparent); stroke-width:1; stroke-dasharray:2 5; vector-effect:non-scaling-stroke; }
     .overlayYAxis { color:var(--muted); }
     .overlayAxisLine, .overlayAxisTick { stroke:currentColor; stroke-width:1; vector-effect:non-scaling-stroke; }
-    .overlayTick { fill:currentColor; font-size:10px; }
+    .overlayTick { fill:currentColor; font-size:13px; }
     .segmentBand { pointer-events:all; cursor:help; }
     .segmentBandClimb { fill:#d35400; fill-opacity:0.72; } .segmentBandDescent { fill:#2980b9; fill-opacity:0.72; }
     .segmentBandFlat { fill:#3d8b40; fill-opacity:0.66; } .segmentBandStopped { fill:#7f8c8d; fill-opacity:0.72; }

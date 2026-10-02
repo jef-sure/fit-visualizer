@@ -68,7 +68,7 @@ function buildCartesianGeometry(points, width, height, margin) {
   if (points.length < 2) {
     return {
       points, pathPoints: [], pathData: '', width, height,
-      plotLeft: margin.left, plotRight: width - margin.right, plotTop: margin.top + 8, plotBottom: height - margin.bottom,
+      plotLeft: margin.left, plotRight: width - margin.right, plotTop: margin.top + 18, plotBottom: height - margin.bottom - 10,
       xTicks: [], yTicks: [], xStep: 1, yStep: 1, xMin: 0, xMax: 0, yMin: 0, yMax: 0,
     };
   }
@@ -80,8 +80,8 @@ function buildCartesianGeometry(points, width, height, margin) {
   const safeY = padYAxisRange(yMin, yMax);
   const plotLeft = margin.left;
   const plotRight = width - margin.right;
-  const plotTop = margin.top + 8;
-  const plotBottom = height - margin.bottom;
+  const plotTop = margin.top + 18;
+  const plotBottom = height - margin.bottom - 10;
   const plotWidth = plotRight - plotLeft;
   const plotHeight = plotBottom - plotTop;
   const scaleX = (value) => plotLeft + ((value - safeX.min) / (safeX.max - safeX.min)) * plotWidth;

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.13.32 - 2026-10-02
+
+### Fixed
+
+- Chart width no longer changes when overlays are toggled: the right margin is always sized for both overlay axes.
+- Each overlay color keeps its own axis column, so overlay axes never overlap and one axis never moves when the other is toggled.
+- Chart margins are set in screen pixels, so first and last axis labels fit without being clipped or shifted at any panel size.
+- Axis labels, axis titles and the crosshair keep their size and proportions on narrow or tall panels.
+- Axis ticks, including overlay axis ticks, are no longer drawn beyond the data range.
+- Axis labels are larger (13 px, axis titles 14 px) for readability.
+- Y-axis tick density adapts to the panel height, so labels never overlap on low panels: grid lines stay, and only every second label is shown when space is short; the Y-axis title is hidden when it is taller than the plot.
+- Overlay toggles are no longer shown above charts that have no data (for example heart rate on rides without a heart-rate sensor).
+
 ## 0.13.25 - 2026-09-07
 
 ### Fixed

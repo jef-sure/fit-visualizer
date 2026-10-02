@@ -73,18 +73,16 @@ function createChartSvgRenderer({ buildDistanceMarkers, escapeHtml, formatTick, 
     <rect class="crosshairCapture" x="${chart.plotLeft}" y="${chart.plotTop}" width="${chart.plotRight - chart.plotLeft}" height="${chart.plotBottom - chart.plotTop}" fill="transparent" />` : '';
 
     return `<svg${svgIdAttr} viewBox="0 0 ${chart.width} ${chart.height}" preserveAspectRatio="none" role="img" aria-label="line chart">
-    <g class="segmentBandGroup">${segmentBands}</g>
-    ${markerSvg}
+    <g class="chartDataLayer"><g class="segmentBandGroup">${segmentBands}</g>${markerSvg}</g>
     ${xTicks}
     ${yTicks}
-    <g class="overlayYAxisGroup"></g>
-    <line class="axis" x1="${chart.plotLeft}" y1="${chart.plotBottom}" x2="${chart.plotRight}" y2="${chart.plotBottom}" />
-    <line class="axis" x1="${chart.plotLeft}" y1="${chart.plotTop}" x2="${chart.plotLeft}" y2="${chart.plotBottom}" />
-    ${compLineSvg}
-    ${lineSvg}
+    <line class="axis axisLineX" x1="${chart.plotLeft}" y1="${chart.plotBottom}" x2="${chart.plotRight}" y2="${chart.plotBottom}" />
+    <line class="axis axisLineY" x1="${chart.plotLeft}" y1="${chart.plotTop}" x2="${chart.plotLeft}" y2="${chart.plotBottom}" />
+    <g class="chartDataLayer">${compLineSvg}${lineSvg}</g>
     <text class="axisLabel axisLabelX" x="${(chart.plotLeft + chart.plotRight) / 2}" y="${chart.height - 4}" text-anchor="middle">${escapeHtml(xLabel)}</text>
     <text class="axisLabel axisLabelY" transform="translate(14 ${(chart.plotTop + chart.plotBottom) / 2}) rotate(-90)" text-anchor="middle">${escapeHtml(yLabel)}</text>
     ${crosshairSvg}
+    <g class="overlayYAxisGroup"></g>
   </svg>`;
   }
 

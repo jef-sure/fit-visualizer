@@ -364,6 +364,13 @@ test('chart SVG renderer outputs ticks, markers, zones, and a crosshair capture 
   assert.doesNotMatch(svg, /class="kmLabel"/);
   assert.match(svg, /class="xTicksGroup"/);
   assert.match(svg, /class="yTicksGroup"/);
+  assert.match(svg, /class="overlayYAxisGroup"/);
+  assert.equal((svg.match(/class="chartDataLayer"/g) || []).length, 2);
+  const dataLayers = (svg.match(/<g class="chartDataLayer">[\s\S]*?<\/g><\/g>|<g class="chartDataLayer">[\s\S]*?<\/g>/g) || []).join('');
+  assert.doesNotMatch(dataLayers, /<text/);
+  assert.match(svg, /class="axis axisLineX"/);
+  assert.equal((svg.match(/class="overlayYAxisGroup"/g) || []).length, 1);
+  assert.match(svg, /<g class="overlayYAxisGroup"><\/g>\s*<\/svg>/);
   assert.match(svg, /class="zoneLine zoneLine3"/);
   assert.match(svg, /class="lineAComp"/);
   assert.match(svg, /class="crosshairCapture"/);
@@ -427,11 +434,19 @@ test('adaptive chart ticks recompute when only height changes', () => {
   assert.match(source, /var lastWidth = 0;\s*var lastHeight = 0;/);
   assert.match(source, /Math\.abs\(rect\.width - lastWidth\) < 1 && Math\.abs\(rect\.height - lastHeight\) < 1/);
   assert.match(source, /lastWidth = rect\.width;\s*lastHeight = rect\.height;/);
-  assert.match(source, /var labelY = Math\.max\(payload\.plotTop \+ 12, Math\.min\(payload\.plotBottom - 4, parseFloat\(py\) \+ 4\)\)\.toFixed\(1\);/);
-  assert.match(geometrySource, /const plotTop = margin\.top \+ 8;/);
+  assert.match(source, /withinRange\(yTicks, payload\.yMin, payload\.yMax\)/);
+  assert.match(source, /withinRange\(xTicks, payload\.xMin, payload\.xMax\)/);
+  assert.doesNotMatch(source, /Math\.max\(payload\.plotTop \+ 12, Math\.min\(payload\.plotBottom - 4/);
+  // Gutters are CSS px, so labels fit regardless of how the viewBox is stretched.
+  assert.match(source, /var plotLeft = LEFT_GUTTER_PX \/ xScale;/);
+  assert.match(source, /var plotTop = TOP_GUTTER_PX \/ yScale;/);
+  assert.match(source, /payload\.height - BOTTOM_GUTTER_PX \/ yScale/);
+  assert.match(geometrySource, /const plotTop = margin\.top \+ 18;/);
+  assert.match(geometrySource, /const plotBottom = height - margin\.bottom - 10;/);
   assert.match(geometrySource, /const safeY = padYAxisRange\(yMin, yMax\);/);
   assert.match(source, /clampCount\(plotWidthPx \/ 72, 4, 18\)/);
-  assert.match(source, /clampCount\(plotHeightPx \/ 30, 6, 18\)/);
+  assert.match(source, /function fitYTickCount\(payload, plotHeightPx\)/);
+  assert.match(source, /for \(var count = clampCount\(plotHeightPx \/ 30, 6, 18\); count >= 2; count--\)/);
 });
 
 test('Y-axis range reserves headroom above the highest data value', () => {
@@ -531,21 +546,17 @@ test('chart text labels adapt to the rendered SVG scale', () => {
   assert.match(source, /function updateChartTextScale\(svg, payload, rect\)/);
   assert.match(source, /var xScale = rect\.width \/ payload\.width;/);
   assert.match(source, /var yScale = rect\.height \/ payload\.height;/);
-  assert.match(source, /var textScale = Math\.max\(0\.1, Math\.min\(xScale, yScale\)\);/);
-  assert.match(source, /function setReadableFont\(selector, cssPx, strokePx\)/);
-  assert.match(source, /el\.style\.fontSize = \(cssPx \/ textScale\)\.toFixed\(2\) \+ 'px';/);
-  const readableFontBody = source.match(/function setReadableFont\(selector, cssPx, strokePx\) \{([\s\S]*?)\n        \}/)?.[1] || '';
-  assert.doesNotMatch(readableFontBody, /setAttribute\('transform'/);
-  assert.match(source, /setReadableFont\('\.tick', 10\);/);
-  assert.doesNotMatch(source, /setReadableFont\('\.kmLabel'/);
-  assert.match(source, /setReadableFont\('\.crosshairLabel', 13, 3\);/);
+  // Every text node undoes the non-uniform X/Y stretch around its own anchor.
+  assert.match(source, /var unscale = ' scale\(' \+ \(1 \/ xScale\)\.toFixed\(4\) \+ ' ' \+ \(1 \/ yScale\)\.toFixed\(4\) \+ '\)';/);
+  assert.match(source, /svg\.querySelectorAll\('\.tick, \.overlayTick'\)/);
+  assert.match(source, /unstretch\(axisX, AXIS_TITLE_FONT_PX,/);
+  assert.match(source, /unstretch\(crosshairLabel, 13,/);
+  assert.match(source, /axisY\.setAttribute\('transform', 'translate\(' \+ \(16 \/ xScale\)/);
+  assert.match(source, /var TICK_FONT_PX = 13;/);
+  assert.match(source, /unstretch\(el, TICK_FONT_PX,/);
+  assert.doesNotMatch(source, /setReadableFont|textScale/);
+  assert.match(source, /var chartRect = svg\.getBoundingClientRect\(\);[\s\S]*?updateChartTextScale\(svg, payload, chartRect\);/);
   assert.match(svg, /class="axisLabel axisLabelX"/);
-  assert.match(source, /var axisX = svg\.querySelector\('\.axisLabelX'\);/);
-  assert.match(source, /var axisXx = parseFloat\(axisX\.getAttribute\('x'\)\);/);
-  assert.match(source, /var axisXy = parseFloat\(axisX\.getAttribute\('y'\)\);/);
-  assert.match(source, /axisX\.style\.fontSize = '12px';/);
-  assert.match(source, /axisX\.setAttribute\('transform', 'translate\(' \+ axisXx \+ ' ' \+ axisXy \+ '\) scale\('/);
-  assert.match(source, /\+ \(-axisXx\) \+ ' ' \+ \(-axisXy\) \+ '\)'/);
   assert.match(source, /if \(instance\.lastRect\) updateChartTextScale\(svg, payload, instance\.lastRect\);/);
   assert.match(source, /redrawTicks\(svg, payload,[\s\S]*?updateChartTextScale\(svg, payload, rect\);/);
 });
@@ -556,6 +567,19 @@ test('metric overlays reuse computeGrade once, exclude the chart\'s own metric a
   assert.match(overlaySource, /const grades = records\.some[\s\S]*?computeGrade\(records\)/);
   assert.match(source, /var OVERLAY_PALETTE = \['#e67e22', '#00acc1'\];/);
   assert.match(source, /if \(Object\.keys\(active\)\.length >= 2\) \{/);
+  assert.doesNotMatch(source, /occupiedLabelYs/);
+  assert.match(source, /value >= series\.min - tickEpsilon && value <= series\.max \+ tickEpsilon/);
+  assert.match(source, /function redrawActiveOverlayAxes\(\)/);
+  assert.match(source, /function initOverlayControls\(svgId, payload, instance, svg\)/);
+  assert.match(source, /var OVERLAY_GUTTER_PX = 8 \+ OVERLAY_PALETTE\.length \* OVERLAY_AXIS_COLUMN_PX;/);
+  // Plot width depends only on the SVG width, never on how many overlays are active.
+  const layoutBody = source.match(/function applyLayout\(rect\) \{([\s\S]*?)\n        \}/)?.[1] || '';
+  assert.match(layoutBody, /payload\.width - rightGutterPx \/ xScale/);
+  assert.match(layoutBody, /payload\.overlays \? OVERLAY_GUTTER_PX : PLAIN_RIGHT_GUTTER_PX/);
+  assert.doesNotMatch(layoutBody, /active/);
+  assert.match(source, /payload\.plotRight \+ \(8 \+ slot \* OVERLAY_AXIS_COLUMN_PX\) \/ xScale/);
+  assert.match(source, /nearestIndex\(instance\.pxXs, local\.x\)/);
+  assert.doesNotMatch(source, /plotXScale|chartPlotGroup|gutterPx|targetPlotRight/);
 
   const metrics = {
     grade: { points: [{ x: 0, y: 1 }, { x: 1, y: 5 }], yValues: [1, 5] },

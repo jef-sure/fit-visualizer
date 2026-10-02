@@ -1,0 +1,10 @@
+.vscode/**
+.gitignore
+**/*.vsix
+test/**
+fit-visualizer-segmentation-plan*.md
+promo-post*.md
+.segment-probe.js
+.prompt-probe.js
+images/*-ru.png
+images/cover-*.png
