@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.14.1 - 2026-10-03
+
+### Upgrade Notes
+
+- The AI prompt changed, so saved analyses are one format behind. Run **FIT: Re-analyze Outdated Analyses** to refresh them (analysis format 18); **Index New Files** is not needed.
+- Optional: run **FIT: Tidy Heart-Rate Profiles** once to collapse duplicate dated profiles created by earlier saves.
+
+### Added
+
+- Heart-rate values entered from another device (manual avg/max) now reach AI analysis, chat and comparison as a clearly labelled user-reported summary, instead of being invisible to the model. Earlier rides without a recorded HR series stop looking "heart-rate free".
+- **FIT: Tidy Heart-Rate Profiles** previews and removes consecutive duplicate dated profiles and lists max-HR flips. Saving an identical profile no longer creates a new dated row, so history stops forking; a max-HR value that returns between two others is flagged as a possible accidental flip.
+- Offline map mode: `fitVisualizer.map.tiles: none` draws the route without any tile requests. The default `osm` mode still loads OpenStreetMap tiles, and the privacy sections of both READMEs now say so explicitly.
+- `fitVisualizer.llmChatLogRetentionDays` (default 180) keeps chat and comparison logs longer than one-off analysis logs, which stay at `llmLogRetentionDays` (default 30).
+- Segment-budget warnings now appear in a dedicated **FIT Visualizer: Analysis** output channel, as a once-per-session notification, and next to the segments table in the activity view — previously they existed only inside JSON log files.
+
+### Changed
+
+- User messages about earlier workouts are supplied once, under Dated User Context, instead of being duplicated inside Recent Activity History.
+- Chat and AI comparison prompts receive the dated heart-rate profile; the comparison is told that differing profiles change HR comparability. Chat responses are no longer capped at 4-8 sentences.
+- Map fallback texts ("no GPS points", "map library failed") are localized like the rest of the UI; webview messages validate activity ids before database access.
+- `bugs` and `homepage` links added to the package manifest; the built VSIX is no longer tracked in git.
+
 ## 0.14.0 - 2026-10-02
 
 ### Upgrade Notes

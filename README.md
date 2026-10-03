@@ -6,7 +6,14 @@
 
 Open a `.fit` file from your bike computer or sports watch right in VS Code and see the ride: speed, heart rate and elevation charts, the route on a map, and the ride split into climbs, descents, flats and stops. Every ride you open goes into a local history, so the next one can be compared with what came before — and if you use GitHub Copilot, you can talk it through in plain language.
 
-## Upgrading to 0.14.0
+## Upgrading
+
+### To 0.14.1
+
+1. Run **FIT: Re-analyze Outdated Analyses** to refresh saved AI analyses (analysis format 18). Re-indexing is not required for this update.
+2. Optional: run **FIT: Tidy Heart-Rate Profiles** to collapse duplicate dated profiles created by earlier saves.
+
+### To 0.14.0
 
 **Existing users: re-index your FIT files and re-run AI analysis after updating.** Grade, segments, heart-rate load and the AI context have changed; stored values and older analyses are not refreshed automatically.
 
@@ -141,6 +148,7 @@ How to get `.fit` files off common devices:
 - FIT: Index This File
 - FIT: Add Manual Activity — enter a workout by hand when there is no FIT file (say, the bike computer stayed at home), so it still counts in your history and analysis
 - FIT: Re-analyze Outdated Analyses — processes all activities with outdated or missing analyses in one chronological batch, after confirming the total number of Copilot requests; current analyses are left unchanged
+- FIT: Tidy Heart-Rate Profiles — previews consecutive duplicate dated zone profiles, removes them on confirmation, and lists max-HR flips worth reviewing
 - FIT: Update Model Prices — downloads the official GitHub Copilot token-price table and saves it locally for subsequent analyses; no Copilot request is made
 
 Right-click a `.fit` file in the Explorer for two shortcuts to the commands above — **Visualize File** and **Index This File** — nothing else is added there; segmentation, analysis, and everything else still happens inside the visual editor once the file is open.
