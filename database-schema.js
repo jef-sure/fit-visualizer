@@ -142,6 +142,19 @@ function ensureDatabaseSchema(db) {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS routes (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      name                TEXT,
+      canonical_signature TEXT,
+      ride_count          INTEGER NOT NULL DEFAULT 0,
+      first_seen          TEXT,
+      last_seen           TEXT,
+      elevation_profile_json TEXT,
+      elevation_updated_at   TEXT
+    );
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS activity_features (
       activity_id          INTEGER PRIMARY KEY REFERENCES activities(id) ON DELETE CASCADE,
       features_version     INTEGER NOT NULL,
@@ -156,7 +169,9 @@ function ensureDatabaseSchema(db) {
       session_class_json   TEXT,
       trimp                REAL,
       hr_tss               REAL,
-      elapsed_coverage_pct REAL
+      elapsed_coverage_pct REAL,
+      route_id             INTEGER REFERENCES routes(id),
+      route_relation       TEXT
     );
   `);
 
@@ -207,6 +222,8 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'activities', 'device_moving_time_s', 'REAL');
   addColumnIfMissing(db, 'activities', 'device_elapsed_s', 'REAL');
   addColumnIfMissing(db, 'heart_rate_profiles', 'lthr', 'REAL');
+  addColumnIfMissing(db, 'activity_features', 'route_id', 'INTEGER');
+  addColumnIfMissing(db, 'activity_features', 'route_relation', 'TEXT');
 }
 
 function addColumnIfMissing(db, table, column, type) {

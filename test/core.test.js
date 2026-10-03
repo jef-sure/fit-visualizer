@@ -2207,7 +2207,7 @@ test('database schema creates only extension-owned tables', async () => {
     const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")[0]
       .values
       .flat();
-    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'activity_comparisons', 'activity_features', 'athlete_profile', 'heart_rate_profiles', 'records', 'sqlite_sequence', 'wheel_calibration_samples']);
+    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'activity_comparisons', 'activity_features', 'athlete_profile', 'heart_rate_profiles', 'records', 'routes', 'sqlite_sequence', 'wheel_calibration_samples']);
   } finally {
     db.close();
   }
@@ -3216,6 +3216,87 @@ test('period volume includes TRIMP sum, session class mix and week monotony', ()
   // A single active day is not monotony.
   const lonely = buildTrainingContext([activities[0]], '2026-08-03T10:00:00.000Z', 'cycling');
   assert.equal(lonely.monotony, null);
+});
+
+test('route signatures identify the same loop, a reversed ride, a partial ride and a different one', () => {
+  const { buildRouteSignature, matchRoutes } = require('../route-match');
+  // A 10 km square-ish loop: 32 fraction points along a real-looking track.
+  const loop = [];
+  for (let i = 0; i <= 400; i += 1) {
+    const d = i / 400;
+    const lat = d < 0.25 ? d : d < 0.5 ? 0.25 : d < 0.75 ? 0.25 - (d - 0.5) : 0;
+    const lon = d < 0.25 ? 0 : d < 0.5 ? (d - 0.25) : d < 0.75 ? 0.25 : 0.25 - (d - 0.75);
+    loop.push({ position_lat: 52 + lat * 0.05, position_long: 13 + lon * 0.07, distance: d * 10 });
+  }
+  const loopSig = buildRouteSignature(loop);
+
+  // Same loop entered elsewhere: drop the first 10 % and start from there (loop shifted).
+  const shifted = [...loop.slice(40), ...loop.slice(0, 40)].map((p, i) => ({ ...p, distance: (i / 400) * 10 }));
+  assert.equal(matchRoutes(buildRouteSignature(shifted), loopSig).type, 'same');
+
+  // Same geometry, opposite direction.
+  const reversed = loop.map((p, i) => ({ ...p, position_lat: loop[loop.length - 1 - i].position_lat, position_long: loop[loop.length - 1 - i].position_long, distance: (i / 400) * 10 }));
+  const reversedMatch = matchRoutes(buildRouteSignature(reversed), loopSig);
+  assert.ok(['same', 'reversed'].includes(reversedMatch.type), 'reversed geometry still matches the route');
+
+  // Half the loop is a partial.
+  const half = loop.slice(0, 240).map((p, i) => ({ ...p, distance: (i / 400) * 10 }));
+  assert.equal(matchRoutes(buildRouteSignature(half), loopSig).type, 'partial');
+
+  // A distant route is different.
+  const elsewhere = loop.map((p) => ({ ...p, position_lat: p.position_lat + 0.05, position_long: p.position_long + 0.05 }));
+  assert.equal(matchRoutes(buildRouteSignature(elsewhere), loopSig).type, 'different');
+
+  // Tiny GPS-less inputs produce no signature at all.
+  assert.equal(buildRouteSignature([{ position_lat: 1, position_long: 1, distance: 0.1 }]), null);
+});
+
+test('checkpoints accumulate time and HR per distance mark and summarize prior rides', () => {
+  const { computeCheckpoints, summarizeCheckpoints } = require('../route-store');
+  const records = [];
+  for (let s = 0; s <= 3600; s += 1) {
+    records.push({ elapsed_time: s, distance: (s / 3600) * 20, heart_rate: 130 + Math.floor(s / 600) * 5 });
+  }
+  const marks = computeCheckpoints(records);
+  assert.deepEqual(marks.map((m) => m.km), [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]);
+  assert.equal(marks[0].elapsedS, 360);
+  assert.equal(marks[0].avgHr, 130);
+  assert.ok(Math.abs(marks[0].avgSpeedKmh - 20) < 0.5);
+
+  const summary = summarizeCheckpoints(marks, [
+    { checkpoints: marks.map((m) => ({ ...m, elapsedS: m.elapsedS + 60 })) },
+    { checkpoints: marks.map((m) => ({ ...m, elapsedS: m.elapsedS - 60 })) },
+  ]);
+  assert.equal(summary[0].priorRides, 2);
+  assert.equal(summary[0].priorMedianS, marks[0].elapsedS + 60, 'median of [−60, +60] picks the upper middle');
+});
+
+test('ride-to-route assignment creates a route once and attaches later rides with their relation', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { assignRoute, readRoutes } = require('../route-store');
+    const { buildRouteSignature, matchRoutes } = require('../route-match');
+    const loop = [];
+    for (let i = 0; i <= 200; i += 1) {
+      const d = i / 200;
+      loop.push({ position_lat: 52 + Math.sin(d * Math.PI * 2) * 0.02, position_long: 13 + Math.cos(d * Math.PI * 2) * 0.03, distance: d * 10 });
+    }
+    db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (1, ?, ?, ?, ?)', ['a', 'a', '2026-08-01T10:00:00Z', 'fit']);
+    db.run('INSERT INTO activity_features (activity_id, features_version) VALUES (1, 1)');
+    const first = assignRoute(db, { activityId: 1, signature: buildRouteSignature(loop), createdAt: '2026-08-01T10:00:00Z' });
+    assert.equal(first.rideCount, 1);
+
+    db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (2, ?, ?, ?, ?)', ['b', 'b', '2026-08-02T10:00:00Z', 'fit']);
+    db.run('INSERT INTO activity_features (activity_id, features_version) VALUES (2, 1)');
+    const second = assignRoute(db, { activityId: 2, signature: buildRouteSignature(loop.map((p) => ({ ...p, position_lat: p.position_lat + 0.0002 }))), createdAt: '2026-08-02T10:00:00Z' });
+    assert.equal(second.routeId, first.routeId);
+    assert.equal(second.rideCount, 2);
+    assert.equal(readRoutes(db).length, 1);
+  } finally {
+    db.close();
+  }
 });
 
 test('pinned analysis model id overrides the cheapest-model selection', async () => {

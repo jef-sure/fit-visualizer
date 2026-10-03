@@ -205,6 +205,12 @@ function formatConversation(history) {
     .slice(-24).map((entry) => `${entry.role === 'user' ? 'User report' : 'Assistant hypothesis'} (${entry.ts || 'message date unknown'}): ${String(entry.content).trim()}`).join('\n');
 }
 
+function buildRouteContextBlock(routeContext) {
+  if (!routeContext || !(routeContext.checkpointLines?.length || routeContext.climbLine)) return '';
+  const lines = (routeContext.checkpointLines || []).join('\n');
+  return `**Same-Route Context (GPS-confirmed):**\nRoute "${routeContext.routeName}" (${routeContext.relation}); ${routeContext.priorRideCount} earlier rides on this route.\n${lines ? `Checkpoint splits (this ride vs median of up to 5 prior same-route rides):\n${lines}\n` : ''}${routeContext.climbLine ? `${routeContext.climbLine}\n` : ''}${routeContext.note}`;
+}
+
 function buildTrainingHistoryContext(context) {
   if (!context) return '';
   const volume = context.volume.map((period) => {
@@ -249,6 +255,7 @@ function buildTrainingHistoryContext(context) {
     `**Adaptive Observation Window:**\n${context.windowDays} days: ${context.windowStart.slice(0, 10)} to ${context.windowEnd.slice(0, 10)}; ${context.activities} same-sport activities. Window selection is not evidence of fitness.\n${describeTrend('Duration pattern', context.durationTrend)}\n${describeTrend('Distance pattern', context.distanceTrend)}\n${joinNonEmpty([interruptions, monotony], '\n')}`,
     context.offsetChangeNote ? `**Device Timezone Consistency:**\n${context.offsetChangeNote}` : null,
     matches ? `**Candidate Segment Comparisons:**\n${matches}\nMatching uses ordered terrain, duration and distance, not equal HR/power. Similar structure does not establish identical route, intent, weather or training stimulus; consider intensity separately.` : '**Candidate Segment Comparisons:** No eligible matches; training-volume context remains available.',
+    context.routeContext ? buildRouteContextBlock(context.routeContext) : null,
     reports ? `**Dated User Context Across Activities:**\n${reports}\nMessage date and activity date are different. Reports may describe another effective period; do not apply later circumstances retrospectively without support.` : null,
   ], '\n\n');
 }
@@ -892,6 +899,7 @@ module.exports = {
   buildSegmentContext,
   buildSessionClassContext,
   buildTrainingHistoryContext,
+  buildRouteContextBlock,
   formatFieldsSkippingEmpty,
   generateAnalysisPrompt,
   generateAnalysisChatPrompt,

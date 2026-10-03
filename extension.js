@@ -33,6 +33,8 @@ const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, loc
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
+const { assignRoute, computeCheckpoints, summarizeCheckpoints } = require('./route-store');
+const { buildRouteSignature } = require('./route-match');
 
 function safeParseJson(text, fallback) {
   try {
@@ -1926,6 +1928,8 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
     },
   });
   const sessionClass = buildSessionClassForActivity(powerData.records, session, hrConfig, athleteProfile, segments);
+  // Route info and checkpoints are filled later by getTrainingContextFromDb (they need the
+  // routes table and the same-sport history); analysisData carries the current-ride data.
   return {
     ...fitData,
     records: powerData.records,
@@ -2626,7 +2630,11 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     });
     const timerS = asNumber(row.total_timer_s);
     const sessionClass = buildSessionClassForActivity(power.records, { total_timer_s: timerS }, hrConfig, profile, segments);
-    return { records: normalized, segments, hrConfig, powerSource: power.source, sessionClass, trimp: summary.trimp, hrTss: summary.hrTss };
+    const routeSignature = buildRouteSignature(records);
+    const routeInfo = assignRoute(db, { activityId: row.id, signature: routeSignature, createdAt: row.start_time });
+    const checkpoints = computeCheckpoints(records);
+    return { records: normalized, segments, hrConfig, powerSource: power.source, sessionClass,
+      trimp: summary.trimp, hrTss: summary.hrTss, routeInfo, checkpoints };
   };
   // Cached feature payload for one earlier activity; recomputes (and stores) only when the key changed.
   const ensureFeaturesRow = (row) => {
@@ -2691,6 +2699,9 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       trimp: asNumber(detail?.trimp) > 0 ? asNumber(detail.trimp) : asNumber(row.trimp),
       hrTss: asNumber(detail?.hrTss) > 0 ? asNumber(detail.hrTss) : asNumber(row.hr_tss),
       sessionClass: detail?.sessionClass || null,
+      routeId: detail?.routeInfo?.routeId ?? null,
+      routeRelation: detail?.routeInfo?.relation ?? null,
+      checkpoints: detail?.checkpoints || [],
       segments: detail?.segments || [], conversation,
       source: row.source,
       analysisText: row.source === 'fit' && row.analysis_version >= ANALYSIS_VERSION && row.manual_avg_hr == null && row.manual_max_hr == null
@@ -2699,7 +2710,11 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     };
     return attachActivityZones(activity, detail?.records || [], detail?.hrConfig);
   });
-  const currentSegments = currentData?.segments || buildDetail(selected).segments;
+  const currentDetail = currentData?.segments ? null : buildDetail(selected);
+  const currentSegments = currentData?.segments || currentDetail?.segments || [];
+  // The current ride also needs its route relation and checkpoints for same-route comparisons.
+  const currentRouteInfo = currentData?.routeInfo || currentDetail?.routeInfo || null;
+  const currentCheckpoints = currentData?.checkpoints || currentDetail?.checkpoints || [];
   const context = buildTrainingContext(activities, selected.start_time, selected.sport, currentSegments);
   const offsetChange = detectOffsetChange({
     current: { startTime: selected.start_time, utcOffsetS: selected.utc_offset_s },
@@ -2708,6 +2723,9 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   if (offsetChange) {
     context.offsetChangeNote = `This device UTC offset (${formatOffsetLabel(offsetChange.utcOffsetS)}) differs from the median of ${offsetChange.neighbours} nearby same-file activities (${formatOffsetLabel(offsetChange.medianOffsetS)}): the device timezone setting probably changed, so local clock times and local dates around these rides are less reliable.`;
   }
+  context.routeContext = currentRouteInfo
+    ? buildRouteContext({ routeInfo: currentRouteInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected)
+    : null;
   const conversations = readRows(`SELECT a.start_time, aac.chat_json
     FROM activities a JOIN activity_analysis_chat aac ON aac.activity_id = a.id
     WHERE datetime(a.start_time) < datetime(?) ORDER BY datetime(a.start_time) DESC LIMIT 24`, [selected.start_time]);
@@ -2731,6 +2749,48 @@ function calculateProgressTrend(activities, field, unit) {
   }
   const changePct = trend.changePct;
   return `${trend.direction} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%, ${unit}; noise threshold ±${trend.thresholdPct.toFixed(1)}%)`;
+}
+
+// Same-route comparisons the code can state as fact: checkpoint splits against the median of
+// prior same-route rides, plus the history of the final climb segment when one exists.
+function buildRouteContext(currentData, activities, selected) {
+  const routeInfo = currentData.routeInfo;
+  if (!routeInfo?.routeId) return null;
+  const priorSameRoute = activities.filter((activity) => activity.routeId === routeInfo.routeId);
+  if (!priorSameRoute.length) return null;
+  const recentPriors = priorSameRoute.slice(-5);
+  const summary = summarizeCheckpoints(currentData.checkpoints || [], recentPriors.map((activity) => ({ checkpoints: activity.checkpoints })));
+  const marks = summary.filter((mark) => mark.priorRides > 0).slice(0, 10);
+  const lines = marks.map((mark) => {
+    const diff = mark.priorMedianS ? Math.round(mark.elapsedS - mark.priorMedianS) : null;
+    return `- km ${mark.km}: ${formatHms(mark.elapsedS)}${diff != null ? ` (median ${formatHms(mark.priorMedianS)}, ${diff >= 0 ? '+' : ''}${Math.round(diff / 60)} min${Math.abs(diff % 60)}s)` : ''}${mark.avgHr ? `, HR ${mark.avgHr}` : ''}`;
+  });
+  const climbs = (currentData.segments || []).filter((segment) => segment.type === 'climb' && segment.elevGainM >= 25);
+  const finalClimb = climbs.at(-1);
+  let climbLine = null;
+  if (finalClimb) {
+    const history = priorSameRoute
+      .map((activity) => (activity.segments || []).find((segment) => segment.type === 'climb'
+        && Math.abs((segment.startDistanceKm ?? 0) - (finalClimb.startDistanceKm ?? 0)) < 1.5))
+      .filter(Boolean)
+      .map((segment) => ({ durationS: segment.durationS, avgHr: segment.avgHr, date: null }))
+      .slice(-5);
+    if (history.length) {
+      const durations = history.map((row) => row.durationS).sort((a, b) => a - b);
+      const median = durations[Math.floor(durations.length / 2)];
+      const hrs = history.map((row) => row.avgHr).filter(Number.isFinite);
+      climbLine = `Final climb ${formatHms(finalClimb.durationS)} (grade ${finalClimb.avgGrade}%, HR ${finalClimb.avgHr ?? 'unknown'}); prior same-route climbs: ${history.length} rides, median ${formatHms(median)}${hrs.length ? `, HR ${Math.min(...hrs)}-${Math.max(...hrs)}` : ''}.`;
+    }
+  }
+  return {
+    routeName: routeInfo.routeName,
+    relation: routeInfo.relation,
+    rideCount: routeInfo.rideCount,
+    priorRideCount: priorSameRoute.length,
+    checkpointLines: lines,
+    climbLine,
+    note: `Route identity from GPS geometry (${routeInfo.relation}); ${priorSameRoute.length} earlier rides on this route in the analysis window. Checkpoint medians are descriptive splits of prior rides, not controlled time trials.`,
+  };
 }
 
 async function storeAnalysisInDb(dbPath, activityId, analysis) {
