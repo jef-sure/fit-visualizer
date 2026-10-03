@@ -8,6 +8,10 @@ Open a `.fit` file from your bike computer or sports watch right in VS Code and 
 
 ## Upgrading
 
+### To 0.17.1
+
+Run **FIT: Re-analyze Outdated Analyses** (analysis format 22). Re-indexing is not required.
+
 ### To 0.17.0
 
 1. Run **FIT: Rebuild Derived Features** once: it assigns routes and refills the derived-feature cache (earlier versions did not save lazily computed features; they are persisted now).

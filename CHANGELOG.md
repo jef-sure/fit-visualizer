@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.1 - 2026-10-03
+
+### Upgrade Notes
+
+- Run **FIT: Re-analyze Outdated Analyses** (analysis format 22). Re-indexing is not required.
+
+### Fixed
+
+- **Same-route context and route elevation never reached the prompt**: the current ride's route and checkpoints were not computed on the real analysis path, so only unit tests had seen them. Verified now by building real prompts from the 39-ride database: checkpoint splits, final-climb history and the route elevation consensus appear.
+- "Recent same-route rides" were the oldest five instead of the latest five; checkpoint differences are printed as signed `m:ss`.
+- Device ascent/descent stored as 0/0 (no figure written) is no longer shown as a measured `device 0/0 m`.
+- Summary types written in the answer language (for example "пороговая") are normalized to the code's labels, so the history shows `code X / model Y` only for real disagreements; the tail now lists the allowed types.
+
+### Changed
+
+- History rows are shorter: only the latest six carry the full summary (older ones keep type and advice category), the unchanged HR-profile date and `source fit` are omitted, and the explanation of AI summaries is stated once. Block budgets in the log were recalibrated to measured sizes (history 4500, training volume 3200, user context 3200, segments 1600 characters).
+
 ## 0.17.0 - 2026-10-03
 
 ### Upgrade Notes
