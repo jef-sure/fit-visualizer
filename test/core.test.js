@@ -3769,3 +3769,47 @@ test('analysis prompt requests the summary tail and storage keeps it separate fr
     db.close();
   }
 });
+
+test('every command handler used by commands.js is destructured from services and supplied by activate', () => {
+  const commandsSource = fs.readFileSync(path.join(__dirname, '..', 'commands.js'), 'utf8');
+  const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  const destructured = /const \{([^}]+)\} = services;/.exec(commandsSource)[1].split(',').map((name) => name.trim()).filter(Boolean);
+  const supplied = /registerCommands\(context, \{([^}]+)\}\)/.exec(extensionSource)[1].split(',').map((name) => name.trim()).filter(Boolean);
+  for (const name of ['rebuildDerivedFeatures', 'tidyHeartRateProfiles', 'evaluateAnalysisPrompt']) {
+    assert.ok(destructured.includes(name), `${name} destructured in commands.js`);
+    assert.ok(supplied.includes(name), `${name} supplied from activate`);
+  }
+  for (const name of destructured) assert.ok(supplied.includes(name), `${name} is supplied`);
+});
+
+test('prompt evaluation flags missing tails, class mismatches, repeated categories and foreign numbers', () => {
+  const { aggregateChecks, checkAnalysisResponse, evaluateEntries, findUnsupportedNumbers } = require('../prompt-eval');
+  const prompt = '**Heuristic Session Class (computed, revisable):**\n- Class: threshold\n- Evidence: Z4 28 %, peak20 158\n**Altitude Quality:**\n- ALT_SETTLING: start 80 m below\nDistance 20.4 km, 55:10';
+  const tail = (type, category, revised = 'none') => `\n---\nSUMMARY\ntype: ${type}\nfinding: x\nadvice_category: ${category}\nadvice: y\nopen: none\nrevised: ${revised}`;
+
+  const good = checkAnalysisResponse({ response: `Пороговая сессия, Z4 28 %, высота стартовала ниже.${tail('threshold', 'pacing')}`, prompt });
+  assert.equal(good.validTail, true);
+  assert.equal(good.detectedClass, 'threshold');
+  assert.equal(good.typeMatchesCode, true);
+  assert.equal(good.flagsMissed, 0);
+  assert.deepEqual(good.unsupportedNumbers, []);
+  assert.ok(good.cyrillicShare > 0.9);
+
+  const bad = checkAnalysisResponse({ response: 'Easy ride with 312 W average, 75 min.', prompt });
+  assert.equal(bad.validTail, false);
+  assert.deepEqual(bad.unsupportedNumbers, [312, 75]);
+  assert.equal(bad.flagsMissed, 1);
+
+  // A difference of two numbers from the same prompt line is a legitimate derivation.
+  assert.deepEqual(findUnsupportedNumbers('gap 130 bpm', 'avg 150 and max 280'), []);
+  assert.deepEqual(findUnsupportedNumbers('gap 130 bpm', 'avg 150\nmax 280'), [130]);
+
+  const mismatch = checkAnalysisResponse({ response: `Ok.${tail('endurance', 'load')}`, prompt });
+  assert.equal(mismatch.typeMatchesCode, false);
+  assert.equal(checkAnalysisResponse({ response: `Ok.${tail('endurance', 'load', 'class was wrong')}`, prompt }).typeMatchesCode, true);
+
+  const entries = [1, 2, 3, 4].map((n) => ({ file: `${n}`, prompt, response: `Answer.${tail('threshold', 'pacing')}` }));
+  const results = evaluateEntries(entries);
+  assert.deepEqual(results.map((item) => item.categoryRepeat), [false, false, false, true]);
+  assert.equal(aggregateChecks(results).categoryRepeatPct, 25);
+});

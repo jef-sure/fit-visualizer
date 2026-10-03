@@ -5,6 +5,7 @@ function registerCommands(context, services) {
   const {
     addAndBrowseManualActivity,
     escapeHtml,
+    evaluateAnalysisPrompt,
     getLocalDbPath,
     indexFitFolder,
     indexFitUris,
@@ -16,7 +17,9 @@ function registerCommands(context, services) {
     resolveActiveDbPath,
     resolveFitUri,
     selectDatabaseFolder,
+    rebuildDerivedFeatures,
     showActivityBrowserInPanel,
+    tidyHeartRateProfiles,
     updateModelPriceTable,
   } = services;
 
@@ -69,6 +72,12 @@ function registerCommands(context, services) {
     () => rebuildDerivedFeatures()
   );
 
+  const evaluatePrompt = register(
+    'fitVisualizer.evaluateAnalysisPrompt',
+    'FIT prompt evaluation failed',
+    () => evaluateAnalysisPrompt()
+  );
+
   const indexOne = register('fitVisualizer.indexOne', 'FIT DB index failed', async (resource) => {
     const targetUri = resource?.fsPath?.toLowerCase().endsWith('.fit')
       ? resource
@@ -106,7 +115,7 @@ function registerCommands(context, services) {
     }
   );
 
-  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, rebuildFeatures, updateModelPrices, customEditor];
+  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, rebuildFeatures, evaluatePrompt, updateModelPrices, customEditor];
 }
 
 function createFitEditorProvider(context, services) {
