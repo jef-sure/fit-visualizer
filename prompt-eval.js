@@ -9,7 +9,7 @@ const DEFENSIVE_PHRASES = Object.freeze([
 ]);
 
 const FLAG_KEYWORDS = Object.freeze([
-  { pattern: /ALT_(SETTLING|MISSING_START|GAP)|Altitude Quality/, words: /altitude|elevation|barometer|высот|барометр/i },
+  { pattern: /^- ALT_(SETTLING|MISSING_START|GAP):/m, words: /altitude|elevation|barometer|высот|барометр/i },
   { pattern: /TEMP_DEVICE_HOT|Device temperature/i, words: /temperature|heat|warm|температур|жар|тепл/i },
 ]);
 
