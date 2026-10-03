@@ -33,7 +33,7 @@ const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, loc
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
-const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteNote, readRoutes, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
+const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteCard, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { describeRouteFeatures } = require('./route-features');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling } = require('./altitude-quality');
@@ -167,7 +167,6 @@ function activate(context) {
     resolveFitUri,
     selectDatabaseFolder,
     showActivityBrowserInPanel,
-    editRouteNote,
     rebuildDerivedFeatures,
     tidyHeartRateProfiles,
     updateModelPriceTable,
@@ -254,44 +253,35 @@ async function rebuildDerivedFeatures() {
   }
 }
 
-// Lets the user describe a route once (climb, prevailing wind); the note joins every analysis of that route.
-async function editRouteNote() {
-  const dbPath = await resolveActiveDbPath() || await selectDatabaseFolder();
-  if (!dbPath) {
-    return;
+async function getRouteCard(dbPath, activityId) {
+  if (!activityId) return null;
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  try {
+    const card = readRouteCard(db, activityId);
+    if (!card) return null;
+    const described = card.features ? describeRouteFeatures(card.features, card.relation === 'reversed' ? 'reversed' : 'same') : null;
+    return {
+      routeId: card.routeId, name: card.name, note: card.note, rideCount: card.rideCount, relation: card.relation,
+      lengthKm: card.features?.lengthKm ?? null, ascentM: card.features?.ascentM ?? null, descentM: card.features?.descentM ?? null,
+      climbs: described?.climbs ?? [],
+    };
+  } finally {
+    db.close();
+  }
+}
+
+async function updateRoute(dbPath, { routeId, name, note }) {
+  const id = Number(routeId);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new Error('Invalid route.');
   }
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
-    const routes = readRoutes(db).filter((route) => route.ride_count >= 2 || route.note);
-    if (!routes.length) {
-      vscode.window.showInformationMessage('No repeated routes yet. Run FIT: Rebuild Derived Features or analyse a few rides first.');
-      return;
-    }
-    const pick = await vscode.window.showQuickPick(
-      routes.sort((a, b) => b.ride_count - a.ride_count).map((route) => ({
-        label: route.name,
-        description: `${route.ride_count} rides, last ${String(route.last_seen || '').slice(0, 10)}`,
-        detail: route.note || 'no note',
-        id: route.id,
-        note: route.note || '',
-      })),
-      { title: 'Route to describe' }
-    );
-    if (!pick) {
-      return;
-    }
-    const note = await vscode.window.showInputBox({
-      title: `Note for ${pick.label}`,
-      prompt: 'Terrain and conditions that apply to every ride here, e.g. "second half climbs, headwind on the way back". Empty clears the note.',
-      value: pick.note,
-    });
-    if (note === undefined) {
-      return;
-    }
-    setRouteNote(db, pick.id, note);
+    setRouteName(db, id, name);
+    setRouteNote(db, id, String(note || '').slice(0, 1000));
     await persistDatabase(db, dbPath);
-    vscode.window.showInformationMessage(note.trim() ? 'Route note saved. Re-analyze to use it in saved analyses.' : 'Route note cleared.');
   } finally {
     db.close();
   }
@@ -876,6 +866,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const analysis = selId ? await getLatestAnalysisAnyVersion(dbPath, selId) : null;
     const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
     const comparisons = selId ? await getActivityComparisonsForActivity(dbPath, selId) : [];
+    const routeCard = selId ? await getRouteCard(dbPath, selId) : null;
     const hrConfig = data
       ? await getHeartRateConfigForActivity(dbPath, data.sessions?.[0]?.start_time)
       : getHeartRateConfig();
@@ -888,7 +879,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     );
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard
     );
     translationJustGenerated = false;
     if (selId) {
@@ -906,7 +897,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     };
     const hasCompId = msg.compId != null && msg.compId !== '';
     if (['selectActivity', 'analyzeActivity', 'analysisChatTurn', 'updateActivityHeartRate',
-      'updateHeartRateProfile', 'autoCalculateHeartRateProfile', 'compareActivitiesAI', 'removeComparison']
+      'updateHeartRateProfile', 'updateRoute', 'autoCalculateHeartRateProfile', 'compareActivitiesAI', 'removeComparison']
       .includes(msg.type)) {
       if (!asActivityId(msg.id)) {
         panel.webview.postMessage({ type: 'analysisError', id: Number(msg.id), error: 'Invalid activity id.' });
@@ -1027,6 +1018,15 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         panel.webview.postMessage({ type: 'manualDataError', error: errorMsg });
+      }
+    } else if (msg.type === 'updateRoute') {
+      try {
+        await updateRoute(dbPath, msg);
+        await render(Number(msg.id), msg.compId ? Number(msg.compId) : null);
+        vscode.window.showInformationMessage('Route saved.');
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        panel.webview.postMessage({ type: 'routeError', error: errorMsg });
       }
     } else if (msg.type === 'updateHeartRateProfile') {
       try {

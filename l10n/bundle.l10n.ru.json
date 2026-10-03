@@ -192,5 +192,17 @@
   "{0} + scroll to zoom": "{0} + прокрутка для масштаба",
   "⚠ Data Quality Note:": "⚠ Важно о качестве данных:",
   "Lactate threshold HR (bpm, optional)": "Пороговый пульс lactate threshold (уд/мин, необязательно)",
-  "optional": "необязательно"
+  "optional": "необязательно",
+  "Route": "Маршрут",
+  "Route name": "Название маршрута",
+  "About this route": "О маршруте",
+  "Terrain and conditions that apply to every ride here, for example a climb in the second half or a usual headwind on the way back": "Рельеф и условия, общие для всех заездов здесь, например подъём во второй половине или привычный встречный ветер на обратном пути",
+  "Save route": "Сохранить маршрут",
+  "{0} rides on this route; this ride goes {1}": "Заездов на этом маршруте: {0}; этот заезд идёт {1}",
+  "in the direction of the first ride": "в направлении первого заезда",
+  "in the opposite direction": "в обратном направлении",
+  "over part of the route": "по части маршрута",
+  "Length {0} km, ascent about {1} m, descent about {2} m": "Длина {0} км, набор около {1} м, сброс около {2} м",
+  "Climbs in this direction: {0}": "Подъёмы в этом направлении: {0}",
+  "The note and the derived route profile are included in the AI analysis of every ride on this route. Re-analyze saved analyses to apply a changed note.": "Заметка и выведенный профиль маршрута попадают в AI-анализ каждого заезда по этому маршруту. Чтобы изменённая заметка попала в сохранённые анализы, запустите повторный анализ."
 }

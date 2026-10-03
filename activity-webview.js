@@ -33,7 +33,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
   getHrZoneIndex: getHeartRateZoneIndex,
 });
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null) {
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
   const ui = localizeUi(translate);
   const glossary = localizeGlossary(translate);
@@ -88,7 +88,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles, routeCard)
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -335,7 +335,33 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm') {
+function renderRouteCard(route, ui, mapId) {
+  const direction = route.relation === 'reversed' ? ui.routeDirectionReversed
+    : route.relation === 'partial' ? ui.routeDirectionPartial : ui.routeDirectionSame;
+  const facts = Number.isFinite(route.lengthKm)
+    ? formatUi(ui.routeFacts, route.lengthKm, route.ascentM ?? '?', route.descentM ?? '?') : '';
+  const climbs = route.climbs?.length
+    ? formatUi(ui.routeClimbs, route.climbs.map((climb) => `km ${climb.fromKm}-${climb.toKm} +${climb.gainM} m (${climb.avgGradePct}%)`).join('; ')) : '';
+  return `<section class="chart manualData">
+      <h2>${escapeHtml(ui.routeSection)}</h2>
+      <div class="muted">${escapeHtml(formatUi(ui.routeRides, route.rideCount, direction))}${facts ? `<br>${escapeHtml(facts)}` : ''}${climbs ? `<br>${escapeHtml(climbs)}` : ''}</div>
+      <form id="${mapId}RouteForm" class="manualDataForm">
+        <label>
+          <span>${escapeHtml(ui.routeNameLabel)}</span>
+          <input id="${mapId}RouteName" type="text" maxlength="80" style="width:260px;" value="${escapeHtml(route.name)}">
+        </label>
+        <label style="flex:1 1 100%;">
+          <span>${escapeHtml(ui.routeNoteLabel)}</span>
+          <textarea id="${mapId}RouteNote" rows="2" maxlength="1000" style="width:100%;box-sizing:border-box;" placeholder="${escapeHtml(ui.routeNotePlaceholder)}">${escapeHtml(route.note)}</textarea>
+        </label>
+        <button type="submit">${escapeHtml(ui.saveRoute)}</button>
+        <span id="${mapId}RouteStatus" class="manualDataStatus"></span>
+      </form>
+      <div class="mapHint">${escapeHtml(ui.routeNoteHint)}</div>
+    </section>`;
+}
+
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm', routeCard = null) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -463,6 +489,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <div id="comparisonStatus" style="margin-top:6px;font-size:0.85rem;color:var(--muted);"></div>
       </div>` : '';
 
+  const routeCardHtml = routeCard && !isComparison ? renderRouteCard(routeCard, ui, mapId) : '';
+
   return `<main class="wrap">
     <section class="hero">
       <h1>${escapeHtml(ui.fitActivity)}</h1>
@@ -498,6 +526,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     ${primaryPower.source === 'estimated' ? `<section style="padding:12px;margin-bottom:16px;background:rgba(255,193,7,0.1);border-left:4px solid #ffc107;color:var(--ink);font-size:0.95rem;line-height:1.5;">
       <strong>${escapeHtml(ui.dataQualityNoteTitle)}</strong> ${escapeHtml(ui.dataQualityNote)}
     </section>` : ''}
+    ${routeCardHtml}
     <section class="chart manualData">
       <h2>${escapeHtml(ui.manualActivityData)}</h2>
       <form id="${mapId}ManualDataForm" class="manualDataForm">
@@ -670,6 +699,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       const translationStatus = document.getElementById('translationStatus');
       const manualDataForm = document.getElementById('${mapId}ManualDataForm');
       const manualDataStatus = document.getElementById('${mapId}ManualDataStatus');
+      const routeForm = document.getElementById('${mapId}RouteForm');
+      const routeStatus = document.getElementById('${mapId}RouteStatus');
       const hrProfileForm = document.getElementById('${mapId}HrProfileForm');
       const hrProfileStatus = document.getElementById('${mapId}HrProfileStatus');
       const autoCalcZonesBtn = document.getElementById('${mapId}AutoCalcZonesBtn');
@@ -839,6 +870,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         } else if (msg.type === 'manualDataError') {
           manualDataStatus.textContent = msg.error;
           manualDataStatus.classList.add('error');
+        } else if (msg.type === 'routeError') {
+          if (routeStatus) {
+            routeStatus.textContent = msg.error;
+            routeStatus.classList.add('error');
+          }
         } else if (msg.type === 'heartRateProfileError') {
           hrProfileStatus.textContent = msg.error;
           hrProfileStatus.classList.add('error');
@@ -910,6 +946,20 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           compId: document.getElementById('compSel')?.value || null,
           avgHr: document.getElementById('${mapId}ManualAvgHr').value,
           maxHr: document.getElementById('${mapId}ManualMaxHr').value,
+        });
+      });
+
+      routeForm?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        routeStatus.textContent = ui.saving;
+        routeStatus.classList.remove('error');
+        vscode.postMessage({
+          type: 'updateRoute',
+          id: window.currentActivityId,
+          compId: document.getElementById('compSel')?.value || null,
+          routeId: ${JSON.stringify(routeCard?.routeId ?? null)},
+          name: document.getElementById('${mapId}RouteName').value,
+          note: document.getElementById('${mapId}RouteNote').value,
         });
       });
 
@@ -1879,6 +1929,7 @@ function sharedCss() {
     .manualDataForm { display:flex; align-items:end; gap:12px; flex-wrap:wrap; }
     .manualDataForm label { display:grid; gap:4px; color:var(--muted); font-size:0.82rem; }
     .manualDataForm input { width:150px; border:1px solid var(--border); border-radius:6px; padding:6px 8px; background:var(--input-bg); color:var(--input-fg); }
+    .manualDataForm textarea { border:1px solid var(--border); border-radius:6px; padding:6px 8px; background:var(--input-bg); color:var(--input-fg); font:inherit; resize:vertical; }
     .manualDataForm select { width:150px; border:1px solid var(--border); border-radius:6px; padding:6px 8px; background:var(--input-bg); color:var(--input-fg); }
     .manualDataForm button { border:0; border-radius:6px; padding:7px 14px; background:var(--accent); color:var(--bg); font-weight:700; cursor:pointer; }
     .manualDataStatus { color:var(--muted); font-size:0.82rem; align-self:center; }

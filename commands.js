@@ -4,7 +4,6 @@ const vscode = require('vscode');
 function registerCommands(context, services) {
   const {
     addAndBrowseManualActivity,
-    editRouteNote,
     escapeHtml,
     getLocalDbPath,
     indexFitFolder,
@@ -72,12 +71,6 @@ function registerCommands(context, services) {
     () => rebuildDerivedFeatures()
   );
 
-  const routeNote = register(
-    'fitVisualizer.editRouteNote',
-    'FIT route note failed',
-    () => editRouteNote()
-  );
-
   const indexOne = register('fitVisualizer.indexOne', 'FIT DB index failed', async (resource) => {
     const targetUri = resource?.fsPath?.toLowerCase().endsWith('.fit')
       ? resource
@@ -115,7 +108,7 @@ function registerCommands(context, services) {
     }
   );
 
-  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, rebuildFeatures, routeNote, updateModelPrices, customEditor];
+  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, rebuildFeatures, updateModelPrices, customEditor];
 }
 
 function createFitEditorProvider(context, services) {

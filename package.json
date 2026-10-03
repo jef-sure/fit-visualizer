@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.18.2",
+  "version": "0.18.3",
   "description": "FIT file viewer and analyzer: charts, map, climb/descent segments, heart-rate zones, ride history and AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
@@ -66,10 +66,6 @@
       {
         "command": "fitVisualizer.rebuildDerivedFeatures",
         "title": "FIT: Rebuild Derived Features"
-      },
-      {
-        "command": "fitVisualizer.editRouteNote",
-        "title": "FIT: Edit Route Note"
       },
       {
         "command": "fitVisualizer.updateModelPrices",

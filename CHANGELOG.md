@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.3 - 2026-10-03
+
+### Added
+
+- **Route card on the activity page**: for a ride on a repeated route, a "Route" section shows the number of rides, the direction of this ride relative to the first one, length, ascent/descent and the climbs derived from the data, with an editable route name and a note about the route (terrain, usual wind). The note is included in the AI analysis of every ride on that route; re-analyze saved analyses to apply a changed note. The derived figures appear after the first analysis of a ride on that route.
+
+### Removed
+
+- The **FIT: Edit Route Note** palette command (quick pick plus input box); the same note is edited in the route card next to the ride it describes.
+
 ## 0.18.2 - 2026-10-03
 
 ### Removed

@@ -192,5 +192,17 @@
   "{0} + scroll to zoom": "{0} + scroll to zoom",
   "⚠ Data Quality Note:": "⚠ Data Quality Note:",
   "Lactate threshold HR (bpm, optional)": "Lactate threshold HR (bpm, optional)",
-  "optional": "optional"
+  "optional": "optional",
+  "Route": "Route",
+  "Route name": "Route name",
+  "About this route": "About this route",
+  "Terrain and conditions that apply to every ride here, for example a climb in the second half or a usual headwind on the way back": "Terrain and conditions that apply to every ride here, for example a climb in the second half or a usual headwind on the way back",
+  "Save route": "Save route",
+  "{0} rides on this route; this ride goes {1}": "{0} rides on this route; this ride goes {1}",
+  "in the direction of the first ride": "in the direction of the first ride",
+  "in the opposite direction": "in the opposite direction",
+  "over part of the route": "over part of the route",
+  "Length {0} km, ascent about {1} m, descent about {2} m": "Length {0} km, ascent about {1} m, descent about {2} m",
+  "Climbs in this direction: {0}": "Climbs in this direction: {0}",
+  "The note and the derived route profile are included in the AI analysis of every ride on this route. Re-analyze saved analyses to apply a changed note.": "The note and the derived route profile are included in the AI analysis of every ride on this route. Re-analyze saved analyses to apply a changed note."
 }

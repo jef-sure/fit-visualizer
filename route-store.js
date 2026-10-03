@@ -235,6 +235,29 @@ function setRouteNote(db, routeId, note) {
   db.run('UPDATE routes SET note = ? WHERE id = ?', [String(note || '').trim() || null, routeId]);
 }
 
+function setRouteName(db, routeId, name) {
+  const clean = String(name || '').trim().slice(0, 80);
+  if (clean) db.run('UPDATE routes SET name = ? WHERE id = ?', [clean, routeId]);
+}
+
+// Everything the activity page shows about the route of one ride; features come from the cache only.
+function readRouteCard(db, activityId) {
+  const assignment = readAssignment(db, activityId);
+  if (!assignment?.routeId) return null;
+  const stmt = db.prepare('SELECT id, name, note, ride_count, features_json FROM routes WHERE id = ?');
+  try {
+    stmt.bind([assignment.routeId]);
+    if (!stmt.step()) return null;
+    const row = stmt.getAsObject();
+    if (!(row.ride_count >= 2) && !row.note) return null;
+    const features = safeJson(row.features_json)?.features || null;
+    return { routeId: row.id, name: row.name || '', note: row.note || '', rideCount: row.ride_count,
+      relation: assignment.relation, features };
+  } finally {
+    stmt.free();
+  }
+}
+
 function readRouteNote(db, routeId) {
   const stmt = db.prepare('SELECT note FROM routes WHERE id = ?');
   try {
@@ -309,9 +332,11 @@ module.exports = {
   ensureRouteElevationProfile,
   ensureRouteFeatures,
   readAssignment,
+  readRouteCard,
   readRouteNote,
   readRouteAssignments,
   readRoutes,
+  setRouteName,
   setRouteNote,
   summarizeCheckpoints,
   summarizeRoutePattern,

@@ -3800,7 +3800,7 @@ test('every command handler used by commands.js is destructured from services an
   const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   const destructured = /const \{([^}]+)\} = services;/.exec(commandsSource)[1].split(',').map((name) => name.trim()).filter(Boolean);
   const supplied = /registerCommands\(context, \{([^}]+)\}\)/.exec(extensionSource)[1].split(',').map((name) => name.trim()).filter(Boolean);
-  for (const name of ['rebuildDerivedFeatures', 'tidyHeartRateProfiles', 'editRouteNote']) {
+  for (const name of ['rebuildDerivedFeatures', 'tidyHeartRateProfiles']) {
     assert.ok(destructured.includes(name), `${name} destructured in commands.js`);
     assert.ok(supplied.includes(name), `${name} supplied from activate`);
   }
@@ -4002,4 +4002,27 @@ test('route profile block lists climbs, section speeds and direction effects, an
   } finally {
     db.close();
   }
+});
+
+test('activity page shows an editable route card only for a repeated route and wires its save message', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const fitData = { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] };
+  const render = (routeCard) => renderActivityContentHtml(
+    {}, {}, fitData, null, 'n', false, null, {}, null, [], null, UI_STRINGS, GLOSSARY, false, 'en',
+    [], null, [], null, false, 'osm', routeCard);
+  const html = render({ routeId: 2, name: 'Home loop', note: 'climb <b>late</b>', rideCount: 36, relation: 'reversed',
+    lengthKm: 20.4, ascentM: 117, descentM: 118, climbs: [{ fromKm: 19.8, toKm: 20.4, gainM: 35, avgGradePct: 5.6 }] });
+  assert.match(html, />Route<\/h2>/);
+  assert.match(html, /36 rides on this route; this ride goes in the opposite direction/);
+  assert.match(html, /Length 20\.4 km, ascent about 117 m, descent about 118 m/);
+  assert.match(html, /km 19\.8-20\.4 \+35 m \(5\.6%\)/);
+  assert.match(html, /value="Home loop"/);
+  assert.match(html, /climb &lt;b&gt;late&lt;\/b&gt;<\/textarea>/, 'the note is escaped');
+  assert.match(html, /type: 'updateRoute'[\s\S]*routeId: 2,/);
+  assert.doesNotMatch(render(null), /<form id="fitMapRouteForm"/);
+  assert.match(html, /<form id="fitMapRouteForm"/);
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /'updateHeartRateProfile', 'updateRoute',/, 'activity id is validated for route saves');
+  assert.match(source, /msg\.type === 'routeError'|type: 'routeError'/);
 });

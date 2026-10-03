@@ -14,7 +14,7 @@ Run **FIT: Re-analyze Outdated Analyses** (analysis format 24). Re-indexing is n
 
 ### To 0.18.0
 
-Run **FIT: Re-analyze Outdated Analyses** (analysis format 23). Optional: run **FIT: Edit Route Note** first to describe repeated routes; the note is included in every analysis of that route.
+Run **FIT: Re-analyze Outdated Analyses** (analysis format 23).
 
 ### To 0.17.1
 
@@ -177,7 +177,6 @@ How to get `.fit` files off common devices:
 - FIT: Re-analyze Outdated Analyses — processes all activities with outdated or missing analyses in one chronological batch, after confirming the total number of Copilot requests; current analyses are left unchanged
 - FIT: Tidy Heart-Rate Profiles — previews consecutive duplicate dated zone profiles, removes them on confirmation, and lists max-HR flips worth reviewing
 - FIT: Rebuild Derived Features — recomputes and caches segments, zones, peaks, session classes and load metrics for every stored activity; used after changing segmentation or power settings
-- FIT: Edit Route Note — describe a repeated route once (terrain, prevailing wind); the note is added to every analysis of that route
 - FIT: Update Model Prices — downloads the official GitHub Copilot token-price table and saves it locally for subsequent analyses; no Copilot request is made
 
 Right-click a `.fit` file in the Explorer for two shortcuts to the commands above — **Visualize File** and **Index This File** — nothing else is added there; segmentation, analysis, and everything else still happens inside the visual editor once the file is open.
