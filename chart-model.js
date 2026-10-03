@@ -23,11 +23,12 @@ function buildLineChart(records, xField, yField, width, height, maxPoints, optio
   return chart;
 }
 
-function buildGpsRoute(records, width, height, maxPoints) {
+function buildGpsRoute(records, width, height, maxPoints, options = {}) {
+  const noPointsText = String(options.noPointsText || 'no GPS points available');
   const gpsPoints = downsamplePoints(extractGpsPoints(records), maxPoints);
   const route = buildCartesianGeometry(gpsPoints, width, height, { left: 60, right: 18, top: 12, bottom: 36 });
   return { ...route, pointCount: gpsPoints.length,
-    boundsText: route.points.length ? `lat ${formatTick(route.yMin, route.yStep)}..${formatTick(route.yMax, route.yStep)}, lon ${formatTick(route.xMin, route.xStep)}..${formatTick(route.xMax, route.xStep)}` : 'no GPS points available',
+    boundsText: route.points.length ? `lat ${formatTick(route.yMin, route.yStep)}..${formatTick(route.yMax, route.yStep)}, lon ${formatTick(route.xMin, route.xStep)}..${formatTick(route.xMax, route.xStep)}` : noPointsText,
     routeDistanceKm: computeRouteDistanceKm(gpsPoints), speedStats: computeStats(gpsPoints.map((point) => point.speed).filter(Number.isFinite)), hrStats: computeStats(gpsPoints.map((point) => point.heart_rate).filter(Number.isFinite)),
     geoPoints: gpsPoints.map((point) => ({
       lat: point.y,

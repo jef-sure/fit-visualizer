@@ -95,7 +95,7 @@
   "Male": "Мужчина",
   "Manual Activity Data": "Ручные данные активности",
   "Manual distance, duration and elevation are used in analysis. Manually entered HR overrides are not sent to AI; a heart-rate chart requires time-series samples.": "Вручную введённые дистанция, длительность и набор высоты учитываются в анализе. Ручные значения пульса в AI не отправляются; для графика пульса нужен ряд измерений.",
-  "Map library failed to load. Run npm install in fit-visualizer.": "Не удалось загрузить библиотеку карты. Выполните npm install в fit-visualizer.",
+  "Map library failed to load. Run npm install in fit-visualizer.": "Не удалось загрузить библиотеку карты. Запустите npm install в папке fit-visualizer.",
   "Map tiles from OpenStreetMap.": "Картографические данные OpenStreetMap.",
   "Offline map: route only, no tile requests.": "Автономная карта: только маршрут, без загрузки тайлов.",
   "Max": "Макс.",

@@ -401,7 +401,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   });
   const hrZones = computeHeartRateZones(records, hrConfig?.maxHeartRate, hrConfig?.thresholds);
   const gpsRoutePointBudget = Math.min(6000, Math.max(1200, records.length));
-  const gpsRoute = buildGpsRouteFromModule(records, 1400, 420, gpsRoutePointBudget);
+  const gpsRoute = buildGpsRouteFromModule(records, 1400, 420, gpsRoutePointBudget, { noPointsText: ui.noGpsPoints });
   const compGpsPoints = hasOverlay ? safeJson(extractGpsPoints(compRecords).slice(0, gpsRoutePointBudget).map((p) => ({ lat: p.y, lon: p.x }))) : 'null';
 
   const mapPayload = safeJson(gpsRoute.geoPoints);
@@ -1130,8 +1130,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       if (!window.L || !hasRoute) {
         if (mapEl) {
           let reason = !window.L
-            ? 'Map library failed to load. Run npm install in fit-visualizer.'
-            : 'No GPS points found in this FIT file.';
+            ? ui.mapLibraryMissing
+            : ui.noGpsPoints;
           mapEl.innerHTML = '<div style="padding:12px;color:var(--muted)">' + reason + '</div>';
         }
       } else {

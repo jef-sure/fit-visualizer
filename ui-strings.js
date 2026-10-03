@@ -118,6 +118,7 @@ const UI_STRINGS = {
   technical: 'Technical descent',
   mapTiles: 'Map tiles from OpenStreetMap.',
   mapTilesOffline: 'Offline map: route only, no tile requests.',
+  mapLibraryMissing: 'Map library failed to load. Run npm install in fit-visualizer.',
   aiAnalysis: 'AI Analysis',
   loadingAnalysis: 'Loading analysis...',
   analyzeActivity: 'Analyze Activity',

@@ -717,6 +717,26 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
   }
 
   panel.webview.onDidReceiveMessage(async (msg) => {
+    // Every branch that names an activity expects a positive integer id; anything else
+    // (or a missing compId where one is required) is rejected up front instead of
+    // turning into NaN lookups deep inside the DB layer.
+    const asActivityId = (value) => {
+      const id = Number(value);
+      return Number.isInteger(id) && id > 0 ? id : null;
+    };
+    const hasCompId = msg.compId != null && msg.compId !== '';
+    if (['selectActivity', 'analyzeActivity', 'analysisChatTurn', 'updateActivityHeartRate',
+      'updateHeartRateProfile', 'autoCalculateHeartRateProfile', 'compareActivitiesAI', 'removeComparison']
+      .includes(msg.type)) {
+      if (!asActivityId(msg.id)) {
+        panel.webview.postMessage({ type: 'analysisError', id: Number(msg.id), error: 'Invalid activity id.' });
+        return;
+      }
+    }
+    if (['compareActivitiesAI', 'removeComparison'].includes(msg.type) && !asActivityId(msg.compId)) {
+      panel.webview.postMessage({ type: 'comparisonError', id: Number(msg.id), compId: Number(msg.compId), error: 'Invalid comparison activity id.' });
+      return;
+    }
     if (msg.type === 'selectActivity') {
       await render(msg.id ? Number(msg.id) : null, msg.compId ? Number(msg.compId) : null);
     } else if (msg.type === 'generateTranslations') {
