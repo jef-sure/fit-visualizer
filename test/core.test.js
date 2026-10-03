@@ -3716,3 +3716,56 @@ test('altitude quality block lists flags and the route elevation line', () => {
   assert.match(text, /ALT_SETTLING: recorded altitude starts 80 m below/);
   assert.match(text, /ascent ~115 m/);
 });
+
+test('analysis summary tail is parsed tolerantly and cut from the displayed text', () => {
+  const { parseAnalysisSummary, describeAnalysisForHistory } = require('../analysis-summary');
+  const clean = parseAnalysisSummary(`Main answer.\n\nSecond paragraph.\n\n---\nSUMMARY\ntype: threshold\nfinding: HR drift 142→157 on the 34-min flat\nadvice_category: pacing\nadvice: start the flat 1–2 km/h slower\nopen: none\nrevised: none`);
+  assert.equal(clean.body, 'Main answer.\n\nSecond paragraph.');
+  assert.deepEqual(clean.summary, { type: 'threshold', finding: 'HR drift 142→157 on the 34-min flat', adviceCategory: 'pacing', advice: 'start the flat 1–2 km/h slower', open: null, revised: null });
+
+  // Markdown decoration, case, a category with extras and missing fields.
+  const messy = parseAnalysisSummary('Answer.\n\n**SUMMARY**\n- **Type:** Tempo\n- **Advice category:** `Load` (or pacing)\n- **Advice:** add one easy day\n- **Revised:** earlier heat hypothesis');
+  assert.equal(messy.body, 'Answer.');
+  assert.equal(messy.summary.type, 'Tempo');
+  assert.equal(messy.summary.adviceCategory, 'load');
+  assert.equal(messy.summary.finding, null);
+  assert.equal(messy.summary.revised, 'earlier heat hypothesis');
+
+  // No tail, or a header with no usable fields, keeps the whole text.
+  assert.deepEqual(parseAnalysisSummary('Just an answer.'), { body: 'Just an answer.', summary: null });
+  assert.equal(parseAnalysisSummary('Answer.\nSUMMARY\nnothing useful').summary, null);
+  assert.equal(parseAnalysisSummary('Answer.\nSUMMARY\nnothing useful').body, 'Answer.\nSUMMARY\nnothing useful');
+
+  assert.equal(describeAnalysisForHistory(clean.summary, null, 'tempo'),
+    'type: code tempo / model threshold; finding: HR drift 142→157 on the 34-min flat; advice[pacing]: start the flat 1–2 km/h slower');
+  assert.match(describeAnalysisForHistory(null, 'x'.repeat(900)), /^x{400}…$/);
+});
+
+test('history carries structured summaries and recent advice categories', () => {
+  const summary = (category, advice) => ({ type: 'endurance', finding: 'steady', adviceCategory: category, advice, open: null, revised: null });
+  const entries = [
+    { startTime: '2026-08-01T10:00:00.000Z', distanceKm: 20, analysisText: 'Old long text '.repeat(100), analysisSummary: summary('pacing', 'go slower') },
+    { startTime: '2026-08-02T10:00:00.000Z', distanceKm: 21, analysisSummary: summary('pacing', 'pace the climb') },
+    { startTime: '2026-08-03T10:00:00.000Z', distanceKm: 22, analysisSummary: summary('none', 'nothing') },
+  ];
+  const text = buildRecentHistoryContext(entries);
+  assert.match(text, /Prior AI summary \(hypothesis, not evidence; relative dates refer to activity 2026-08-01\): type: endurance; finding: steady; advice\[pacing\]: go slower/);
+  assert.doesNotMatch(text, /Old long text/);
+  assert.match(text, /Recent advice categories \(oldest first\): pacing, pacing\./);
+  assert.doesNotMatch(buildRecentHistoryContext([{ startTime: '2026-08-01T10:00:00.000Z', distanceKm: 5 }]), /Recent advice categories/);
+});
+
+test('analysis prompt requests the summary tail and storage keeps it separate from the text', async () => {
+  const { SUMMARY_TAIL_INSTRUCTION } = require('../analysis-summary');
+  const prompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [] }, null, null, null, [], [], 'en');
+  assert.ok(prompt.includes(SUMMARY_TAIL_INSTRUCTION));
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const columns = db.exec('PRAGMA table_info(activity_analysis)')[0].values.map((row) => row[1]);
+    assert.ok(columns.includes('summary_json'));
+  } finally {
+    db.close();
+  }
+});

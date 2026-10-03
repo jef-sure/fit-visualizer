@@ -34,6 +34,7 @@ const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
 const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, readRouteAssignments, summarizeCheckpoints } = require('./route-store');
+const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling } = require('./altitude-quality');
 const { buildRouteSignature } = require('./route-match');
 
@@ -1672,7 +1673,7 @@ async function runActivityAnalysis(dbPath, activityId, force) {
   const prompt = generateAnalysisPrompt(
     analysisData, summary, hrConfig, previousAnalysis, followUpHistory, recentHistory, vscode.env.language
   );
-  const analysis = await requestCopilotAnalysis(vscode, prompt, {
+  const rawAnalysis = await requestCopilotAnalysis(vscode, prompt, {
     vendor: getLanguageModelVendor(),
     preferCheapModel: getPreferCheapAnalysisModel(),
     modelId: getAnalysisModelId(),
@@ -1684,7 +1685,9 @@ async function runActivityAnalysis(dbPath, activityId, force) {
       ...result,
     }),
   });
-  await storeAnalysisInDb(dbPath, numId, analysis);
+  // The SUMMARY tail feeds later prompts; the displayed text never carries it.
+  const { body: analysis, summary: analysisSummary } = parseAnalysisSummary(rawAnalysis);
+  await storeAnalysisInDb(dbPath, numId, analysis, analysisSummary);
   const warnings = segmentBudgetWarnings(analysisData);
   for (const warning of warnings) {
     reportAnalysisWarning(`Activity ${numId}: ${warning.text}`, warning.severity);
@@ -2577,7 +2580,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   };
   const selected = readRows('SELECT * FROM activities WHERE id = ?', [activityId])[0];
   if (!selected?.start_time) return null;
-  const rows = readRows(`SELECT a.*, aa.analysis_text, aa.analysis_version, aac.chat_json
+  const rows = readRows(`SELECT a.*, aa.analysis_text, aa.analysis_version, aa.summary_json, aac.chat_json
     FROM activities a LEFT JOIN activity_analysis aa ON aa.activity_id = a.id
     LEFT JOIN activity_analysis_chat aac ON aac.activity_id = a.id
     WHERE datetime(a.start_time) < datetime(?) AND datetime(a.start_time) >= datetime(?, '-90 days')
@@ -2713,6 +2716,8 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       source: row.source,
       analysisText: row.source === 'fit' && row.analysis_version >= ANALYSIS_VERSION && row.manual_avg_hr == null && row.manual_max_hr == null
         ? row.analysis_text : null,
+      analysisSummary: row.source === 'fit' && row.analysis_version >= ANALYSIS_VERSION && row.manual_avg_hr == null && row.manual_max_hr == null
+        ? parseStoredSummary(row.summary_json) : null,
       analysisVersion: row.analysis_version,
     };
     return attachActivityZones(activity, detail?.records || [], detail?.hrConfig);
@@ -2826,19 +2831,20 @@ function buildRouteContext(currentData, activities, selected) {
   };
 }
 
-async function storeAnalysisInDb(dbPath, activityId, analysis) {
+async function storeAnalysisInDb(dbPath, activityId, analysis, summary = null) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
     const now = new Date().toISOString();
     db.run(`
-      INSERT INTO activity_analysis (activity_id, analysis_text, analysis_version, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO activity_analysis (activity_id, analysis_text, analysis_version, summary_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(activity_id) DO UPDATE SET
         analysis_text = excluded.analysis_text,
         analysis_version = excluded.analysis_version,
+        summary_json = excluded.summary_json,
         updated_at = excluded.updated_at
-    `, [activityId, analysis, ANALYSIS_VERSION, now, now]);
+    `, [activityId, analysis, ANALYSIS_VERSION, summary ? JSON.stringify(summary) : null, now, now]);
     await persistDatabase(db, dbPath);
   } finally {
     db.close();

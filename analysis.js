@@ -2,6 +2,7 @@ const { formatHms, groupSimilarSegments, segmentLineBudget, collapseShortStops }
 const { calculatePeakHeartRates, computeHeartRateZones } = require('./heart-rate');
 const { localClock, localDate } = require('./activity-time');
 const { rankModelsByCost } = require('./model-pricing');
+const { SUMMARY_TAIL_INSTRUCTION, describeAnalysisForHistory } = require('./analysis-summary');
 
 function formatPositive(value, digits) {
   const num = Number(value);
@@ -191,12 +192,19 @@ function buildRecentHistoryContext(entries, options = {}) {
       entry.hrProfileDate ? `HR profile ${entry.hrProfileDate}` : null,
       entry.source ? `source ${entry.source}` : null,
     ]);
-    const interpretation = index >= detailedFrom && String(entry.analysisText || '').trim()
-      ? `\n  Prior AI hypothesis (not evidence), relative dates refer to activity ${date}, not the current activity: ${String(entry.analysisText).trim()}` : '';
+    const hasSummary = entry.analysisSummary && (entry.analysisSummary.finding || entry.analysisSummary.advice || entry.analysisSummary.type);
+    const interpretation = hasSummary
+      ? `\n  Prior AI summary (hypothesis, not evidence; relative dates refer to activity ${date}): ${describeAnalysisForHistory(entry.analysisSummary, null, entry.sessionClass?.label)}`
+      : index >= detailedFrom && String(entry.analysisText || '').trim()
+        ? `\n  Prior AI hypothesis (not evidence), relative dates refer to activity ${date}, not the current activity: ${describeAnalysisForHistory(null, entry.analysisText)}` : '';
     return `${date}: ${summary || 'no numeric summary'}${interpretation}`;
   });
 
-  return `**Recent Activity History (earlier workouts, oldest first):**\n${rendered.join('\n\n')}`;
+  const categories = list.map((entry) => entry.analysisSummary?.adviceCategory).filter((category) => category && category !== 'none');
+  const categoryLine = categories.length
+    ? `\n\nRecent advice categories (oldest first): ${categories.slice(-6).join(', ')}. Choose a different category for the practical step unless this activity's data requires repeating; if repeating, state what changed. Use "revised" to retract an earlier hypothesis.`
+    : '';
+  return `**Recent Activity History (earlier workouts, oldest first):**\n${rendered.join('\n\n')}${categoryLine}`;
 }
 
 function formatConversation(history) {
@@ -767,7 +775,9 @@ ${evidenceRules}
 4. **Practical Next Step**: Recommend the option best supported by the observed pattern and dated user context, with the reason. Choose what this activity most informs: execution (pacing, climbs, starts, stops), route or format choice, data capture, or next-session load. If recent analyses already gave the same load advice and the pattern is unchanged, do not restate it; pick another relevant point. Add an alternative only if a specific plausible circumstance would change the advice; do not branch on hypothetical goals by default. Not a universal progression plan.
 
 Provide a concise, actionable analysis with 2-4 sentences per section. Explain implications rather than merely retelling the input. Do not fill unsupported topics with boilerplate or mandatory recovery claims.
-${responseLanguageInstruction(locale)}`;
+${responseLanguageInstruction(locale)}
+
+${SUMMARY_TAIL_INSTRUCTION}`;
 }
 
 function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, baseAnalysis, history, userQuestion, locale) {
