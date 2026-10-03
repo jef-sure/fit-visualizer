@@ -159,6 +159,9 @@ function buildSegmentContext(segments, options = {}) {
   };
 }
 
+// Older entries keep only type and advice category; the latest ones carry the full summary.
+const SUMMARY_DETAIL_ENTRIES = 6;
+
 function buildRecentHistoryContext(entries, options = {}) {
   const list = Array.isArray(entries) ? entries : [];
   if (!list.length) {
@@ -189,12 +192,12 @@ function buildRecentHistoryContext(entries, options = {}) {
       entry.trimp != null ? `TRIMP ${Number(entry.trimp).toFixed(0)}` : null,
       classText,
       entry.elevationM != null ? `ascent ${Number(entry.elevationM).toFixed(0)} m` : null,
-      entry.hrProfileDate ? `HR profile ${entry.hrProfileDate}` : null,
-      entry.source ? `source ${entry.source}` : null,
+      entry.hrProfileDate && entry.hrProfileDate !== list[index - 1]?.hrProfileDate ? `HR profile ${entry.hrProfileDate}` : null,
+      entry.source && entry.source !== 'fit' ? `source ${entry.source}` : null,
     ]);
     const hasSummary = entry.analysisSummary && (entry.analysisSummary.finding || entry.analysisSummary.advice || entry.analysisSummary.type);
     const interpretation = hasSummary
-      ? `\n  Prior AI summary (hypothesis, not evidence; relative dates refer to activity ${date}): ${describeAnalysisForHistory(entry.analysisSummary, null, entry.sessionClass?.label)}`
+      ? `\n  AI summary: ${describeAnalysisForHistory(entry.analysisSummary, null, entry.sessionClass?.label, { brief: index < list.length - SUMMARY_DETAIL_ENTRIES })}`
       : index >= detailedFrom && String(entry.analysisText || '').trim()
         ? `\n  Prior AI hypothesis (not evidence), relative dates refer to activity ${date}, not the current activity: ${describeAnalysisForHistory(null, entry.analysisText)}` : '';
     return `${date}: ${summary || 'no numeric summary'}${interpretation}`;
@@ -204,7 +207,10 @@ function buildRecentHistoryContext(entries, options = {}) {
   const categoryLine = categories.length
     ? `\n\nRecent advice categories (oldest first): ${categories.slice(-6).join(', ')}. Choose a different category for the practical step unless this activity's data requires repeating; if repeating, state what changed. Use "revised" to retract an earlier hypothesis.`
     : '';
-  return `**Recent Activity History (earlier workouts, oldest first):**\n${rendered.join('\n\n')}${categoryLine}`;
+  const summaryNote = list.some((entry) => entry.analysisSummary)
+    ? 'Lines marked "AI summary" are earlier model hypotheses, not evidence; their relative dates refer to that activity\'s own date. An unchanged HR profile date is shown only where it starts.\n'
+    : '';
+  return `**Recent Activity History (earlier workouts, oldest first):**\n${summaryNote}${rendered.join('\n\n')}${categoryLine}`;
 }
 
 function formatConversation(history) {
@@ -494,9 +500,9 @@ function describeLanguageModelError(vscode, error) {
 // Character budgets per block (reference: a ~1 h, 1 Hz ride). Matching is by heading prefix; the
 // log shows budget/actual and an overshoot is reported as a warning, never truncated.
 const PROMPT_BLOCK_BUDGETS = Object.freeze([
-  ['This Workout', 1500], ['Segment Breakdown', 1000], ['Same-Route Context', 1500], ['Heuristic Session Class', 400],
-  ['Time in Heart-Rate Zones', 900], ['Peak Sustained', 900], ['Recent Activity History', 3400],
-  ['Training Volume and Covered Intensity', 1200], ['Dated User Context', 2000], ['Principles', 4000],
+  ['This Workout', 1500], ['Segment Breakdown', 1600], ['Same-Route Context', 1500], ['Heuristic Session Class', 400],
+  ['Time in Heart-Rate Zones', 900], ['Peak Sustained', 900], ['Recent Activity History', 4500],
+  ['Training Volume and Covered Intensity', 3200], ['Dated User Context', 3200], ['Principles', 4000],
   ['Questions for Analysis', 1800],
 ]);
 

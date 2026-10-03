@@ -1,7 +1,7 @@
 // Offline checks for analysis responses (B9). Pure module: used by the dev command
 // "FIT: Evaluate Analysis Prompt" and by scripts/prompt-eval/check.js on saved runs or LLM logs.
 
-const { parseAnalysisSummary } = require('./analysis-summary');
+const { normalizeSessionType, parseAnalysisSummary } = require('./analysis-summary');
 
 const DEFENSIVE_PHRASES = Object.freeze([
   'не доказывает', 'не подтверждает', 'не позволяет', 'не установлен', 'маршрут не подтвержд',
@@ -47,8 +47,7 @@ function checkAnalysisResponse({ response, prompt, previousCategories = [], code
   const detectedClass = codeClass || /Heuristic Session Class[^\n]*\n-\s*Class:\s*([^\n]+)/i.exec(prompt || '')?.[1]?.trim() || null;
   const typeMatchesCode = !detectedClass || !summary?.type
     ? null
-    : Boolean(summary.revised) || summary.type.toLowerCase().includes(detectedClass.toLowerCase().split(/[/ ]/)[0])
-      || detectedClass.toLowerCase().includes(summary.type.toLowerCase());
+    : Boolean(summary.revised) || normalizeSessionType(summary.type) === normalizeSessionType(detectedClass);
   const lastThree = previousCategories.filter(Boolean).slice(-3);
   const categoryRepeat = Boolean(summary?.adviceCategory) && summary.adviceCategory !== 'none'
     && lastThree.length === 3 && lastThree.every((category) => category === summary.adviceCategory) && !summary.revised;

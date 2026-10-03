@@ -5,11 +5,31 @@
 const ADVICE_CATEGORIES = Object.freeze(['pacing', 'load', 'route', 'data', 'recovery', 'technique', 'none']);
 const SUMMARY_KEYS = Object.freeze(['type', 'finding', 'advice_category', 'advice', 'open', 'revised']);
 const FALLBACK_CHARS = 400;
+const SESSION_TYPES = Object.freeze(['recovery', 'endurance', 'tempo', 'threshold', 'vo2max/anaerobic', 'mixed', 'unstructured', 'undetermined']);
+
+// Stems of the response languages seen in practice; unknown wording is kept as written.
+const TYPE_STEMS = Object.freeze([
+  [/неструктур|unstructured|свободн/, 'unstructured'],
+  [/неопредел|undetermined|indeterminate/, 'undetermined'],
+  [/восстанов|recovery/, 'recovery'],
+  [/выносливост|endurance|aerobic base/, 'endurance'],
+  [/пороговая|пороговый|пороговое|порогов|threshold/, 'threshold'],
+  [/vo2|анаэроб|anaerobic/, 'vo2max/anaerobic'],
+  [/смешан|mixed/, 'mixed'],
+  [/темпо|tempo/, 'tempo'],
+]);
+
+function normalizeSessionType(value) {
+  const text = stripDecoration(value).toLowerCase();
+  if (!text) return null;
+  const hit = TYPE_STEMS.find(([pattern]) => pattern.test(text));
+  return hit ? hit[1] : text;
+}
 
 const SUMMARY_TAIL_INSTRUCTION = `After the answer, end with this tail exactly, in English regardless of the answer language, one line per field and nothing after it:
 ---
 SUMMARY
-type: <session type in one or two words>
+type: <one of: ${SESSION_TYPES.join(' | ')}>
 finding: <the single most important observation with its number>
 advice_category: <one of: ${ADVICE_CATEGORIES.join(' | ')}>
 advice: <the practical step in one short sentence>
@@ -62,7 +82,7 @@ function parseAnalysisSummary(text) {
   return {
     body,
     summary: {
-      type: fields.type || null,
+      type: normalizeSessionType(fields.type),
       finding: fields.finding || null,
       adviceCategory: normalizeCategory(fields.advice_category),
       advice: fields.advice || null,
@@ -74,12 +94,13 @@ function parseAnalysisSummary(text) {
 
 // History line for an earlier activity: structured summary when stored, otherwise the opening of
 // its analysis text.
-function describeAnalysisForHistory(summary, analysisText, classLabel) {
+function describeAnalysisForHistory(summary, analysisText, classLabel, { brief = false } = {}) {
   if (summary && (summary.finding || summary.advice || summary.type)) {
     const typeText = summary.type
       ? (classLabel && classLabel.toLowerCase() !== summary.type.toLowerCase()
         ? `type: code ${classLabel} / model ${summary.type}` : `type: ${summary.type}`)
       : null;
+    if (brief) return [typeText, summary.adviceCategory && summary.adviceCategory !== 'none' ? `advice[${summary.adviceCategory}]` : null].filter(Boolean).join('; ');
     return [
       typeText,
       summary.finding ? `finding: ${summary.finding}` : null,
@@ -104,6 +125,8 @@ function parseStoredSummary(json) {
 
 module.exports = {
   ADVICE_CATEGORIES,
+  SESSION_TYPES,
+  normalizeSessionType,
   FALLBACK_CHARS,
   SUMMARY_TAIL_INSTRUCTION,
   describeAnalysisForHistory,

@@ -3750,7 +3750,7 @@ test('analysis summary tail is parsed tolerantly and cut from the displayed text
   // Markdown decoration, case, a category with extras and missing fields.
   const messy = parseAnalysisSummary('Answer.\n\n**SUMMARY**\n- **Type:** Tempo\n- **Advice category:** `Load` (or pacing)\n- **Advice:** add one easy day\n- **Revised:** earlier heat hypothesis');
   assert.equal(messy.body, 'Answer.');
-  assert.equal(messy.summary.type, 'Tempo');
+  assert.equal(messy.summary.type, 'tempo');
   assert.equal(messy.summary.adviceCategory, 'load');
   assert.equal(messy.summary.finding, null);
   assert.equal(messy.summary.revised, 'earlier heat hypothesis');
@@ -3773,7 +3773,8 @@ test('history carries structured summaries and recent advice categories', () => 
     { startTime: '2026-08-03T10:00:00.000Z', distanceKm: 22, analysisSummary: summary('none', 'nothing') },
   ];
   const text = buildRecentHistoryContext(entries);
-  assert.match(text, /Prior AI summary \(hypothesis, not evidence; relative dates refer to activity 2026-08-01\): type: endurance; finding: steady; advice\[pacing\]: go slower/);
+  assert.match(text, /AI summary: type: endurance; finding: steady; advice\[pacing\]: go slower/);
+  assert.match(text, /earlier model hypotheses, not evidence/);
   assert.doesNotMatch(text, /Old long text/);
   assert.match(text, /Recent advice categories \(oldest first\): pacing, pacing\./);
   assert.doesNotMatch(buildRecentHistoryContext([{ startTime: '2026-08-01T10:00:00.000Z', distanceKm: 5 }]), /Recent advice categories/);
@@ -3836,4 +3837,28 @@ test('prompt evaluation flags missing tails, class mismatches, repeated categori
   const results = evaluateEntries(entries);
   assert.deepEqual(results.map((item) => item.categoryRepeat), [false, false, false, true]);
   assert.equal(aggregateChecks(results).categoryRepeatPct, 25);
+});
+
+test('summary types are normalized across languages and older history entries are brief', () => {
+  const { normalizeSessionType, parseAnalysisSummary, describeAnalysisForHistory } = require('../analysis-summary');
+  assert.equal(normalizeSessionType('Пороговая'), 'threshold');
+  assert.equal(normalizeSessionType('темповая'), 'tempo');
+  assert.equal(normalizeSessionType('выносливость'), 'endurance');
+  assert.equal(normalizeSessionType('смешанная'), 'mixed');
+  assert.equal(normalizeSessionType('неопределённая'), 'undetermined');
+  assert.equal(normalizeSessionType('fartlek'), 'fartlek');
+  assert.equal(parseAnalysisSummary('A.\nSUMMARY\ntype: пороговая\nadvice: x').summary.type, 'threshold');
+  const summary = { type: 'tempo', finding: 'f', adviceCategory: 'load', advice: 'a', open: 'o', revised: null };
+  assert.equal(describeAnalysisForHistory(summary, null, 'tempo', { brief: true }), 'type: tempo; advice[load]');
+
+  const entries = Array.from({ length: 8 }, (_, i) => ({ startTime: `2026-08-0${i + 1}T10:00:00.000Z`, distanceKm: 20, analysisSummary: summary }));
+  const text = buildRecentHistoryContext(entries);
+  assert.equal((text.match(/finding: f/g) || []).length, 6, 'only the latest six carry the full summary');
+  assert.equal((text.match(/AI summary: type: tempo; advice\[load\]\n/g) || []).length, 2);
+});
+
+test('same-route context takes the latest prior rides and formats signed split differences', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /filter\(\(activity\) => activity\.routeId === routeInfo\.routeId\)\s*\.sort\(\(a, b\) => new Date\(a\.startTime\) - new Date\(b\.startTime\)\)/);
+  assert.match(source, /currentRouteInfo = currentData\?\.routeInfo \|\| currentDetail\?\.routeInfo\s*\|\| \(currentRecords/);
 });

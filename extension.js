@@ -109,7 +109,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 21;
+const ANALYSIS_VERSION = 22;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
 const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
@@ -2829,8 +2829,15 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   const currentDetail = currentData?.segments ? null : buildDetail(selected);
   const currentSegments = currentData?.segments || currentDetail?.segments || [];
   // The current ride also needs its route relation and checkpoints for same-route comparisons.
-  const currentRouteInfo = currentData?.routeInfo || currentDetail?.routeInfo || null;
-  const currentCheckpoints = currentData?.checkpoints || currentDetail?.checkpoints || [];
+  // prepareAnalysisData does not know the routes table, so a ride analysed from fresh data gets its
+  // route and checkpoints here from the same records.
+  const currentRecords = currentData?.records || currentDetail?.records || null;
+  const currentRouteInfo = currentData?.routeInfo || currentDetail?.routeInfo
+    || (currentRecords
+      ? assignRoute(db, { activityId: selected.id, signature: buildRouteSignature(currentRecords), createdAt: selected.start_time })
+      : null);
+  const currentCheckpoints = currentData?.checkpoints || currentDetail?.checkpoints
+    || (currentRecords ? computeCheckpoints(currentRecords) : []);
   const context = buildTrainingContext(activities, selected.start_time, selected.sport, currentSegments);
   const offsetChange = detectOffsetChange({
     current: { startTime: selected.start_time, utcOffsetS: selected.utc_offset_s },
@@ -2843,7 +2850,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     ? buildRouteContext({ routeInfo: currentRouteInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected)
     : null;
   context.altitudeQuality = buildAltitudeQuality({
-    db, records: currentData?.records || currentDetail?.records, routeInfo: currentRouteInfo, activity: selected,
+    db, records: currentRecords, routeInfo: currentRouteInfo, activity: selected,
   });
   const conversations = readRows(`SELECT a.start_time, aac.chat_json
     FROM activities a JOIN activity_analysis_chat aac ON aac.activity_id = a.id
@@ -2886,6 +2893,8 @@ function buildAltitudeQuality({ db, records, routeInfo, activity }) {
     }
     const computed = [asNumber(activity.total_ascent_m), asNumber(activity.total_descent_m)];
     const device = [asNumber(activity.device_ascent_m), asNumber(activity.device_descent_m)];
+    // A stored 0/0 means the device wrote no figure, not a flat ride.
+    if (!(device[0] > 0 || device[1] > 0)) device.fill(NaN);
     routeLine = `Route elevation (offset-aligned consensus of ${profile.rides} same-route rides): ascent ~${profile.ascentM} m, descent ~${profile.descentM} m`
       + `${computed.every(Number.isFinite) ? `; this ride computed ${Math.round(computed[0])}/${Math.round(computed[1])} m` : ''}`
       + `${device.every(Number.isFinite) ? `, device ${Math.round(device[0])}/${Math.round(device[1])} m` : ''}.`;
@@ -2898,14 +2907,17 @@ function buildAltitudeQuality({ db, records, routeInfo, activity }) {
 function buildRouteContext(currentData, activities, selected) {
   const routeInfo = currentData.routeInfo;
   if (!routeInfo?.routeId) return null;
-  const priorSameRoute = activities.filter((activity) => activity.routeId === routeInfo.routeId);
+  // The activity list is newest-first; "recent" must mean the latest rides, oldest-to-newest.
+  const priorSameRoute = activities.filter((activity) => activity.routeId === routeInfo.routeId)
+    .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
   if (!priorSameRoute.length) return null;
   const recentPriors = priorSameRoute.slice(-5);
   const summary = summarizeCheckpoints(currentData.checkpoints || [], recentPriors.map((activity) => ({ checkpoints: activity.checkpoints })));
   const marks = summary.filter((mark) => mark.priorRides > 0).slice(0, 10);
   const lines = marks.map((mark) => {
     const diff = mark.priorMedianS ? Math.round(mark.elapsedS - mark.priorMedianS) : null;
-    return `- km ${mark.km}: ${formatHms(mark.elapsedS)}${diff != null ? ` (median ${formatHms(mark.priorMedianS)}, ${diff >= 0 ? '+' : ''}${Math.round(diff / 60)} min${Math.abs(diff % 60)}s)` : ''}${mark.avgHr ? `, HR ${mark.avgHr}` : ''}`;
+    const delta = diff == null ? '' : `${diff < 0 ? '-' : '+'}${Math.floor(Math.abs(diff) / 60)}:${String(Math.abs(diff) % 60).padStart(2, '0')}`;
+    return `- km ${mark.km}: ${formatHms(mark.elapsedS)}${diff != null ? ` (median ${formatHms(mark.priorMedianS)}, ${delta})` : ''}${mark.avgHr ? `, HR ${mark.avgHr}` : ''}`;
   });
   const climbs = (currentData.segments || []).filter((segment) => segment.type === 'climb' && segment.elevGainM >= 25);
   const finalClimb = climbs.at(-1);
