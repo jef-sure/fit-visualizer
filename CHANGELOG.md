@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.15.0 - 2026-10-03
+
+### Upgrade Notes
+
+- **Existing users: re-index your FIT files.** New per-activity fields (device timezone offset, device ascent/descent, device elapsed/moving time) are extracted at indexing. Run **FIT: Index All Files**, then **FIT: Re-analyze Outdated Analyses** (analysis format 19).
+
+### Added
+
+- Local time support: the UTC offset configured on the bike computer is read from the FIT `local_timestamp` (file-name fallback, quarter-hour quantization, sanity limits) and stored per activity. AI prompts show the local start time with its zone label; active days and history dates use local dates. A device timezone that disagrees with nearby rides produces an explicit prompt note instead of silently distorted day counts.
+- Device-written session data is now stored: total ascent/descent, moving time and elapsed time. When the device's ascent disagrees with the computed one beyond 15 %/15 m, the prompt shows both sources and tells the model to treat ascent and the first segment's grade with caution.
+- `fitVisualizer.analysisModelId` pins one-off analyses to a specific model id (overrides the cheapest-model selection) for reproducible prompt experiments; an unavailable id fails loudly.
+
+### Changed
+
+- A device session left recording for hours no longer distorts elapsed time: when the session elapsed exceeds the recorded span beyond tolerance, records win and the prompt states the discrepancy (for example an "8:54" session elapsed for a 57-minute ride).
+
 ## 0.14.1 - 2026-10-03
 
 ### Upgrade Notes

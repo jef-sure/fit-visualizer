@@ -8,6 +8,11 @@ Open a `.fit` file from your bike computer or sports watch right in VS Code and 
 
 ## Upgrading
 
+### To 0.15.0
+
+1. Run **FIT: Index All Files** to extract the new device fields (timezone offset, device ascent/descent, session timing). **Index New Files** does not refresh existing activities.
+2. Run **FIT: Re-analyze Outdated Analyses** to refresh saved AI analyses (analysis format 19).
+
 ### To 0.14.1
 
 1. Run **FIT: Re-analyze Outdated Analyses** to refresh saved AI analyses (analysis format 18). Re-indexing is not required for this update.
