@@ -33,7 +33,7 @@ const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, loc
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
-const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, readRouteAssignments, summarizeCheckpoints } = require('./route-store');
+const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, readRouteAssignments, readRouteNote, readRoutes, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { aggregateChecks, describeResult, evaluateEntries, formatAggregate } = require('./prompt-eval');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling } = require('./altitude-quality');
@@ -167,6 +167,7 @@ function activate(context) {
     resolveFitUri,
     selectDatabaseFolder,
     showActivityBrowserInPanel,
+    editRouteNote,
     evaluateAnalysisPrompt,
     rebuildDerivedFeatures,
     tidyHeartRateProfiles,
@@ -249,6 +250,49 @@ async function rebuildDerivedFeatures() {
     );
     await persistDatabase(db, dbPath);
     vscode.window.showInformationMessage(`Derived features rebuilt for ${ordered.length} activities.`);
+  } finally {
+    db.close();
+  }
+}
+
+// Lets the user describe a route once (climb, prevailing wind); the note joins every analysis of that route.
+async function editRouteNote() {
+  const dbPath = await resolveActiveDbPath() || await selectDatabaseFolder();
+  if (!dbPath) {
+    return;
+  }
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  try {
+    const routes = readRoutes(db).filter((route) => route.ride_count >= 2 || route.note);
+    if (!routes.length) {
+      vscode.window.showInformationMessage('No repeated routes yet. Run FIT: Rebuild Derived Features or analyse a few rides first.');
+      return;
+    }
+    const pick = await vscode.window.showQuickPick(
+      routes.sort((a, b) => b.ride_count - a.ride_count).map((route) => ({
+        label: route.name,
+        description: `${route.ride_count} rides, last ${String(route.last_seen || '').slice(0, 10)}`,
+        detail: route.note || 'no note',
+        id: route.id,
+        note: route.note || '',
+      })),
+      { title: 'Route to describe' }
+    );
+    if (!pick) {
+      return;
+    }
+    const note = await vscode.window.showInputBox({
+      title: `Note for ${pick.label}`,
+      prompt: 'Terrain and conditions that apply to every ride here, e.g. "second half climbs, headwind on the way back". Empty clears the note.',
+      value: pick.note,
+    });
+    if (note === undefined) {
+      return;
+    }
+    setRouteNote(db, pick.id, note);
+    await persistDatabase(db, dbPath);
+    vscode.window.showInformationMessage(note.trim() ? 'Route note saved. Re-analyze to use it in saved analyses.' : 'Route note cleared.');
   } finally {
     db.close();
   }
@@ -2847,7 +2891,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     context.offsetChangeNote = `This device UTC offset (${formatOffsetLabel(offsetChange.utcOffsetS)}) differs from the median of ${offsetChange.neighbours} nearby same-file activities (${formatOffsetLabel(offsetChange.medianOffsetS)}): the device timezone setting probably changed, so local clock times and local dates around these rides are less reliable.`;
   }
   context.routeContext = currentRouteInfo
-    ? buildRouteContext({ routeInfo: currentRouteInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected)
+    ? buildRouteContext({ routeInfo: currentRouteInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected, readRouteNote(db, currentRouteInfo.routeId))
     : null;
   context.altitudeQuality = buildAltitudeQuality({
     db, records: currentRecords, routeInfo: currentRouteInfo, activity: selected,
@@ -2904,11 +2948,14 @@ function buildAltitudeQuality({ db, records, routeInfo, activity }) {
 
 // Same-route comparisons the code can state as fact: checkpoint splits against the median of
 // prior same-route rides, plus the history of the final climb segment when one exists.
-function buildRouteContext(currentData, activities, selected) {
+function buildRouteContext(currentData, activities, selected, routeNote = null) {
   const routeInfo = currentData.routeInfo;
   if (!routeInfo?.routeId) return null;
   // The activity list is newest-first; "recent" must mean the latest rides, oldest-to-newest.
-  const priorSameRoute = activities.filter((activity) => activity.routeId === routeInfo.routeId)
+  // Only rides in the same direction over the full route are comparable split for split: a loop
+  // ridden both ways has different climbs and winds in each half. Partial rides get no splits.
+  if (!['same', 'reversed'].includes(routeInfo.relation)) return null;
+  const priorSameRoute = activities.filter((activity) => activity.routeId === routeInfo.routeId && activity.routeRelation === routeInfo.relation)
     .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
   if (!priorSameRoute.length) return null;
   const recentPriors = priorSameRoute.slice(-5);
@@ -2936,14 +2983,21 @@ function buildRouteContext(currentData, activities, selected) {
       climbLine = `Final climb ${formatHms(finalClimb.durationS)} (grade ${finalClimb.avgGrade}%, HR ${finalClimb.avgHr ?? 'unknown'}); prior same-route climbs: ${history.length} rides, median ${formatHms(median)}${hrs.length ? `, HR ${Math.min(...hrs)}-${Math.max(...hrs)}` : ''}.`;
     }
   }
+  const pattern = summarizeRoutePattern(currentData.checkpoints || [], priorSameRoute);
+  const regular = pattern && pattern.slowerCount / pattern.priorCount >= 0.6;
+  const patternLine = pattern
+    ? `Route-typical pattern (${pattern.priorCount} earlier rides): after km ${pattern.splitKm} the average speed is at least 3% below the first part in ${pattern.slowerCount} of ${pattern.priorCount} rides (median ${pattern.medianChangePct >= 0 ? '+' : ''}${pattern.medianChangePct}%). This ride: ${pattern.currentChangePct >= 0 ? '+' : ''}${pattern.currentChangePct}% (a bigger drop than in ${pattern.currentDropsMoreThanCount} of ${pattern.priorCount} earlier rides).${regular ? ' A pattern this regular belongs to the route, not to the day: discuss only how this ride differs from it.' : ''}`
+    : null;
   return {
     routeName: routeInfo.routeName,
     relation: routeInfo.relation,
+    patternLine,
+    routeNote: routeNote ? String(routeNote).trim() : null,
     rideCount: routeInfo.rideCount,
     priorRideCount: priorSameRoute.length,
     checkpointLines: lines,
     climbLine,
-    note: `Route identity from GPS geometry (${routeInfo.relation}); ${priorSameRoute.length} earlier rides on this route in the analysis window. Checkpoint medians are descriptive splits of prior rides, not controlled time trials.`,
+    note: `Route identity from GPS geometry (${routeInfo.relation === 'reversed' ? 'ridden in the opposite direction to the route\'s first ride; compared only with rides in this direction' : 'same direction as the route\'s first ride'}); ${priorSameRoute.length} earlier rides in this direction in the analysis window. Checkpoint medians are descriptive splits of prior rides, not controlled time trials.`,
   };
 }
 

@@ -67,7 +67,7 @@ function readRouteAssignments(db) {
 }
 
 function readRoutes(db) {
-  const stmt = db.prepare('SELECT id, name, canonical_signature, ride_count, first_seen, last_seen FROM routes ORDER BY id');
+  const stmt = db.prepare('SELECT id, name, canonical_signature, ride_count, first_seen, last_seen, note FROM routes ORDER BY id');
   try {
     const rows = [];
     while (stmt.step()) rows.push(stmt.getAsObject());
@@ -196,6 +196,54 @@ function ensureRouteElevationProfile(db, routeId) {
   return profile;
 }
 
+// Whether the second half of a ride is slower than the first, for this ride and the earlier rides
+// of the same route. A pattern shared by almost every ride is a property of the route (climb,
+// prevailing wind), not a finding about the day.
+function halfSplit(checkpoints) {
+  const rows = (Array.isArray(checkpoints) ? checkpoints : []).filter((row) => Number.isFinite(row?.km) && Number.isFinite(row?.elapsedS));
+  if (rows.length < 4) return null;
+  const last = rows[rows.length - 1];
+  const middle = rows.reduce((best, row) => (Math.abs(row.km - last.km / 2) < Math.abs(best.km - last.km / 2) ? row : best), rows[0]);
+  const firstS = middle.elapsedS;
+  const secondS = last.elapsedS - middle.elapsedS;
+  const secondKm = last.km - middle.km;
+  if (!(firstS > 0 && secondS > 0 && middle.km > 0 && secondKm > 0)) return null;
+  const firstKmh = middle.km / (firstS / 3600);
+  const secondKmh = secondKm / (secondS / 3600);
+  return { changePct: ((secondKmh / firstKmh) - 1) * 100, splitKm: middle.km };
+}
+
+function summarizeRoutePattern(currentCheckpoints, priorRides, { slowerThresholdPct = -3 } = {}) {
+  const priors = (priorRides || []).map((ride) => halfSplit(ride.checkpoints)).filter(Boolean);
+  const current = halfSplit(currentCheckpoints);
+  if (priors.length < 5 || !current) return null;
+  const changes = priors.map((row) => row.changePct).sort((a, b) => a - b);
+  const median = changes[Math.floor(changes.length / 2)];
+  const slower = changes.filter((value) => value <= slowerThresholdPct).length;
+  return {
+    priorCount: priors.length,
+    slowerCount: slower,
+    medianChangePct: Math.round(median * 10) / 10,
+    currentChangePct: Math.round(current.changePct * 10) / 10,
+    currentDropsMoreThanCount: changes.filter((value) => value > current.changePct).length,
+    splitKm: current.splitKm,
+  };
+}
+
+function setRouteNote(db, routeId, note) {
+  db.run('UPDATE routes SET note = ? WHERE id = ?', [String(note || '').trim() || null, routeId]);
+}
+
+function readRouteNote(db, routeId) {
+  const stmt = db.prepare('SELECT note FROM routes WHERE id = ?');
+  try {
+    stmt.bind([routeId]);
+    return stmt.step() ? stmt.getAsObject().note || null : null;
+  } finally {
+    stmt.free();
+  }
+}
+
 function safeJson(text) {
   try {
     return text ? JSON.parse(text) : null;
@@ -210,7 +258,10 @@ module.exports = {
   computeCheckpoints,
   ensureRouteElevationProfile,
   readAssignment,
+  readRouteNote,
   readRouteAssignments,
   readRoutes,
+  setRouteNote,
   summarizeCheckpoints,
+  summarizeRoutePattern,
 };

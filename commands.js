@@ -4,6 +4,7 @@ const vscode = require('vscode');
 function registerCommands(context, services) {
   const {
     addAndBrowseManualActivity,
+    editRouteNote,
     escapeHtml,
     evaluateAnalysisPrompt,
     getLocalDbPath,
@@ -72,6 +73,12 @@ function registerCommands(context, services) {
     () => rebuildDerivedFeatures()
   );
 
+  const routeNote = register(
+    'fitVisualizer.editRouteNote',
+    'FIT route note failed',
+    () => editRouteNote()
+  );
+
   const evaluatePrompt = register(
     'fitVisualizer.evaluateAnalysisPrompt',
     'FIT prompt evaluation failed',
@@ -115,7 +122,7 @@ function registerCommands(context, services) {
     }
   );
 
-  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, rebuildFeatures, evaluatePrompt, updateModelPrices, customEditor];
+  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, rebuildFeatures, routeNote, evaluatePrompt, updateModelPrices, customEditor];
 }
 
 function createFitEditorProvider(context, services) {

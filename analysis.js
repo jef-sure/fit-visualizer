@@ -220,9 +220,16 @@ function formatConversation(history) {
 }
 
 function buildRouteContextBlock(routeContext) {
-  if (!routeContext || !(routeContext.checkpointLines?.length || routeContext.climbLine)) return '';
+  if (!routeContext || !(routeContext.checkpointLines?.length || routeContext.climbLine || routeContext.patternLine || routeContext.routeNote)) return '';
   const lines = (routeContext.checkpointLines || []).join('\n');
-  return `**Same-Route Context (GPS-confirmed):**\nRoute "${routeContext.routeName}" (${routeContext.relation}); ${routeContext.priorRideCount} earlier rides on this route.\n${lines ? `Checkpoint splits (this ride vs median of up to 5 prior same-route rides):\n${lines}\n` : ''}${routeContext.climbLine ? `${routeContext.climbLine}\n` : ''}${routeContext.note}`;
+  return joinNonEmpty([
+    `**Same-Route Context (GPS-confirmed):**\nRoute "${routeContext.routeName}" (${routeContext.relation}); ${routeContext.priorRideCount} earlier comparable rides (same direction).`,
+    routeContext.routeNote ? `User note about this route (user-declared, applies to every ride on it): ${routeContext.routeNote}` : null,
+    lines ? `Checkpoint splits (this ride vs median of up to 5 prior same-route rides):\n${lines}` : null,
+    routeContext.patternLine,
+    routeContext.climbLine,
+    routeContext.note,
+  ], '\n');
 }
 
 function buildAltitudeQualityBlock(altitudeQuality) {
@@ -783,6 +790,9 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
       : 'hrTSS uses an estimated threshold HR (middle of the Threshold zone), not a tested LTHR; treat it as approximate.',
     historyContext
       ? 'Entries under Recent Activity History include facts and past analyses of other workouts, not measurements of this one; past analyses are revisable hypotheses. User messages about other workouts appear only under Dated User Context.'
+      : null,
+    progressSummary?.trainingContext?.routeContext
+      ? 'A pattern shared by nearly every ride of this route, or stated in the user\'s route note (a climb, prevailing wind), is a property of the route, not a finding of the day and not an open question; use only how this ride differs from it.'
       : null,
     hasSegments
       ? 'Segments state which signal their effort is based on. Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.'

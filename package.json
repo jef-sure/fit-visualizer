@@ -68,6 +68,10 @@
         "title": "FIT: Rebuild Derived Features"
       },
       {
+        "command": "fitVisualizer.editRouteNote",
+        "title": "FIT: Edit Route Note"
+      },
+      {
         "command": "fitVisualizer.evaluateAnalysisPrompt",
         "title": "FIT: Evaluate Analysis Prompt"
       },

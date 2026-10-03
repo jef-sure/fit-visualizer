@@ -3800,7 +3800,7 @@ test('every command handler used by commands.js is destructured from services an
   const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   const destructured = /const \{([^}]+)\} = services;/.exec(commandsSource)[1].split(',').map((name) => name.trim()).filter(Boolean);
   const supplied = /registerCommands\(context, \{([^}]+)\}\)/.exec(extensionSource)[1].split(',').map((name) => name.trim()).filter(Boolean);
-  for (const name of ['rebuildDerivedFeatures', 'tidyHeartRateProfiles', 'evaluateAnalysisPrompt']) {
+  for (const name of ['rebuildDerivedFeatures', 'tidyHeartRateProfiles', 'evaluateAnalysisPrompt', 'editRouteNote']) {
     assert.ok(destructured.includes(name), `${name} destructured in commands.js`);
     assert.ok(supplied.includes(name), `${name} supplied from activate`);
   }
@@ -3859,6 +3859,55 @@ test('summary types are normalized across languages and older history entries ar
 
 test('same-route context takes the latest prior rides and formats signed split differences', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
-  assert.match(source, /filter\(\(activity\) => activity\.routeId === routeInfo\.routeId\)\s*\.sort\(\(a, b\) => new Date\(a\.startTime\) - new Date\(b\.startTime\)\)/);
+  assert.match(source, /filter\(\(activity\) => activity\.routeId === routeInfo\.routeId && activity\.routeRelation === routeInfo\.relation\)\s*\.sort\(\(a, b\) => new Date\(a\.startTime\) - new Date\(b\.startTime\)\)/);
   assert.match(source, /currentRouteInfo = currentData\?\.routeInfo \|\| currentDetail\?\.routeInfo\s*\|\| \(currentRecords/);
+});
+
+function splitCheckpoints(firstKmh, secondKmh, totalKm = 20) {
+  const rows = [];
+  let elapsed = 0;
+  for (let km = 2; km <= totalKm; km += 2) {
+    elapsed += 2 / ((km <= totalKm / 2 ? firstKmh : secondKmh) / 3600);
+    rows.push({ km, elapsedS: Math.round(elapsed), avgHr: 140 });
+  }
+  return rows;
+}
+
+test('route-typical second-half pattern separates the route from the day', () => {
+  const { summarizeRoutePattern } = require('../route-store');
+  const priors = [26, 27, 25, 28, 26, 27, 30].map((first) => ({ checkpoints: splitCheckpoints(first, first - 4) }));
+  const pattern = summarizeRoutePattern(splitCheckpoints(27, 21), priors);
+  assert.equal(pattern.priorCount, 7);
+  assert.equal(pattern.slowerCount, 7);
+  assert.ok(pattern.medianChangePct < -10 && pattern.medianChangePct > -20);
+  assert.ok(pattern.currentChangePct < pattern.medianChangePct, 'this ride drops more than typical');
+  assert.equal(pattern.currentDropsMoreThanCount, 7);
+  assert.equal(summarizeRoutePattern(splitCheckpoints(27, 21), priors.slice(0, 3)), null, 'too few rides');
+  assert.equal(summarizeRoutePattern([], priors), null);
+});
+
+test('route notes are stored per route and rendered with the pattern in the prompt block', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { readRouteNote, readRoutes, setRouteNote } = require('../route-store');
+    db.run("INSERT INTO routes (name, ride_count) VALUES ('Loop', 5)");
+    setRouteNote(db, 1, '  second half climbs, often headwind  ');
+    assert.equal(readRouteNote(db, 1), 'second half climbs, often headwind');
+    assert.equal(readRoutes(db)[0].note, 'second half climbs, often headwind');
+    setRouteNote(db, 1, '   ');
+    assert.equal(readRouteNote(db, 1), null);
+  } finally {
+    db.close();
+  }
+  const { buildRouteContextBlock } = require('../analysis');
+  const text = buildRouteContextBlock({ routeName: 'Loop', relation: 'same', priorRideCount: 7, checkpointLines: [], climbLine: null,
+    patternLine: 'Route-typical pattern (7 earlier rides): ...', routeNote: 'second half climbs', note: 'Route identity from GPS geometry.' });
+  assert.match(text, /User note about this route \(user-declared, applies to every ride on it\): second half climbs/);
+  assert.match(text, /Route-typical pattern/);
+  const prompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [] },
+    { total_activities: 0, trainingContext: { ...buildTrainingContext([], '2026-08-25', 'cycling'), routeContext: { routeName: 'Loop', relation: 'same', priorRideCount: 7, checkpointLines: [], patternLine: 'p', note: 'n' } } },
+    {}, null, [], [], 'en');
+  assert.match(prompt, /property of the route, not a finding of the day and not an open question/);
 });
