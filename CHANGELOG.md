@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.19.0 - 2026-10-03
+
+### Upgrade Notes
+
+- Run **FIT: Re-analyze Outdated Analyses** (analysis format 25). Notes you enter are used by the next analysis of that ride; changing notes does not mark a saved analysis as outdated, so re-analyze the ride explicitly.
+
+### Added
+
+- **Session notes** on the activity page: perceived effort (RPE 1-10), purpose (commute, endurance, tempo, intervals, recovery, race, social, other), feeling, conditions (headwind, tailwind, rain, heat, cold, group, traffic, night, new route) and a free note, all optional. The analysis and chat prompts receive them as user-declared facts: the declared purpose replaces the inferred training direction, RPE is treated as the athlete's own measure of effort, and the model is told not to ask again for what is declared. Earlier rides in the history carry their RPE and purpose.
+- Without notes the prompt tells the model where they are entered and that asking for them is a data suggestion, not pacing advice. Previous analyses asked for RPE and wind in 16 of 39 answers and filed it under pacing.
+
 ## 0.18.3 - 2026-10-03
 
 ### Added

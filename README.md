@@ -8,6 +8,10 @@ Open a `.fit` file from your bike computer or sports watch right in VS Code and 
 
 ## Upgrading
 
+### To 0.19.0
+
+Run **FIT: Re-analyze Outdated Analyses** (analysis format 25). Optional: fill in the new **Session Notes** (RPE, purpose, conditions) on the activity page first; notes are used the next time that ride is analyzed.
+
 ### To 0.18.1
 
 Run **FIT: Re-analyze Outdated Analyses** (analysis format 24). Re-indexing is not required.
