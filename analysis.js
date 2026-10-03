@@ -592,6 +592,20 @@ function buildReportedHeartRateContext(session) {
   ])}\nThese values are single numbers reported by the athlete, not a recorded heart-rate series: zones, TRIMP, hrTSS, peaks and drift cannot be derived from them. They may still indicate the internal response of that session.`;
 }
 
+function buildSessionClassContext(sessionClass, heartRateConfig) {
+  if (!sessionClass) return '';
+  const reasons = (Array.isArray(sessionClass.reasons) ? sessionClass.reasons : []).join('; ');
+  const alternatives = (Array.isArray(sessionClass.alternatives) ? sessionClass.alternatives : []).join(', ');
+  const method = heartRateConfig?.lthr ? 'threshold reference: user-tested LTHR' : 'threshold reference: estimated LTHR';
+  return `**Heuristic Session Class (computed, revisable):**\n${formatFieldsSkippingEmpty([
+    ['Class', sessionClass.label],
+    ['Confidence', sessionClass.confidence],
+    ['Evidence', reasons],
+    ['Plausible alternatives', alternatives || null],
+    ['Method', `${method}; classification thresholds are heuristic, not lab-tested`],
+  ])}`;
+}
+
 function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previousAnalysis, followUpHistory, recentHistory, locale) {
   const session = fitData.sessions?.[0] || {};
   const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records);
@@ -645,6 +659,7 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
     ? `**Follow-up Conversation About This Analysis:**\n${safeFollowUpHistory}`
     : '';
   const zoneContext = buildZoneContext(fitData.records, heartRateConfig);
+  const sessionClassContext = buildSessionClassContext(fitData.sessionClass, heartRateConfig);
   const segmentContext = buildSegmentContext(fitData.segments).text;
   const historyContext = buildRecentHistoryContext(recentHistory);
   const hasSegments = Boolean(segmentContext);
@@ -659,6 +674,7 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
     summaryContext,
     heartRateProfileContext,
     zoneContext,
+    sessionClassContext,
     buildPeakHeartRateContext(fitData.records, progressSummary?.trainingContext),
     buildDataQualityContext(fitData, heartRateConfig),
     reportedHeartRateContext,
@@ -682,6 +698,9 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
       : progressSummary?.trainingContext ? 'Use the stated observation window and covered history for tentative pattern observations; sample count or heuristic noise thresholds do not prove fitness changes.'
       : 'There is not enough history to claim improvement, decline, stability, consistency, or a plateau.',
     'Do not infer recovery status, aerobic control, fatigue, overreaching, or heart-rate recovery from average and maximum HR alone.',
+    sessionClassContext
+      ? 'Confirm or dispute the computed heuristic session class in one sentence with evidence from the zone distribution; do not re-derive the whole classification in the answer.'
+      : null,
     historyContext
       ? 'Entries under Recent Activity History include facts and past analyses of other workouts, not measurements of this one; past analyses are revisable hypotheses. User messages about other workouts appear only under Dated User Context.'
       : null,
@@ -853,6 +872,7 @@ module.exports = {
   buildRecentHistoryContext,
   buildReportedHeartRateContext,
   buildSegmentContext,
+  buildSessionClassContext,
   formatFieldsSkippingEmpty,
   generateAnalysisPrompt,
   generateAnalysisChatPrompt,

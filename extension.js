@@ -31,9 +31,11 @@ const { applyHeartRateProfileUpsert, planHeartRateProfileTidy, readHeartRateProf
 const { createManualActivity } = require('./manual-activity');
 const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, localDate } = require('./activity-time');
 const { reconcileSessionElapsed } = require('./activity-session-checks');
+const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { fileExists, getFitUris, getParsedLaps, parseFitFile } = require('./fit-files');
 const {
   calculateAutoHeartRateProfile,
+  calculatePeakHeartRates,
   computeHeartRateZones,
   estimateLactateThresholdHeartRate,
   getHeartRateZoneIndex: getHrZoneIndex,
@@ -1309,8 +1311,62 @@ function getHeartRateConfig() {
   };
 }
 
-function attachRestingHeartRate(config, athleteProfile) {
-  return { ...config, restingHeartRate: asNumber(athleteProfile?.restingHeartRate) || null };
+// Evidence assembled where the records exist; the classifier itself stays pure and testable.
+function buildSessionClassForActivity(records, session, hrConfig, athleteProfile, segments) {
+  if (!Number.isFinite(asNumber(hrConfig?.maxHeartRate))) {
+    return { label: 'undetermined', confidence: 'low', reasons: ['no dated heart-rate profile'], alternatives: [] };
+  }
+  const zones = computeHeartRateZones(records, hrConfig.maxHeartRate, hrConfig.thresholds,
+    { restingHeartRate: asNumber(athleteProfile?.restingHeartRate) });
+  if (!zones.enabled || !(zones.totalSeconds > 0)) {
+    return { label: 'undetermined', confidence: 'low', reasons: ['no usable heart-rate samples'], alternatives: [] };
+  }
+  const timerS = asNumber(session.total_timer_s);
+  const lthr = estimateLactateThresholdHeartRate(hrConfig.maxHeartRate, hrConfig.thresholds,
+    asNumber(athleteProfile?.restingHeartRate), hrConfig?.lthr);
+  const peaks = calculatePeakHeartRates(records);
+  const peak20 = peaks.find((peak) => peak.seconds === 1200);
+  const z4Floor = Array.isArray(hrConfig.thresholds) ? hrConfig.thresholds[2] : 0.8 * hrConfig.maxHeartRate;
+  const z5Floor = Array.isArray(hrConfig.thresholds) ? hrConfig.thresholds[3] : 0.9 * hrConfig.maxHeartRate;
+  const hrDurations = estimateRecordDurationsForZones(records);
+  const samples = records.map((record, index) => ({
+    seconds: hrDurations[index],
+    atOrAboveZ4: asNumber(record.heart_rate) >= z4Floor,
+    atOrAboveZ5: asNumber(record.heart_rate) >= z5Floor,
+  }));
+  return classifySession({
+    zoneSeconds: zones.zones.map((zone) => zone.seconds),
+    hrCoveragePct: timerS > 0 ? 100 * zones.totalSeconds / timerS : null,
+    timerS,
+    peak20VsLthr: peak20 && lthr ? peak20.bpm / lthr : null,
+    sustainedZ4Seconds: longestSustainedZ4Seconds(samples),
+    hardEfforts: countHardEfforts(samples),
+    stopSeconds: (Array.isArray(segments) ? segments : [])
+      .filter((segment) => segment.type === 'stopped')
+      .reduce((sum, segment) => sum + (asNumber(segment.durationS) || 0), 0),
+  });
+}
+
+// estimateRecordDurations is private to heart-rate.js; the same rule (deltas capped at 30 s,
+// median fallback) is all the classifier needs and stays local to this adapter.
+function estimateRecordDurationsForZones(records) {
+  const elapsed = (Array.isArray(records) ? records : []).map((record) => asNumber(record.elapsed_time));
+  const durations = new Array(elapsed.length).fill(1);
+  const valid = [];
+  for (let index = 1; index < elapsed.length; index += 1) {
+    const delta = elapsed[index] - elapsed[index - 1];
+    if (Number.isFinite(delta) && delta > 0 && delta <= 30) {
+      durations[index - 1] = delta;
+      valid.push(delta);
+    }
+  }
+  const sorted = [...valid].sort((a, b) => a - b);
+  const fallback = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 1;
+  durations[elapsed.length - 1] = fallback;
+  return durations.map((value) => (Number.isFinite(value) && value > 0 && value <= 30 ? value : fallback));
+}
+
+function attachRestingHeartRate(config, athleteProfile) {  return { ...config, restingHeartRate: asNumber(athleteProfile?.restingHeartRate) || null };
 }
 
 async function getHeartRateConfigForActivity(dbPath, startTime, athleteProfile = null) {
@@ -1727,10 +1783,12 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
       maxHeartRate: asNumber(hrConfig?.maxHeartRate),
     },
   });
+  const sessionClass = buildSessionClassForActivity(powerData.records, session, hrConfig, athleteProfile, segments);
   return {
     ...fitData,
     records: powerData.records,
     segments,
+    sessionClass,
     analysisHeartRateConfig: hrConfig,
     analysisQuality: {
       massSource: 'activity-specific mass when saved, otherwise current athlete profile; not measured by FIT',

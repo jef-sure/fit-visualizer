@@ -34,6 +34,7 @@ const { UI_STRINGS, formatUi, localizeUi } = require('../ui-strings');
 const { createManualActivity } = require('../manual-activity');
 const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, localDate } = require('../activity-time');
 const { reconcileSessionElapsed } = require('../activity-session-checks');
+const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('../session-class');
 const pricingMarkdown = `All prices are **per 1 million tokens**.
 
 | Model | Output | Tier | Cached input | Input |
@@ -3076,6 +3077,59 @@ test('heart-rate profiles store and compare an optional LTHR', async () => {
   } finally {
     db.close();
   }
+});
+
+test('session classifier labels the calibrated real-ride scenarios deterministically', () => {
+  // Scenarios and numbers come from the 2026-07/09 ride history calibration.
+  const input = (over) => ({
+    zoneSeconds: [0, 0, 0, 0, 0], hrCoveragePct: 100, timerS: 3000, stopSeconds: 0,
+    peak20VsLthr: 0.9, sustainedZ4Seconds: 0, hardEfforts: 0, ...over,
+  });
+  const zones = (low, moderate, z4, z5) => [low * 30, 0, moderate * 30, z4 * 30, z5 * 30];
+
+  // Ride 198 (2026-08-31): 92 % low and a quiet 20-minute peak under 85 % of LTHR.
+  assert.equal(classifySession(input({ zoneSeconds: zones(92, 8, 0, 0), peak20VsLthr: 0.84 })).label, 'recovery');
+  // With a stronger 20-minute peak the same distribution is endurance, not recovery.
+  assert.equal(classifySession(input({ zoneSeconds: zones(92, 8, 0, 0), peak20VsLthr: 0.88 })).label, 'endurance');
+  // Ride 115 (2026-08-06): 83 % low.
+  assert.equal(classifySession(input({ zoneSeconds: zones(83, 17, 0, 0) })).label, 'endurance');
+  // Ride 120 (2026-08-12): 37 % low, 58 % moderate.
+  assert.equal(classifySession(input({ zoneSeconds: zones(37, 58, 5, 0) })).label, 'tempo');
+  // Ride 158 (2026-08-19): 24 % low, 28 % Z4, 18 % Z5.
+  assert.equal(classifySession(input({ zoneSeconds: zones(24, 29, 28, 18), peak20VsLthr: 1.02, sustainedZ4Seconds: 1400 })).label, 'threshold');
+  // Ride 118 (2026-08-09): 32 % low, 48 % moderate, 19 % Z4 - two stimuli, neither dominant.
+  assert.equal(classifySession(input({ zoneSeconds: zones(32, 48, 19, 1), peak20VsLthr: 0.95, sustainedZ4Seconds: 700 })).label, 'mixed');
+  // Low HR coverage is undetermined, not guessed.
+  assert.equal(classifySession(input({ zoneSeconds: zones(50, 50, 0, 0), hrCoveragePct: 40 })).label, 'undetermined');
+  // 12-minute session is unstructured regardless of zones.
+  assert.equal(classifySession(input({ zoneSeconds: zones(50, 50, 0, 0), timerS: 720 })).label, 'unstructured');
+});
+
+test('session classifier reports confidence, reasons and close-call alternatives', () => {
+  const strong = classifySession({
+    zoneSeconds: [90 * 30, 0, 10 * 30, 0, 0], hrCoveragePct: 100, timerS: 3000,
+    peak20VsLthr: 0.8, sustainedZ4Seconds: 0, hardEfforts: 0, stopSeconds: 0,
+  });
+  assert.equal(strong.label, 'recovery');
+  assert.equal(strong.confidence, 'high');
+  assert.ok(strong.reasons.some((reason) => reason.includes('Z1-Z2 90%')));
+  assert.ok(strong.alternatives.includes('endurance'));
+
+  // Passing the endurance floor by less than the close-call margin drops confidence to medium.
+  const borderline = classifySession({
+    zoneSeconds: [73 * 30, 0, 27 * 30, 0, 0], hrCoveragePct: 100, timerS: 3000,
+    peak20VsLthr: 0.89, sustainedZ4Seconds: 0, hardEfforts: 0, stopSeconds: 0,
+  });
+  assert.equal(borderline.label, 'endurance');
+  assert.equal(borderline.confidence, 'medium');
+});
+
+test('sustained Z4 runs and hard effort counts come from the sample stream', () => {
+  const mk = (hr, seconds) => ({ seconds, atOrAboveZ4: hr >= 150, atOrAboveZ5: hr >= 165 });
+  const samples = [mk(140, 60), mk(155, 120), mk(160, 60), mk(140, 30), mk(158, 120), mk(140, 60), mk(170, 70), mk(140, 60), mk(170, 65)];
+  assert.equal(longestSustainedZ4Seconds(samples), 180);
+  assert.equal(countHardEfforts(samples), 2);
+  assert.equal(countHardEfforts(samples, { minEffortSeconds: 90 }), 0);
 });
 
 test('pinned analysis model id overrides the cheapest-model selection', async () => {
