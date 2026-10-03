@@ -145,3 +145,6 @@ fit-visualizer-segmentation-plan*.md
 .segment-probe.js
 .prompt-probe.js
 promo-post*.md
+
+# Packaged extensions
+*.vsix

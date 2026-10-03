@@ -7,3 +7,4 @@ promo-post*.md
 .segment-probe.js
 .prompt-probe.js
 images/cover-*.png
+scripts/**
