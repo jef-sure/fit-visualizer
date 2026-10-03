@@ -1,5 +1,6 @@
 const { asNumber, calculateRobustTrend, haversineKm } = require('./utils');
 const { computeHeartRateZones, calculatePeakHeartRates, PEAK_HEART_RATE_WINDOWS } = require('./heart-rate');
+const { localDate } = require('./activity-time');
 
 function compareSegmentStructures(currentSegments, priorSegments) {
   const current = (currentSegments || []).filter((segment) => segment.type !== 'stopped' && segment.durationS >= 60);
@@ -71,7 +72,7 @@ function buildTrainingContext(activities, referenceTime, currentSport, currentSe
           durationS: rows.reduce((sum, activity) => sum + (asNumber(activity.durationS) > 0 ? Number(activity.durationS) : 0), 0),
           durationKnownActivities: rows.filter((activity) => asNumber(activity.durationS) > 0).length,
           distanceKm: rows.reduce((sum, activity) => sum + (asNumber(activity.distanceKm) > 0 ? Number(activity.distanceKm) : 0), 0),
-          activeDays: new Set(rows.map((activity) => String(activity.startTime).slice(0, 10))).size,
+          activeDays: new Set(rows.map((activity) => localDate(activity.startTime, activity.utcOffsetS))).size,
           zonedActivities, coveredHrSeconds, zoneSeconds };
       }) };
   };

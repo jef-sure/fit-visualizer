@@ -1,5 +1,6 @@
 const { formatHms, groupSimilarSegments, segmentLineBudget, collapseShortStops } = require('./utils');
 const { calculatePeakHeartRates, computeHeartRateZones } = require('./heart-rate');
+const { localClock, localDate } = require('./activity-time');
 const { rankModelsByCost } = require('./model-pricing');
 
 function formatPositive(value, digits) {
@@ -166,7 +167,7 @@ function buildRecentHistoryContext(entries, options = {}) {
   const detailedCount = Number(options.detailedCount) || 4;
   const detailedFrom = Math.max(0, list.length - detailedCount);
   const rendered = list.map((entry, index) => {
-    const date = String(entry.startTime || '').slice(0, 10);
+    const date = localDate(entry.startTime, entry.utcOffsetS);
     const summary = joinNonEmpty([
       entry.distanceKm != null ? `${Number(entry.distanceKm).toFixed(1)} km` : null,
       entry.durationS != null ? formatHms(Math.round(entry.durationS)) : null,
@@ -228,6 +229,7 @@ function buildTrainingHistoryContext(context) {
   return joinNonEmpty([
     `**Training Volume and Covered Intensity:**\nHistorical baseline anchored at ${context.windowEnd}: all periods end at or before the current activity start; the current activity is excluded from every historical total. These are rolling windows, not calendar weeks.\n${volume}\n${context.intensityNote}\n${context.coverageNote}`,
     `**Adaptive Observation Window:**\n${context.windowDays} days: ${context.windowStart.slice(0, 10)} to ${context.windowEnd.slice(0, 10)}; ${context.activities} same-sport activities. Window selection is not evidence of fitness.\n${describeTrend('Duration pattern', context.durationTrend)}\n${describeTrend('Distance pattern', context.distanceTrend)}\n${interruptions}`,
+    context.offsetChangeNote ? `**Device Timezone Consistency:**\n${context.offsetChangeNote}` : null,
     matches ? `**Candidate Segment Comparisons:**\n${matches}\nMatching uses ordered terrain, duration and distance, not equal HR/power. Similar structure does not establish identical route, intent, weather or training stimulus; consider intensity separately.` : '**Candidate Segment Comparisons:** No eligible matches; training-volume context remains available.',
     reports ? `**Dated User Context Across Activities:**\n${reports}\nMessage date and activity date are different. Reports may describe another effective period; do not apply later circumstances retrospectively without support.` : null,
   ], '\n\n');
@@ -489,14 +491,39 @@ function buildWorkoutFields(session, records) {
     ? 'estimated from motion data'
     : session.power_source === 'measured' ? 'measured' : null;
   const wholeRidePowerIsEstimated = powerSource === 'estimated from motion data';
+  // Local wall-clock time comes from the device-configured UTC offset; without it the UTC stamp stands.
+  const localStart = Number.isFinite(Number(session.utc_offset_s))
+    ? localClock(session.start_time, session.utc_offset_s)
+    : null;
+  const startTimeText = localStart
+    ? `${localStart.time} local (${localStart.zoneLabel}${session.offset_source === 'filename' ? ', offset inferred from file name' : ''})`
+    : activityDateTime.time;
+  const deviceElapsedS = Number(session.device_elapsed_s);
+  const elapsedS = Number(session.total_elapsed_s);
+  const elapsedText = Number.isFinite(elapsedS) && elapsedS > 0 ? formatHms(Math.round(elapsedS)) : null;
+  const elapsedNote = Number.isFinite(deviceElapsedS) && deviceElapsedS > 0 && Number.isFinite(elapsedS)
+    && deviceElapsedS - elapsedS > Math.max(300, 0.1 * elapsedS)
+    ? `device session elapsed ${formatHms(Math.round(deviceElapsedS))} inconsistent, recording probably left open; elapsed taken from records`
+    : null;
+  const ascentM = Number(session.total_ascent_m);
+  const descentM = Number(session.total_descent_m);
+  const deviceAscentM = Number(session.device_ascent_m);
+  const deviceDescentM = Number(session.device_descent_m);
+  const ascentText = formatPositive(ascentM, 0);
+  const descentText = formatPositive(descentM, 0);
+  const ascentDiverges = [ascentM, descentM, deviceAscentM, deviceDescentM].every(Number.isFinite)
+    && Math.abs(deviceAscentM - ascentM) > Math.max(15, 0.15 * Math.abs(ascentM || deviceAscentM));
+  const elevationNote = ascentDiverges
+    ? `device reports ${deviceAscentM.toFixed(0)}/${deviceDescentM.toFixed(0)} m; sources disagree, treat ascent/descent and first-segment grade with caution`
+    : null;
   const text = formatFieldsSkippingEmpty([
     ['Sport', session.sport], ['Sub-sport', session.sub_sport],
     ['Date', activityDateTime.date],
-    ['Start Time', activityDateTime.time],
+    ['Start Time', startTimeText],
     ['Average Temperature', averageTemperature(records), 'C'],
     ['Distance', session.total_distance_km?.toFixed(2), 'km'],
     ['Duration (timer)', session.total_timer_s ? formatHms(Math.round(session.total_timer_s)) : null],
-    ['Elapsed Time (incl. stops)', session.total_elapsed_s ? formatHms(Math.round(session.total_elapsed_s)) : null],
+    ['Elapsed Time (incl. stops)', elapsedText ? `${elapsedText}${elapsedNote ? ` (${elapsedNote})` : ''}` : null],
     ['Avg Speed', formatPositive(session.avg_speed_kmh, 2), 'km/h'],
     ['Max Speed', formatPositive(session.max_speed_kmh, 2), 'km/h'],
     ['Avg Cadence', formatPositive(session.avg_cadence, 0), 'rpm'],
@@ -516,8 +543,8 @@ function buildWorkoutFields(session, records) {
     ['Estimated threshold HR used for hrTSS', formatPositive(session.lactate_threshold_hr, 0), 'bpm'],
     ['Avg Heart Rate', formatPositive(session.avg_hr, 0), 'bpm'],
     ['Max Heart Rate', formatPositive(session.max_hr, 0), 'bpm'],
-    ['Elevation Gain', formatPositive(session.total_ascent_m, 0), 'm'],
-    ['Elevation Loss', formatPositive(session.total_descent_m, 0), 'm'],
+    ['Elevation Gain', ascentText ? `${ascentText} m${elevationNote ? ` (${elevationNote})` : ''}` : null],
+    ['Elevation Loss', descentText ? `${descentText} m${elevationNote ? ` (same note)` : ''}` : null],
     ['Power source', powerSource],
   ]);
   return { text, powerSource };

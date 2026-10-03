@@ -40,7 +40,13 @@ function ensureDatabaseSchema(db) {
       lap_count                 INTEGER,
       laps_json                 TEXT,
       rider_mass_kg             REAL,
-      bike_mass_kg              REAL
+      bike_mass_kg             REAL,
+      utc_offset_s             INTEGER,
+      offset_source            TEXT,
+      device_ascent_m          REAL,
+      device_descent_m         REAL,
+      device_moving_time_s     REAL,
+      device_elapsed_s         REAL
     );
   `);
 
@@ -175,6 +181,12 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'athlete_profile', 'wheel_circumference_mm', 'REAL');
   addColumnIfMissing(db, 'activity_analysis', 'analysis_version', 'INTEGER NOT NULL DEFAULT 1');
   addColumnIfMissing(db, 'activities', 'source', "TEXT NOT NULL DEFAULT 'fit'");
+  addColumnIfMissing(db, 'activities', 'utc_offset_s', 'INTEGER');
+  addColumnIfMissing(db, 'activities', 'offset_source', 'TEXT');
+  addColumnIfMissing(db, 'activities', 'device_ascent_m', 'REAL');
+  addColumnIfMissing(db, 'activities', 'device_descent_m', 'REAL');
+  addColumnIfMissing(db, 'activities', 'device_moving_time_s', 'REAL');
+  addColumnIfMissing(db, 'activities', 'device_elapsed_s', 'REAL');
 }
 
 function addColumnIfMissing(db, table, column, type) {

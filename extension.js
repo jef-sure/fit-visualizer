@@ -29,6 +29,8 @@ const { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, b
 const { ensureDatabaseSchema } = require('./database-schema');
 const { applyHeartRateProfileUpsert, planHeartRateProfileTidy, readHeartRateProfiles } = require('./heart-rate-profiles');
 const { createManualActivity } = require('./manual-activity');
+const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, localDate } = require('./activity-time');
+const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { fileExists, getFitUris, getParsedLaps, parseFitFile } = require('./fit-files');
 const {
   calculateAutoHeartRateProfile,
@@ -946,6 +948,12 @@ async function loadFitDataFromDb(dbPath, activityId) {
         sport:                 activity.sport,
         sub_sport:             activity.sub_sport,
         start_time:            activity.start_time,
+        utc_offset_s:          activity.utc_offset_s,
+        offset_source:         activity.offset_source,
+        device_ascent_m:       activity.device_ascent_m,
+        device_descent_m:      activity.device_descent_m,
+        device_moving_time_s:  activity.device_moving_time_s,
+        device_elapsed_s:      activity.device_elapsed_s,
         total_ascent:          activity.total_ascent_m,
         total_ascent_m:        activity.total_ascent_m,
         total_descent:         activity.total_descent_m,
@@ -1084,6 +1092,24 @@ function upsertActivity(db, filePath, fitData) {
   });
   const session = sessions[0] || {};
   const sessionCalories = asNumber(session.total_calories);
+  const { utcOffsetS, offsetSource } = deriveUtcOffsetS({
+    activityTimestamp: fitData.activity?.timestamp,
+    activityLocalTimestamp: fitData.activity?.local_timestamp,
+    fileName: path.basename(filePath),
+    sessionStartTime: session.start_time,
+  });
+  // The CYCPLUS session elapsed can cover a device left running; records are the ground truth then.
+  const timestamps = records.map((record) => Date.parse(record.timestamp)).filter(Number.isFinite);
+  const recordSpanS = timestamps.length >= 2 ? (Math.max(...timestamps) - Math.min(...timestamps)) / 1000 : null;
+  const gapSeconds = records.length >= 2
+    ? Math.max(0, recordSpanS - (records.at(-1).elapsed_time - records[0].elapsed_time)) : 0;
+  const elapsed = reconcileSessionElapsed({
+    sessionElapsedS: asNumber(session.total_elapsed_time),
+    recordSpanS,
+    gapSeconds: Number.isFinite(gapSeconds) ? gapSeconds : 0,
+  });
+  const deviceAscentM = asNumber(session.total_ascent);
+  const deviceDescentM = asNumber(session.total_descent);
   const nowIso = new Date().toISOString();
   const upsertValues = [
     filePath, path.basename(filePath), nowIso,
@@ -1092,7 +1118,7 @@ function upsertActivity(db, filePath, fitData) {
     toSqlStr(session.sub_sport) || null,
     summary.distanceKm, summary.elevationGainM || null, summary.elevationLossM || null,
     asNumber(session.total_timer_time),
-    asNumber(session.total_elapsed_time),
+    elapsed.elapsedS,
     summary.avgHr, summary.maxHr,
     summary.avgSpeed, summary.maxSpeed,
     summary.avgCadence > 0 ? summary.avgCadence : null,
@@ -1104,6 +1130,12 @@ function upsertActivity(db, filePath, fitData) {
     records.length, laps.length, JSON.stringify(laps),
     Number.isFinite(athleteProfile.riderMassKg) ? athleteProfile.riderMassKg : null,
     Number.isFinite(athleteProfile.bikeMassKg) ? athleteProfile.bikeMassKg : null,
+    Number.isFinite(utcOffsetS) ? utcOffsetS : null,
+    offsetSource,
+    Number.isFinite(deviceAscentM) && deviceAscentM > 0 ? deviceAscentM : null,
+    Number.isFinite(deviceDescentM) && deviceDescentM > 0 ? deviceDescentM : null,
+    (() => { const moving = asNumber(session.total_moving_time); return Number.isFinite(moving) && moving > 0 ? moving : null; })(),
+    elapsed.deviceElapsedS,
   ];
 
   const upsertStmt = db.prepare(`
@@ -1115,7 +1147,8 @@ function upsertActivity(db, filePath, fitData) {
       avg_cadence, max_cadence, avg_power, max_power, normalized_power,
       training_stress_score, intensity_factor, xpower, relative_intensity_gc, bike_stress_score, decoupling_pct, hr_tss, trimp,
       total_training_effect, aerobic_training_effect, anaerobic_training_effect,
-      total_calories, record_count, lap_count, laps_json, rider_mass_kg, bike_mass_kg
+      total_calories, record_count, lap_count, laps_json, rider_mass_kg, bike_mass_kg,
+      utc_offset_s, offset_source, device_ascent_m, device_descent_m, device_moving_time_s, device_elapsed_s
     ) VALUES (${upsertValues.map(() => '?').join(',')})
     ON CONFLICT(file_path) DO UPDATE SET
       file_name=excluded.file_name, imported_at=excluded.imported_at,
@@ -1142,7 +1175,10 @@ function upsertActivity(db, filePath, fitData) {
       total_calories=excluded.total_calories,
       record_count=excluded.record_count, lap_count=excluded.lap_count, laps_json=excluded.laps_json,
       rider_mass_kg=COALESCE(activities.rider_mass_kg, excluded.rider_mass_kg),
-      bike_mass_kg=COALESCE(activities.bike_mass_kg, excluded.bike_mass_kg)
+      bike_mass_kg=COALESCE(activities.bike_mass_kg, excluded.bike_mass_kg),
+      utc_offset_s=excluded.utc_offset_s, offset_source=excluded.offset_source,
+      device_ascent_m=excluded.device_ascent_m, device_descent_m=excluded.device_descent_m,
+      device_moving_time_s=excluded.device_moving_time_s, device_elapsed_s=excluded.device_elapsed_s
   `);
 
   upsertStmt.run(upsertValues);
@@ -2348,6 +2384,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       if (Array.isArray(parsed)) conversation = parsed.filter((entry) => entry?.role === 'user' && String(entry.content || '').trim()).slice(-8);
     } catch {}
     const activity = { activityId: row.id, startTime: row.start_time, sport: row.sport,
+      utcOffsetS: row.utc_offset_s,
       subSport: row.sub_sport, durationS: row.total_timer_s, distanceKm: row.total_distance_km,
       elevationM: row.total_ascent_m, avgSpeedKmh: row.avg_speed_kmh,
       avgHr: row.source === 'fit' ? row.avg_hr : null,
@@ -2366,6 +2403,13 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   });
   const currentSegments = currentData?.segments || buildDetail(selected).segments;
   const context = buildTrainingContext(activities, selected.start_time, selected.sport, currentSegments);
+  const offsetChange = detectOffsetChange({
+    current: { startTime: selected.start_time, utcOffsetS: selected.utc_offset_s },
+    others: activities.map((activity) => ({ startTime: activity.startTime, utcOffsetS: activity.utcOffsetS })),
+  });
+  if (offsetChange) {
+    context.offsetChangeNote = `This device UTC offset (${formatOffsetLabel(offsetChange.utcOffsetS)}) differs from the median of ${offsetChange.neighbours} nearby same-file activities (${formatOffsetLabel(offsetChange.medianOffsetS)}): the device timezone setting probably changed, so local clock times and local dates around these rides are less reliable.`;
+  }
   const conversations = readRows(`SELECT a.start_time, aac.chat_json
     FROM activities a JOIN activity_analysis_chat aac ON aac.activity_id = a.id
     WHERE datetime(a.start_time) < datetime(?) ORDER BY datetime(a.start_time) DESC LIMIT 24`, [selected.start_time]);

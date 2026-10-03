@@ -31,6 +31,8 @@ const { createChartSvgRenderer } = require('../chart-svg');
 const { GLOSSARY, localizeGlossary } = require('../glossary');
 const { UI_STRINGS, formatUi, localizeUi } = require('../ui-strings');
 const { createManualActivity } = require('../manual-activity');
+const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, localDate } = require('../activity-time');
+const { reconcileSessionElapsed } = require('../activity-session-checks');
 const pricingMarkdown = `All prices are **per 1 million tokens**.
 
 | Model | Output | Tier | Cached input | Input |
@@ -2929,8 +2931,95 @@ test('recent history keeps the latest analyses verbose and older ones compact', 
   assert.equal(buildRecentHistoryContext([]), '');
 });
 
-test('recent history marks user-reported heart rate as a summary without a series', () => {
-  const text = buildRecentHistoryContext([
+test('utc offset is derived from local_timestamp first and falls back to the file name', () => {
+  const fromTimestamps = deriveUtcOffsetS({
+    activityTimestamp: '2026-08-19T17:06:08.000Z',
+    activityLocalTimestamp: '2026-08-19T19:06:08.000Z',
+    fileName: 'anything.fit',
+    sessionStartTime: '2026-08-19T17:06:08.000Z',
+  });
+  assert.deepEqual(fromTimestamps, { utcOffsetS: 7200, offsetSource: 'fit' });
+
+  // A misconfigured device zone (July files carried +2:30) is preserved, not "corrected".
+  const halfHour = deriveUtcOffsetS({
+    activityTimestamp: '2026-07-19T17:16:33.000Z',
+    activityLocalTimestamp: '2026-07-19T19:46:33.000Z',
+    fileName: '20260719105226.fit',
+    sessionStartTime: '2026-07-19T08:22:26.000Z',
+  });
+  assert.deepEqual(halfHour, { utcOffsetS: 9000, offsetSource: 'fit' });
+
+  const fromName = deriveUtcOffsetS({
+    activityTimestamp: null,
+    activityLocalTimestamp: null,
+    fileName: '20260819190608.fit',
+    sessionStartTime: '2026-08-19T17:06:08.000Z',
+  });
+  assert.deepEqual(fromName, { utcOffsetS: 7200, offsetSource: 'filename' });
+
+  assert.deepEqual(deriveUtcOffsetS({ fileName: 'ride.fit' }), { utcOffsetS: null, offsetSource: null });
+  // Nonsense differences (e.g. a stale local_timestamp) are rejected instead of quantized.
+  assert.equal(deriveUtcOffsetS({
+    activityTimestamp: '2026-08-19T17:06:08.000Z',
+    activityLocalTimestamp: '2026-08-20T17:06:08.000Z',
+  }).utcOffsetS, null);
+});
+
+test('local date and clock use the stored offset, including across midnight', () => {
+  // 21:30 UTC on Aug 31 with UTC+3 is 00:30 Sep 1 locally; the UTC date would still say Aug 31.
+  assert.equal(localDate('2026-08-31T21:30:00.000Z', 10800), '2026-09-01');
+  assert.equal(localDate('2026-08-31T21:30:00.000Z', 0), '2026-08-31');
+  assert.deepEqual(localClock('2026-08-19T17:06:08.000Z', 7200), { time: '19:06', zoneLabel: 'UTC+02:00' });
+  assert.equal(formatOffsetLabel(9000), 'UTC+02:30');
+  assert.equal(formatOffsetLabel(-10800), 'UTC-03:00');
+  // Without an offset the date falls back to the UTC prefix instead of inventing a local one.
+  assert.equal(localDate('2026-08-31T21:30:00.000Z', null), '2026-08-31');
+});
+
+test('offset changes against nearby rides are detected for device timezone drift', () => {
+  const others = [
+    { startTime: '2026-07-18T10:00:00Z', utcOffsetS: 9000 },
+    { startTime: '2026-07-20T10:00:00Z', utcOffsetS: 9000 },
+  ];
+  assert.ok(detectOffsetChange({ current: { startTime: '2026-07-19T10:00:00Z', utcOffsetS: 7200 }, others }));
+  assert.equal(detectOffsetChange({ current: { startTime: '2026-07-19T10:00:00Z', utcOffsetS: 9000 }, others }), null);
+});
+
+test('session elapsed falls back to records when the device left the session open', () => {
+  const mismatch = reconcileSessionElapsed({ sessionElapsedS: 32047, recordSpanS: 3434, gapSeconds: 41 });
+  assert.equal(mismatch.elapsedS, 3475);
+  assert.equal(mismatch.deviceElapsedS, 32047);
+  assert.equal(mismatch.mismatch.extraS, 28613);
+
+  const consistent = reconcileSessionElapsed({ sessionElapsedS: 3520, recordSpanS: 3434, gapSeconds: 41 });
+  assert.equal(consistent.elapsedS, 3520);
+  assert.equal(consistent.mismatch, null);
+  assert.equal(consistent.deviceElapsedS, 3520);
+});
+
+test('analysis prompt shows local start time, elapsed reconciliation and ascent divergence', () => {
+  const session = {
+    sport: 'cycling',
+    start_time: '2026-08-19T17:06:08.000Z',
+    utc_offset_s: 7200,
+    offset_source: 'fit',
+    total_distance_km: 20.1,
+    total_timer_s: 2911,
+    total_elapsed_s: 2963,
+    device_elapsed_s: 32047,
+    total_ascent_m: 64,
+    total_descent_m: 163,
+    device_ascent_m: 128,
+    device_descent_m: 128,
+    power_source: 'unavailable',
+  };
+  const prompt = generateAnalysisPrompt({ sessions: [session], records: [], segments: [] }, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.match(prompt, /Start Time: 19:06 local \(UTC\+02:00\)/);
+  assert.match(prompt, /device session elapsed 0?8:54:07 inconsistent, recording probably left open; elapsed taken from records/);
+  assert.match(prompt, /device reports 128\/128 m; sources disagree, treat ascent\/descent and first-segment grade with caution/);
+});
+
+test('recent history marks user-reported heart rate as a summary without a series', () => {  const text = buildRecentHistoryContext([
     { startTime: '2026-07-19T08:22:00.000Z', distanceKm: 20.9, durationS: 3392, reportedAvgHr: 131, reportedMaxHr: 177, source: 'fit' },
   ]);
   assert.match(text, /user-reported avg\/max HR 131\/177 bpm \(summary only, no time series\)/);
