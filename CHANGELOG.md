@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.18.0 - 2026-10-03
+
+### Upgrade Notes
+
+- Run **FIT: Re-analyze Outdated Analyses** (analysis format 23). Optionally run **FIT: Edit Route Note** first to describe your routes (for example "second half climbs, often a headwind") so the note is used in the re-analysis.
+
+### Added
+
+- **Route-typical pattern**: for a route with at least five comparable earlier rides, the prompt states in how many of them the second half is slower than the first and the median drop, and where this ride falls among them. A regular pattern (for the development loop, 17 of 19 rides) is presented as a property of the route; the model is told to discuss only how the ride differs from it, instead of re-raising "late slowdown: effort or wind?" in every analysis.
+- **FIT: Edit Route Note**: a user note per route (terrain, prevailing wind) that is added to every analysis of that route.
+
+### Changed
+
+- Same-route comparisons (checkpoint splits, final-climb history, route-typical pattern) now use only rides in the same direction as the current one. 14 of the 36 loop rides in the development database are ridden in the opposite direction; mixing both directions compared opposite climbs and winds. Partial rides no longer get split comparisons. The route elevation consensus still covers the first-ride direction only.
+- The summary's `open` field excludes route-wide patterns.
+
 ## 0.17.1 - 2026-10-03
 
 ### Upgrade Notes

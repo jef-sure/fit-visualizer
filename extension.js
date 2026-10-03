@@ -109,7 +109,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 22;
+const ANALYSIS_VERSION = 23;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
 const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
