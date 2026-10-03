@@ -3020,6 +3020,64 @@ test('analysis prompt shows local start time, elapsed reconciliation and ascent 
   assert.match(prompt, /device reports 128\/128 m; sources disagree, treat ascent\/descent and first-segment grade with caution/);
 });
 
+test('LTHR prefers the tested value, then zone middle, then reserve, then max percentage', () => {
+  const { estimateLactateThresholdHeartRate } = require('../heart-rate');
+  assert.equal(estimateLactateThresholdHeartRate(171, [127, 138, 149, 160], 62, 158), 158, 'tested value wins');
+  assert.equal(estimateLactateThresholdHeartRate(171, [127, 138, 149, 160], 62), 155, 'middle of Threshold zone');
+  assert.equal(estimateLactateThresholdHeartRate(171, null, 62), 155, '85 % of the reserve with resting HR');
+  assert.equal(estimateLactateThresholdHeartRate(171, null, null), 145, '85 % of max HR without thresholds or rest');
+  assert.equal(estimateLactateThresholdHeartRate(null, null, null), null);
+});
+
+test('zone 1 floor follows the reserve when a resting heart rate is known', () => {
+  const { computeHeartRateZones } = require('../heart-rate');
+  const record = (hr) => ({ heart_rate: hr, elapsed_time: hr });
+  const withRest = computeHeartRateZones([{ heart_rate: 100, elapsed_time: 1 }, { heart_rate: 150, elapsed_time: 2 }], 171, [127, 138, 149, 160], { restingHeartRate: 62 });
+  assert.equal(withRest.zones[0].range, '117-126 bpm', 'floor is rest + 50 % reserve');
+  const withoutRest = computeHeartRateZones([{ heart_rate: 100, elapsed_time: 1 }, { heart_rate: 150, elapsed_time: 2 }], 171, [127, 138, 149, 160]);
+  assert.equal(withoutRest.zones[0].range, '86-126 bpm', 'floor falls back to 50 % of max HR');
+});
+
+test('prompt names the zone method and honours a tested LTHR', () => {
+  const session = { sport: 'cycling', total_distance_km: 20, power_source: 'unavailable', start_time: '2026-08-19T17:00:00Z' };
+  const withLthr = generateAnalysisPrompt(
+    { sessions: [session], records: [], segments: [] }, { total_activities: 0 },
+    { effectiveDate: '2026-08-19', maxHeartRate: 171, thresholds: [127, 138, 149, 160], lthr: 158, restingHeartRate: 62 },
+    null, [], [], 'en'
+  );
+  assert.match(withLthr, /Zone method: user-tested lactate threshold HR 158 bpm/);
+  assert.match(withLthr, /hrTSS uses the user-tested lactate threshold HR from the dated profile/);
+  assert.doesNotMatch(withLthr, /hrTSS uses an estimated threshold HR/);
+
+  const estimated = generateAnalysisPrompt(
+    { sessions: [session], records: [], segments: [] }, { total_activities: 0 },
+    { effectiveDate: '2026-08-19', maxHeartRate: 171, thresholds: [127, 138, 149, 160], restingHeartRate: 62 },
+    null, [], [], 'en'
+  );
+  assert.match(estimated, /zone starts from the dated profile; hrTSS threshold is estimated as the middle of the Threshold zone/);
+  assert.match(estimated, /hrTSS uses an estimated threshold HR/);
+});
+
+test('heart-rate profiles store and compare an optional LTHR', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { applyHeartRateProfileUpsert, readHeartRateProfiles } = require('../heart-rate-profiles');
+    applyHeartRateProfileUpsert(db, { effectiveDate: '2026-08-19', maxHeartRate: 171, thresholds: [127, 138, 149, 160], lthr: 158 }, 'now');
+    const rows = readHeartRateProfiles(db);
+    assert.equal(rows[0].lthr, 158);
+    // Same everything except LTHR cleared -> a change, not a duplicate.
+    const changed = applyHeartRateProfileUpsert(db, { effectiveDate: '2026-08-20', maxHeartRate: 171, thresholds: [127, 138, 149, 160], lthr: null }, 'now');
+    assert.equal(changed.inserted, true);
+    // Identical including LTHR -> reuse.
+    const same = applyHeartRateProfileUpsert(db, { effectiveDate: '2026-08-25', maxHeartRate: 171, thresholds: [127, 138, 149, 160], lthr: null }, 'now');
+    assert.equal(same.inserted, false);
+  } finally {
+    db.close();
+  }
+});
+
 test('pinned analysis model id overrides the cheapest-model selection', async () => {
   const models = [
     { id: 'gpt-6-luna', name: 'Luna', family: 'luna' },

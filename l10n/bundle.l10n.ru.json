@@ -190,5 +190,7 @@
   "xPower: GoldenCheetah's exponentially weighted estimate of the physiological cost of variable power.": "xPower: экспоненциально взвешенная оценка физиологической стоимости переменной мощности из GoldenCheetah.",
   "years": "лет",
   "{0} + scroll to zoom": "{0} + прокрутка для масштаба",
-  "⚠ Data Quality Note:": "⚠ Важно о качестве данных:"
+  "⚠ Data Quality Note:": "⚠ Важно о качестве данных:",
+  "Lactate threshold HR (bpm, optional)": "Пороговый пульс lactate threshold (уд/мин, необязательно)",
+  "optional": "необязательно"
 }

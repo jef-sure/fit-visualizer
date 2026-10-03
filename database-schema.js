@@ -187,6 +187,7 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'activities', 'device_descent_m', 'REAL');
   addColumnIfMissing(db, 'activities', 'device_moving_time_s', 'REAL');
   addColumnIfMissing(db, 'activities', 'device_elapsed_s', 'REAL');
+  addColumnIfMissing(db, 'heart_rate_profiles', 'lthr', 'REAL');
 }
 
 function addColumnIfMissing(db, table, column, type) {

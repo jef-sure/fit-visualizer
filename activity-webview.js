@@ -399,7 +399,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     [mapId + 'HrSvg']: buildChartClientPayloadFromModule(hrChart, 'km', ui.beatsPerMinute, hrOverlays),
     [mapId + 'AltSvg']: buildChartClientPayloadFromModule(altitudeChart, 'km', 'm', altitudeOverlays),
   });
-  const hrZones = computeHeartRateZones(records, hrConfig?.maxHeartRate, hrConfig?.thresholds);
+  const hrZones = computeHeartRateZones(records, hrConfig?.maxHeartRate, hrConfig?.thresholds, { restingHeartRate: athleteProfile?.restingHeartRate });
   const gpsRoutePointBudget = Math.min(6000, Math.max(1200, records.length));
   const gpsRoute = buildGpsRouteFromModule(records, 1400, 420, gpsRoutePointBudget, { noPointsText: ui.noGpsPoints });
   const compGpsPoints = hasOverlay ? safeJson(extractGpsPoints(compRecords).slice(0, gpsRoutePointBudget).map((p) => ({ lat: p.y, lon: p.x }))) : 'null';
@@ -529,6 +529,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           <span>${escapeHtml(formatUi(ui.zoneStarts, zone))}</span>
           <input id="${mapId}Zone${zone}Start" type="number" min="30" max="240" step="1" value="${positiveNumberOrBlank(profileThresholds[index])}" placeholder="${escapeHtml(ui.auto)}">
         </label>`).join('')}
+        <label>
+          <span>${escapeHtml(ui.lactateThresholdHr)}</span>
+          <input id="${mapId}ProfileLthr" type="number" min="100" max="240" step="1" value="${positiveNumberOrBlank(hrConfig?.lthr)}" placeholder="${escapeHtml(ui.optional)}">
+        </label>
         <label>
           <span>${escapeHtml(ui.sex)}</span>
           <select id="${mapId}AthleteSex">
@@ -920,6 +924,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           effectiveDate: document.getElementById('${mapId}HrEffectiveDate').value,
           maxHr: document.getElementById('${mapId}ProfileMaxHr').value,
           thresholds: [2, 3, 4, 5].map((zone) => document.getElementById('${mapId}Zone' + zone + 'Start').value),
+          lthr: document.getElementById('${mapId}ProfileLthr').value,
           sex: document.getElementById('${mapId}AthleteSex').value,
           age: document.getElementById('${mapId}AthleteAge').value,
           restingHr: document.getElementById('${mapId}AthleteRestingHr').value,

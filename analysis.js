@@ -242,6 +242,7 @@ function buildDataQualityContext(fitData, heartRateConfig = fitData.analysisHear
     ['Mass provenance', quality.massSource], ['Rider mass used', formatPositive(quality.riderMassKg, 1), 'kg'],
     ['Bike mass used', formatFinite(quality.bikeMassKg, 1), 'kg'], ['FTP provenance', quality.ftpSource],
     ['HR profile provenance', heartRateConfig?.source || (heartRateConfig ? 'supplied profile; derivation not retained' : null)],
+    ['TRIMP coefficients', quality.trimpCoefficientNote],
   ]);
   return lines ? `**Measurement and Estimate Provenance:**\n${lines}\nGrade residual/window diagnostics describe local consistency, not calibrated uncertainty. Unknown wind, surface, mass error and sensor bias can still affect vpower. HR zone names do not establish tested lactate threshold or VO2max.` : '';
 }
@@ -287,7 +288,7 @@ function sportsEvidenceRules() {
 function buildZoneContext(records, heartRateConfig) {
   const hasProfile = Number.isFinite(heartRateConfig?.maxHeartRate);
   const zoneData = hasProfile
-    ? computeHeartRateZones(Array.isArray(records) ? records : [], heartRateConfig.maxHeartRate, heartRateConfig.thresholds)
+    ? computeHeartRateZones(Array.isArray(records) ? records : [], heartRateConfig.maxHeartRate, heartRateConfig.thresholds, { restingHeartRate: heartRateConfig.restingHeartRate })
     : { enabled: false };
   if (!zoneData.enabled || !(zoneData.totalSeconds > 0)) {
     return '**Time in Heart-Rate Zones:** Not available.';
@@ -561,15 +562,24 @@ function buildWorkoutFields(session, records) {
 
 function buildHeartRateProfileContext(heartRateConfig) {
   const hasHeartRateProfile = Number.isFinite(heartRateConfig?.maxHeartRate);
-  return hasHeartRateProfile
-    ? `**Heart Rate Profile Effective for This Workout:**\n${formatFieldsSkippingEmpty([
-      ['Effective Date', heartRateConfig.effectiveDate || 'legacy setting'],
-      ['Maximum HR', heartRateConfig.maxHeartRate, 'bpm'],
-      ['Zone 2-5 Starts', Array.isArray(heartRateConfig.thresholds)
-        ? `${heartRateConfig.thresholds.join(', ')} bpm`
-        : 'derived at 60%, 70%, 80%, and 90% of max HR'],
-    ])}`
-    : '**Heart Rate Profile:** No personal maximum HR or zone thresholds are available.';
+  if (!hasHeartRateProfile) {
+    return '**Heart Rate Profile:** No personal maximum HR or zone thresholds are available.';
+  }
+  const zoneMethod = heartRateConfig?.lthr
+    ? `user-tested lactate threshold HR ${heartRateConfig.lthr} bpm (dated ${heartRateConfig.effectiveDate || 'profile'}); hrTSS threshold uses this value`
+    : Array.isArray(heartRateConfig.thresholds)
+      ? 'zone starts from the dated profile; hrTSS threshold is estimated as the middle of the Threshold zone, not a tested LTHR'
+      : Number.isFinite(Number(heartRateConfig?.restingHeartRate))
+        ? `thresholds derived from Karvonen reserve (resting ${heartRateConfig.restingHeartRate} bpm); hrTSS threshold is estimated, not a tested LTHR`
+        : 'thresholds derived at 60%, 70%, 80%, and 90% of max HR; hrTSS threshold is estimated, not a tested LTHR';
+  return `**Heart Rate Profile Effective for This Workout:**\n${formatFieldsSkippingEmpty([
+    ['Effective Date', heartRateConfig.effectiveDate || 'legacy setting'],
+    ['Maximum HR', heartRateConfig.maxHeartRate, 'bpm'],
+    ['Zone 2-5 Starts', Array.isArray(heartRateConfig.thresholds)
+      ? `${heartRateConfig.thresholds.join(', ')} bpm`
+      : 'derived at 60%, 70%, 80%, and 90% of max HR'],
+    ['Zone method', zoneMethod],
+  ])}`;
 }
 
 function buildReportedHeartRateContext(session) {
@@ -682,7 +692,9 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
       ? 'User-reported HR values are a summary from another device, not a measurement of this recording: treat them as an approximate indication of internal response and never as zone time, peaks or load.'
       : null,
     'Do not prescribe bpm targets from an observed peak HR. Prefer effort/RPE guidance and label it as general guidance.',
-    'hrTSS uses an estimated threshold HR (middle of the Threshold zone), not a directly tested LTHR value; treat it as approximate.',
+    heartRateConfig?.lthr
+      ? 'hrTSS uses the user-tested lactate threshold HR from the dated profile.'
+      : 'hrTSS uses an estimated threshold HR (middle of the Threshold zone), not a directly tested LTHR value; treat it as approximate.',
     hasSegments
       ? 'Segments state which signal their effort is based on. Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.'
       : null,

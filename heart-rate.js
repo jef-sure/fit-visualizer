@@ -6,7 +6,7 @@ const HEART_RATE_ZONES = Object.freeze([
   { name: 'VO2max', low: 0.90, high: Number.POSITIVE_INFINITY },
 ]);
 
-function computeHeartRateZones(records, maxHeartRate, customThresholds) {
+function computeHeartRateZones(records, maxHeartRate, customThresholds, options = {}) {
   if (!Number.isFinite(maxHeartRate) || maxHeartRate <= 0) {
     return {
       enabled: false,
@@ -18,6 +18,12 @@ function computeHeartRateZones(records, maxHeartRate, customThresholds) {
   const zoneSeconds = HEART_RATE_ZONES.map(() => 0);
   const durations = estimateRecordDurations(records);
   const thresholds = normalizeThresholds(maxHeartRate, customThresholds);
+  // Zone 1's floor follows the same reserve the auto profile uses when a resting HR is known,
+  // so the Karvonen thresholds and the 50 % HRmax floor stop contradicting each other.
+  const restingHeartRate = Number(options.restingHeartRate);
+  const zoneFloorBpm = Number.isFinite(restingHeartRate) && restingHeartRate > 0 && restingHeartRate < maxHeartRate
+    ? Math.round(restingHeartRate + HEART_RATE_ZONES[0].low * (maxHeartRate - restingHeartRate))
+    : Math.round(HEART_RATE_ZONES[0].low * maxHeartRate);
   let totalSeconds = 0;
 
   for (let index = 0; index < records.length; index += 1) {
@@ -28,14 +34,14 @@ function computeHeartRateZones(records, maxHeartRate, customThresholds) {
     }
 
     const zoneIndex = getHeartRateZoneIndex(heartRate, thresholds);
-    if (heartRate >= HEART_RATE_ZONES[0].low * maxHeartRate) {
+    if (heartRate >= zoneFloorBpm) {
       zoneSeconds[zoneIndex] += seconds;
       totalSeconds += seconds;
     }
   }
 
   const zones = HEART_RATE_ZONES.map((zone, index) => {
-    const lowerBpm = index === 0 ? Math.round(zone.low * maxHeartRate) : Math.round(thresholds[index - 1]);
+    const lowerBpm = index === 0 ? zoneFloorBpm : Math.round(thresholds[index - 1]);
     const upperBpm = index < thresholds.length ? Math.round(thresholds[index]) - 1 : Math.round(maxHeartRate);
     const seconds = zoneSeconds[index];
 
@@ -159,14 +165,24 @@ function calculateAutoHeartRateProfile(input) {
   };
 }
 
-// Proxy for lactate-threshold HR: middle of the Threshold zone (zone 4 start to zone 5 start), or 85% of max HR.
-function estimateLactateThresholdHeartRate(maxHeartRate, thresholds) {
+// Proxy for lactate-threshold HR. A directly tested value wins; otherwise the middle of the
+// Threshold zone (custom or Karvonen thresholds), and only without thresholds does 85 % of
+// the reserve (resting HR known) or of max HR stand in.
+function estimateLactateThresholdHeartRate(maxHeartRate, thresholds, restingHeartRate, testedLthr) {
+  const tested = Number(testedLthr);
+  if (Number.isFinite(tested) && tested >= 100 && tested <= 240) {
+    return Math.round(tested);
+  }
   const max = Number(maxHeartRate);
   if (!Number.isFinite(max) || max <= 0) {
     return null;
   }
   if (Array.isArray(thresholds) && thresholds.length === 4 && thresholds.every((value) => Number.isFinite(Number(value)))) {
     return Math.round((Number(thresholds[2]) + Number(thresholds[3])) / 2);
+  }
+  const rest = Number(restingHeartRate);
+  if (Number.isFinite(rest) && rest > 0 && rest < max) {
+    return Math.round(rest + 0.85 * (max - rest));
   }
   return Math.round(max * 0.85);
 }

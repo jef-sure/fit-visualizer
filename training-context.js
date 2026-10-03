@@ -114,7 +114,7 @@ function buildTrainingContext(activities, referenceTime, currentSport, currentSe
 function attachActivityZones(activity, records, heartRateConfig) {
   return { ...activity,
     zones: Number.isFinite(heartRateConfig?.maxHeartRate)
-      ? computeHeartRateZones(records, heartRateConfig.maxHeartRate, heartRateConfig.thresholds) : null,
+      ? computeHeartRateZones(records, heartRateConfig.maxHeartRate, heartRateConfig.thresholds, { restingHeartRate: heartRateConfig.restingHeartRate }) : null,
     peakHr: calculatePeakHeartRates(records) };
 }
 

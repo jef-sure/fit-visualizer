@@ -1309,11 +1309,15 @@ function getHeartRateConfig() {
   };
 }
 
-async function getHeartRateConfigForActivity(dbPath, startTime) {
+function attachRestingHeartRate(config, athleteProfile) {
+  return { ...config, restingHeartRate: asNumber(athleteProfile?.restingHeartRate) || null };
+}
+
+async function getHeartRateConfigForActivity(dbPath, startTime, athleteProfile = null) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
-    return getProfileHeartRateConfig(db, startTime);
+    return attachRestingHeartRate(getProfileHeartRateConfig(db, startTime), athleteProfile);
   } finally {
     db.close();
   }
@@ -1321,11 +1325,13 @@ async function getHeartRateConfigForActivity(dbPath, startTime) {
 
 function profileRowToConfig(profile) {
   const thresholds = [profile.zone2_start, profile.zone3_start, profile.zone4_start, profile.zone5_start];
+  const lthr = asNumber(profile.lthr);
   return {
     maxHeartRate: Number(profile.max_hr),
     thresholds: thresholds.every((value) => Number.isFinite(value)) ? thresholds.map(Number) : null,
     effectiveDate: String(profile.effective_date),
     source: 'dated profile',
+    lthr: Number.isFinite(lthr) && lthr > 0 ? lthr : null,
   };
 }
 
@@ -1334,8 +1340,8 @@ function getProfileHeartRateConfig(db, startTime) {
   let stmt;
   try {
     stmt = db.prepare(activityDate
-      ? 'SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start FROM heart_rate_profiles WHERE effective_date <= ? ORDER BY effective_date DESC LIMIT 1'
-      : 'SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start FROM heart_rate_profiles ORDER BY effective_date DESC LIMIT 1');
+      ? 'SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start, lthr FROM heart_rate_profiles WHERE effective_date <= ? ORDER BY effective_date DESC LIMIT 1'
+      : 'SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start, lthr FROM heart_rate_profiles ORDER BY effective_date DESC LIMIT 1');
     if (activityDate) {
       stmt.bind([activityDate]);
     }
@@ -1464,7 +1470,7 @@ async function runActivityAnalysis(dbPath, activityId, force) {
 
   const analysisData = await prepareAnalysisData(dbPath, current, numId);
   const summary = await getProgressSummaryFromDb(dbPath, numId, analysisData);
-  const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time);
+  const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time, await getAthleteProfile(dbPath, numId));
   const hasManualHrOverrides = Boolean(analysisData.sessions?.[0]?._hasManualHrOverrides);
   const previousResult = hasManualHrOverrides ? null : await getLatestAnalysisAnyVersion(dbPath, numId);
   const previousAnalysis = previousResult?.version >= ANALYSIS_VERSION ? previousResult.text : null;
@@ -1692,7 +1698,7 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
     avg_hr: sourceSession._source === 'manual' ? null : (Object.hasOwn(sourceSession, '_device_avg_hr') ? sourceSession._device_avg_hr : sourceSession.avg_hr),
     max_hr: sourceSession._source === 'manual' ? null : (Object.hasOwn(sourceSession, '_device_max_hr') ? sourceSession._device_max_hr : sourceSession.max_hr),
   };
-  const hrConfig = await getHeartRateConfigForActivity(dbPath, session.start_time);
+  const hrConfig = await getHeartRateConfigForActivity(dbPath, session.start_time, athleteProfile);
   const normalizedRecords = normalizeRecordSpeeds(fitData.records);
   const powerData = addEstimatedPowerWhenMissing(normalizedRecords, {
     riderMassKg: athleteProfile.riderMassKg,
@@ -1707,6 +1713,7 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
       ? asNumber(hrConfig.maxHeartRate)
       : session.max_hr,
     heartRateThresholds: hrConfig?.thresholds,
+    lactateThresholdHeartRate: hrConfig?.lthr ?? undefined,
     powerSource: powerData.source,
   });
   const athleteFtp = asNumber(athleteProfile.ftp);
@@ -1729,6 +1736,7 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
       massSource: 'activity-specific mass when saved, otherwise current athlete profile; not measured by FIT',
       riderMassKg: asNumber(athleteProfile.riderMassKg), bikeMassKg: asNumber(athleteProfile.bikeMassKg),
       hrSource: session._source === 'manual' ? 'manual activity; HR withheld' : 'original FIT values; manual overrides withheld',
+      trimpCoefficientNote: athleteProfile.sex === 'other' ? 'mean of the male and female Banister sets (sex recorded as other); an assumption, not a validated choice' : null,
       altitudeSource: 'FIT altitude; sensor provenance not retained',
       ftpSource: 'current athlete profile; threshold test date and method not retained',
     },
@@ -1749,7 +1757,7 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
       trimp: summary.trimp,
       hr_tss: summary.hrTss,
       ftp: Number.isFinite(athleteFtp) && athleteFtp > 0 ? athleteFtp : null,
-      lactate_threshold_hr: estimateLactateThresholdHeartRate(hrConfig?.maxHeartRate, hrConfig?.thresholds),
+      lactate_threshold_hr: estimateLactateThresholdHeartRate(hrConfig?.maxHeartRate, hrConfig?.thresholds, athleteProfile?.restingHeartRate, hrConfig?.lthr),
       power_source: powerData.source,
     }, ...fitData.sessions.slice(1)],
   };
@@ -1818,12 +1826,17 @@ async function updateHeartRateProfile(dbPath, message) {
   const athleteProfile = parseOptionalAthleteProfile(message);
   const ftp = parseOptionalFtp(message.ftp);
   const wheelCircumferenceMm = parseOptionalWheelCircumference(message.wheelCircumferenceMm);
+  const rawLthr = String(message.lthr ?? '').trim();
+  const lthr = rawLthr === '' ? null : Number(rawLthr);
+  if (lthr != null && (!Number.isFinite(lthr) || lthr < 100 || lthr > 240)) {
+    throw new Error('Lactate threshold HR must be between 100 and 240 bpm.');
+  }
 
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
     const now = new Date().toISOString();
-    const { inserted, notice } = applyHeartRateProfileUpsert(db, { effectiveDate, maxHeartRate, thresholds }, now);
+    const { inserted, notice } = applyHeartRateProfileUpsert(db, { effectiveDate, maxHeartRate, thresholds, lthr }, now);
     if (athleteProfile || ftp != null || wheelCircumferenceMm != null) {
       upsertAthleteProfile(db, {
         sex: athleteProfile?.sex,
@@ -2665,7 +2678,7 @@ async function runActivityChatReply(dbPath, activityId, history, userQuestion) {
   }
   const analysisData = await prepareAnalysisData(dbPath, current, activityId);
   const summary = await getProgressSummaryFromDb(dbPath, activityId, analysisData);
-  const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time);
+  const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time, await getAthleteProfile(dbPath, activityId));
   const hasManualHrOverrides = Boolean(analysisData.sessions?.[0]?._hasManualHrOverrides);
   const previousResult = hasManualHrOverrides ? null : await getLatestAnalysisAnyVersion(dbPath, activityId);
   const hasCurrentAnalysis = previousResult?.version >= ANALYSIS_VERSION;

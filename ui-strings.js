@@ -27,6 +27,8 @@ const UI_STRINGS = {
   heartRateZonesCustomInfo: 'Zones based on custom watch thresholds and max HR {0} bpm. Time is estimated from elapsed record deltas.',
   averageHeartRate: 'Average HR (bpm)',
   maximumHeartRate: 'Maximum HR (bpm)',
+  lactateThresholdHr: 'Lactate threshold HR (bpm, optional)',
+  optional: 'optional',
   notAvailable: 'Not available',
   saveHeartRate: 'Save HR',
   effectiveFrom: 'Effective from',

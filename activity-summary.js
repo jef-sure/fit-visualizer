@@ -39,7 +39,7 @@ function buildSummary(records, sessions, options = {}) {
   const trimp = calculateBanisterTrimp({ durationSec, avgHeartRate: avgHr, records, restingHeartRate, maxHeartRate: maxHeartRateForHrr, sex: options.sex });
   const hrTss = calculateHrTss({
     durationSec, avgHeartRate: avgHr, records, restingHeartRate,
-    lactateThresholdHeartRate: estimateLactateThresholdHeartRate(maxHeartRateForHrr, options.heartRateThresholds),
+    lactateThresholdHeartRate: estimateLactateThresholdHeartRate(maxHeartRateForHrr, options.heartRateThresholds, options.restingHeartRate, options.lactateThresholdHeartRate),
   });
   const decouplingPct = options.powerSource === 'estimated'
     ? null

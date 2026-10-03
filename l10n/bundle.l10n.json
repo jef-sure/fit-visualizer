@@ -190,5 +190,7 @@
   "xPower: GoldenCheetah's exponentially weighted estimate of the physiological cost of variable power.": "xPower: GoldenCheetah's exponentially weighted estimate of the physiological cost of variable power.",
   "years": "years",
   "{0} + scroll to zoom": "{0} + scroll to zoom",
-  "⚠ Data Quality Note:": "⚠ Data Quality Note:"
+  "⚠ Data Quality Note:": "⚠ Data Quality Note:",
+  "Lactate threshold HR (bpm, optional)": "Lactate threshold HR (bpm, optional)",
+  "optional": "optional"
 }
