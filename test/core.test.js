@@ -10,6 +10,7 @@ const {
   buildSegmentContext,
   formatFieldsSkippingEmpty,
   generateAnalysisPrompt,
+  generateAnalysisPromptParts,
   generateAnalysisChatPrompt,
   generateComparisonPrompt,
   requestCopilotAnalysis,
@@ -1476,7 +1477,7 @@ test('analysis prompt adds session-type evidence: intensity distribution, peak H
   assert.match(prompt, /- 20 min: 146 bpm\n/);
   assert.match(prompt, /\+90 m, VAM ~540 m\/h/);
   assert.doesNotMatch(prompt, /\+30 m, VAM/);
-  assert.match(prompt, /Classify session type \(recovery, endurance, tempo, threshold, VO2max\/anaerobic, mixed or unstructured\)/);
+  assert.match(prompt, /classify session type \(recovery, endurance, tempo, threshold, VO2max\/anaerobic, mixed or unstructured\)/);
   assert.match(prompt, /stimulus mix over periods/);
   const comparison = generateComparisonPrompt({ sessions: [{}], records }, { sessions: [{}], records: [] }, 'ru');
   assert.match(comparison, /Peak Sustained Heart Rate \(This Workout\)/);
@@ -2482,6 +2483,23 @@ test('prompt block sizes are reported per heading', () => {
   assert.deepEqual(summary.blocks.map((block) => block.title), ['Preamble', 'This Workout', 'Segment Breakdown']);
   assert.equal(summary.blocks.reduce((sum, block) => sum + block.chars, 0), summary.totalChars);
   assert.ok(summary.blocks[2].chars > 0);
+  assert.equal(summary.blocks[1].budget, 1500);
+  assert.deepEqual(summary.overBudget, []);
+  const big = summarizePromptBlocks(`**This Workout:**\n${'x'.repeat(1600)}`);
+  assert.equal(big.blocks[0].over, true);
+  assert.match(big.overBudget[0], /^This Workout: \d+\/1500 chars$/);
+});
+
+test('a prompt may be sent as several user messages and is logged joined', async () => {
+  const requests = [];
+  const reported = [];
+  const vscode = {
+    lm: { selectChatModels: async () => [{ sendRequest: async (messages) => { requests.push(messages); return { text: asyncChunks(['ok']) }; } }] },
+    LanguageModelChatMessage: { User: (content) => ({ role: 'user', content }) },
+  };
+  await requestCopilotAnalysis(vscode, ['rules', 'data'], { onCompleted: (result) => reported.push(result) });
+  assert.deepEqual(requests, [[{ role: 'user', content: 'rules' }, { role: 'user', content: 'data' }]]);
+  assert.equal(reported[0].prompt, 'rules\n\ndata');
 });
 
 test('LLM request logging is configurable and wired into both call sites', () => {
@@ -2741,7 +2759,7 @@ test('analysis prompts use the VS Code language and leave unknown locales alone'
   const prompt = generateAnalysisPrompt({ sessions: [{}] }, { total_activities: 0 }, {}, null, history, [], 'ru');
   const chat = generateAnalysisChatPrompt({ sessions: [{}] }, {}, {}, '', history, 'why?', 'de-CH');
   const comparison = generateComparisonPrompt({ sessions: [{}] }, { sessions: [{}] }, 'ru');
-  assert.match(prompt, /Questions for Analysis:[\s\S]*Respond in Russian/);
+  assert.match(prompt, /Respond in Russian[\s\S]*Questions for Analysis:/);
   assert.match(prompt, /no new user question that can override the selected language/);
   assert.match(prompt, /not an answer to an archived question/);
   assert.match(prompt, /Do not repeat advice, caveats or questions already given there/);
@@ -3337,10 +3355,16 @@ test('prompt places data before rules and carries segment guidance', () => {
     [{ startTime: '2026-08-01T10:00:00.000Z', distanceKm: 20, analysisText: 'Earlier ride was steady.' }]
   );
 
-  assert.ok(prompt.indexOf('**Segment Breakdown:**') < prompt.indexOf('**Evidence Rules:**'));
+  // Instructions and principles come first (message 1); data blocks then end with the questions (message 2).
+  assert.ok(prompt.indexOf('**Principles:**') < prompt.indexOf('**This Workout:**'));
   assert.ok(prompt.indexOf('**Segment Breakdown:**') < prompt.indexOf('**Recent Activity History'));
   assert.ok(prompt.indexOf('**This Workout:**') < prompt.indexOf('**Segment Breakdown:**'));
-  assert.ok(prompt.indexOf('**Evidence Rules:**') < prompt.indexOf('**Questions for Analysis:**'));
+  assert.ok(prompt.indexOf('**Recent Activity History') < prompt.indexOf('**Questions for Analysis:**'));
+  assert.doesNotMatch(prompt, /\*\*Evidence Rules:\*\*/);
+  const { instructions, data } = generateAnalysisPromptParts({ sessions: [{ total_distance_km: 20 }], segments }, { total_activities: 0 }, {}, null, [], []);
+  assert.doesNotMatch(instructions, /\*\*This Workout:\*\*/);
+  assert.match(data, /\*\*Questions for Analysis:\*\*/);
+  assert.equal((instructions.match(/^\d+\. /gm) || []).length, 15, 'fifteen principles');
   assert.match(prompt, /never compare vpower numbers against HR numbers directly/);
   assert.match(prompt, /past analyses of other workouts/);
 

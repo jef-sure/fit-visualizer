@@ -12,7 +12,13 @@
 - **Route elevation consensus**: with at least five same-route rides, per-ride constant altitude offsets are removed and the per-bin median gives a stable route ascent/descent (about 117 m for the development loop, closed within 1 m) that is shown next to the computed and device figures.
 - **Altitude quality flags** in the prompt: `ALT_MISSING_START`, `ALT_GAP` and `ALT_SETTLING` (barometer drift in the first minutes, measured against the route consensus, or from start-vs-end of a closed loop).
 
+- **Structured carry-forward**: the analysis ends with a short machine-readable SUMMARY (type, finding, advice category, advice, open question, revised). It is cut from the displayed text, stored in `activity_analysis.summary_json`, and later prompts see these compact summaries (code class vs model type) plus the recent advice categories instead of full past analyses. Older analyses fall back to their first 400 characters.
+- **Prompt restructure**: the analysis prompt is sent as two messages - instructions with 15 positive principles and the response format first, data and questions last - replacing ~45 evidence rules (rules 6.6k -> ~3.8k characters). The log records per-block budgets and overshoots.
+- **FIT: Evaluate Analysis Prompt** (dev command) regenerates a fixed set of analyses without touching stored ones and writes `eval/<run>/report.md` with automatic checks (valid tail, type vs code class, repeated advice category, numbers not in the prompt, missed quality flags) and deltas against the previous run. `node scripts/prompt-eval/check.js <dir>` runs the same checks on eval runs or LLM logs.
+
 ### Fixed
+
+- **FIT: Rebuild Derived Features** and **FIT: Tidy Heart-Rate Profiles** failed with a ReferenceError because the command module never received their handlers.
 
 - Derived features, route assignments and elevation profiles computed while building an analysis were never written back to the database, and **Rebuild Derived Features** did not save its result. They are now persisted.
 - Route assignment is idempotent: repeated analyses no longer inflate a route's ride count, and assignments no longer depend on a feature row existing.

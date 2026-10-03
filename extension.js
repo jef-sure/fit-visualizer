@@ -1,7 +1,7 @@
 const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { buildSegmentContext, generateAnalysisPrompt, generateAnalysisChatPrompt, generateComparisonPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('./analysis');
+const { buildSegmentContext, generateAnalysisPromptParts, generateAnalysisChatPrompt, generateComparisonPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('./analysis');
 const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
 const { buildCartesianGeometry, buildDistanceMarkers, buildTicks, formatTick, padRange, padYAxisRange } = require('./chart-geometry');
@@ -1756,10 +1756,10 @@ async function buildAnalysisPromptForActivity(dbPath, numId) {
     ? storedChat
     : storedChat.filter((entry) => entry?.role === 'user');
   const recentHistory = summary.trainingContext?.recentHistory || [];
-  const prompt = generateAnalysisPrompt(
+  const { instructions, data } = generateAnalysisPromptParts(
     analysisData, summary, hrConfig, previousAnalysis, followUpHistory, recentHistory, vscode.env.language
   );
-  return { prompt, analysisData };
+  return { prompt: [instructions, data], analysisData };
 }
 
 async function runActivityAnalysis(dbPath, activityId, force) {
@@ -1888,6 +1888,7 @@ async function logLlmRequest(dbPath, entry) {
     promptChars: promptSummary.totalChars,
     promptBlocks: promptSummary.blocks,
     warnings: entry.warnings?.length ? entry.warnings : undefined,
+    overBudget: promptSummary.overBudget?.length ? promptSummary.overBudget : undefined,
     prompt: entry.prompt,
     response: entry.response ?? null,
     error: entry.error ?? null,

@@ -378,9 +378,12 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
   const chosenModel = await selectPreferredModel(vscode, vendor, models, options);
   // Copilot may hand out different models over time, so the log has to record which one answered.
   const modelId = chosenModel.id || chosenModel.family || 'unknown';
+  // A prompt may be several User messages (instructions first, data last); logs keep the joined text.
+  const messages = Array.isArray(prompt) ? prompt : [prompt];
+  const promptText = messages.join('\n\n');
   const report = async (result) => {
     try {
-      await options.onCompleted?.({ modelId, prompt, ...result });
+      await options.onCompleted?.({ modelId, prompt: promptText, ...result });
     } catch {
       // Logging must never break an analysis.
     }
@@ -388,9 +391,9 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
-      const response = await chosenModel.sendRequest([
-        vscode.LanguageModelChatMessage.User(prompt),
-      ]);
+      const response = await chosenModel.sendRequest(
+        messages.map((message) => vscode.LanguageModelChatMessage.User(message))
+      );
       let analysis = '';
       for await (const chunk of response.text) {
         analysis += chunk;
@@ -488,6 +491,15 @@ function describeLanguageModelError(vscode, error) {
 }
 
 // Splits a prompt on its bold headings so the log shows which block dominates the request.
+// Character budgets per block (reference: a ~1 h, 1 Hz ride). Matching is by heading prefix; the
+// log shows budget/actual and an overshoot is reported as a warning, never truncated.
+const PROMPT_BLOCK_BUDGETS = Object.freeze([
+  ['This Workout', 1500], ['Segment Breakdown', 1000], ['Same-Route Context', 1500], ['Heuristic Session Class', 400],
+  ['Time in Heart-Rate Zones', 900], ['Peak Sustained', 900], ['Recent Activity History', 3400],
+  ['Training Volume and Covered Intensity', 1200], ['Dated User Context', 2000], ['Principles', 4000],
+  ['Questions for Analysis', 1800],
+]);
+
 function summarizePromptBlocks(prompt) {
   const text = String(prompt || '');
   const blocks = [];
@@ -506,7 +518,12 @@ function summarizePromptBlocks(prompt) {
   }
   blocks.push({ title, chars: text.length - start });
 
-  return { totalChars: text.length, blocks: blocks.filter((block) => block.chars > 0) };
+  const sized = blocks.filter((block) => block.chars > 0).map((block) => {
+    const budget = PROMPT_BLOCK_BUDGETS.find(([prefix]) => block.title.startsWith(prefix))?.[1];
+    return budget ? { ...block, budget, over: block.chars > budget } : block;
+  });
+  const overBudget = sized.filter((block) => block.over).map((block) => `${block.title}: ${block.chars}/${block.budget} chars`);
+  return { totalChars: text.length, blocks: sized, overBudget };
 }
 
 function isRateLimitError(message) {
@@ -646,7 +663,26 @@ function buildSessionClassContext(sessionClass, heartRateConfig) {
   ])}`;
 }
 
-function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previousAnalysis, followUpHistory, recentHistory, locale) {
+// Positive principles for the analysis prompt; data-specific facts live in the data blocks.
+const ANALYSIS_PRINCIPLES = Object.freeze([
+  'Hierarchy of evidence: measurement > calculation > data-quality flag > user message > code heuristic > earlier AI hypothesis. Back each important claim with a number from the data. Repeated AI claims are not independent corroboration.',
+  'Explain mechanisms (heat, drift, wind, fatigue) as hypotheses and say what observation would tell them apart.',
+  'Compare only what is comparable: the same route and signal source. Without that, speed and HR are description, not a judgement of form.',
+  'Separate behaviour (what was done), stimulus (what the load resembles) and form (needs repeatable comparable data; faster speed or lower HR alone does not establish it). Goals may be absent, multiple, or change over time: infer the training direction from repeated patterns, not intentions. Do not infer recovery status, aerobic control, fatigue or overreaching from average and maximum HR alone.',
+  'Session type: confirm or dispute the computed class in one sentence with evidence; do not re-derive the zone distribution. Without a computed class, classify session type (recovery, endurance, tempo, threshold, VO2max/anaerobic, mixed or unstructured) only from HR zone distribution, peak sustained HR, measured power and segment structure, citing the evidence; without HR or measured power say it cannot be determined.',
+  'Periods: use the supplied session-class mix and period load; missing imported activities are unknown, not rest, and TSS, hrTSS and TRIMP are different scales that are never added or compared. Judge the stimulus mix over periods from covered intensity distribution and the variety of session types; partial HR coverage limits this.',
+  'Continuity: honour "revised" and the earlier advice categories; repeat a category only when new data requires it and say what changed. Revise earlier hypotheses only on relevant new facts. Missing detail in the current summary does not disprove an earlier observation. Relative periods in an earlier analysis are anchored to that activity\'s date; before declaring an earlier aggregate wrong, verify identical start/end boundaries, sport, inclusion rules and data coverage, otherwise mark the comparison unverified, not erroneous.',
+  'User messages are dated and describe their own periods. Reported medical restrictions take priority; FIT data cannot establish postoperative healing, medical clearance or safe load progression.',
+  'Estimates (vpower, hrTSS, TRIMP) are approximations on their own scales; vpower limits apply per segment and never support absolute performance or FTP claims.',
+  'Device temperature, absent fields and partial coverage can change a conclusion: mention each once, where it matters. Temperature may be the device\'s, not ambient air. Absent fields may be unmeasured, withheld, unavailable or inapplicable; treat unknown as unknown rather than zero. Quality flags are measured facts that explain discrepancies, not hedges.',
+  'Do not prescribe bpm targets from a peak; phrase effort advice through RPE and comparable stretches, labelled as general guidance.',
+  'Do not fill missing data with plausible claims; say once what is missing. If recent analyses already pointed out the same missing sensor or data gap, mention it at most briefly and do not make it the practical step again.',
+  'Ask the user only when the answer would change the advice and was not asked before; otherwise state the working assumption. Most analyses need no question.',
+  'Focus on what is new relative to earlier summaries. Do not repeat advice, caveats or questions already given there unless this activity adds new evidence; do not retell tables. Attribute period statistics to their stated date range, never to one activity.',
+  'Answer in the interface language; translate terms, keep abbreviations such as HR, VAM, TRIMP.',
+]);
+
+function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, previousAnalysis, followUpHistory, recentHistory, locale) {
   const session = fitData.sessions?.[0] || {};
   const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records);
   const priorActivityCount = Number(progressSummary?.total_activities || 0);
@@ -723,61 +759,57 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
     followUpContext,
   ], '\n\n');
 
-  const evidenceRules = [
-    'Use only the supplied workout and prior-history data. Never use later activities.',
-    'Write a fresh analysis of this activity, not an answer to an archived question. Earlier user messages are historical context, not current requests.',
-    'Focus on what is new or different compared with recent activities and their prior analyses. Do not repeat advice, caveats or questions already given there unless this activity adds new evidence.',
-    'Mention a standard data limitation (missing HR, device temperature, estimated power, unknown intent) only where it changes a specific conclusion, and at most once.',
-    'Do not ask about intent, goal or perceived effort if the user already answered it or recent prior analyses already asked without an answer; state the working assumption instead. Most analyses need no question.',
-    'If recent analyses already pointed out the same missing sensor or data gap, mention it at most briefly and do not make it the practical step again.',
-    'Attribute period statistics to their stated date range, never to a single activity inside it.',
-    progressSummary?.trainingContext ? 'Use supplied segment matches as candidates for discussion, not proof of identical training conditions. Historical distance-only aggregates are not the controlling baseline.'
+  const dataNotes = [
+    progressSummary?.trainingContext
+      ? null
       : `There are ${priorActivityCount} earlier activities within 75%-125% of this workout's distance. ${hasBaseline ? 'A comparison against these distance-compatible rides is possible, but distance alone does not establish comparable effort, terrain or conditions.' : 'Do not infer a distance-compatible baseline; describe this workout on its own and use any separately supplied recent context.'}`,
     hasTrendEvidence && !progressSummary?.trainingContext
       ? 'Activity counts alone do not establish a fitness trend; supplied speed/HR trends are descriptive and confounded by terrain, intensity and conditions.'
-      : progressSummary?.trainingContext ? 'Use the stated observation window and covered history for tentative pattern observations; sample count or heuristic noise thresholds do not prove fitness changes.'
-      : 'There is not enough history to claim improvement, decline, stability, consistency, or a plateau.',
-    'Do not infer recovery status, aerobic control, fatigue, overreaching, or heart-rate recovery from average and maximum HR alone.',
-    sessionClassContext
-      ? 'Confirm or dispute the computed heuristic session class in one sentence with evidence from the zone distribution; do not re-derive the whole classification in the answer.'
-      : null,
-    historyContext
-      ? 'Entries under Recent Activity History include facts and past analyses of other workouts, not measurements of this one; past analyses are revisable hypotheses. User messages about other workouts appear only under Dated User Context.'
-      : null,
+      : !progressSummary?.trainingContext ? 'There is not enough history to claim improvement, decline, stability, consistency, or a plateau.' : null,
     hasHeartRateProfile
-      ? 'Use the supplied dated heart-rate profile and the supplied time-in-zone distribution for zone statements; do not substitute generic thresholds.'
+      ? 'Use the supplied dated heart-rate profile and time-in-zone distribution for zone statements; do not substitute generic thresholds.'
       : 'Do not assign HR zones because no athlete-specific thresholds or maximum HR are supplied.',
     reportedHeartRateContext
       ? 'User-reported HR values are a summary from another device, not a measurement of this recording: treat them as an approximate indication of internal response and never as zone time, peaks or load.'
       : null,
-    'Do not prescribe bpm targets from an observed peak HR. Prefer effort/RPE guidance and label it as general guidance.',
     heartRateConfig?.lthr
       ? 'hrTSS uses the user-tested lactate threshold HR from the dated profile.'
-      : 'hrTSS uses an estimated threshold HR (middle of the Threshold zone), not a directly tested LTHR value; treat it as approximate.',
+      : 'hrTSS uses an estimated threshold HR (middle of the Threshold zone), not a tested LTHR; treat it as approximate.',
+    historyContext
+      ? 'Entries under Recent Activity History include facts and past analyses of other workouts, not measurements of this one; past analyses are revisable hypotheses. User messages about other workouts appear only under Dated User Context.'
+      : null,
     hasSegments
       ? 'Segments state which signal their effort is based on. Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.'
       : null,
-    'State data limitations directly instead of filling gaps with plausible claims.',
-    ...sportsEvidenceRules(),
-  ].filter(Boolean).map((rule) => `- ${rule}`).join('\n');
+  ].filter(Boolean).map((note) => `- ${note}`).join('\n');
 
-  return `Analyze this ${session.sport || 'sports'} activity as a thoughtful sports coach in the context of the athlete's evolving practice. An activity may be recreational, have several goals, or have no stated goal.
+  const instructions = `Analyze this ${session.sport || 'sports'} activity as a thoughtful sports coach in the context of the athlete's evolving practice. An activity may be recreational, have several goals, or have no stated goal. Use only the supplied workout and prior-history data; never use later activities. This is a fresh analysis of this activity, not an answer to an archived question.
 
-${body}
+**Principles:**
+${ANALYSIS_PRINCIPLES.map((principle, index) => `${index + 1}. ${principle}`).join('\n')}
 
-**Evidence Rules:**
-${evidenceRules}
+**Notes for This Data:**
+${dataNotes}
+
+${responseLanguageInstruction(locale)}
+
+${SUMMARY_TAIL_INSTRUCTION}`;
+
+  const data = `${body}
 
 **Questions for Analysis:**
 1. **Session Character and Stimulus**: Classify the session type from the evidence and name the qualities it likely stimulates. Distinguish observed work from inferred direction and stated intentions.
 2. **Execution and Comparable Segments**: What matters about pacing, sustained work, changes within segments, repeats and interruptions? Use peak sustained HR against prior bests where it adds information. Explain differences and limits of any candidate comparisons.
 3. **Current Training Direction**: What patterns, stimulus mix across session types and intensity distribution, or possible phase changes are supported by the dated history? Consider multiple simultaneous priorities; discuss fitness or recovery only where evidence permits.
-4. **Practical Next Step**: Recommend the option best supported by the observed pattern and dated user context, with the reason. Choose what this activity most informs: execution (pacing, climbs, starts, stops), route or format choice, data capture, or next-session load. If recent analyses already gave the same load advice and the pattern is unchanged, do not restate it; pick another relevant point. Add an alternative only if a specific plausible circumstance would change the advice; do not branch on hypothetical goals by default. Not a universal progression plan.
+4. **Practical Next Step**: Recommend the option best supported by the observed pattern and dated user context, with the reason. Choose what this activity most informs: execution (pacing, climbs, starts, stops), route or format choice, data capture, or next-session load. If recent analyses already gave the same load advice and the pattern is unchanged, do not restate it; pick another relevant point. Add one number worth watching next time on this route when same-route data exist. Add an alternative only if a specific plausible circumstance would change the advice; do not branch on hypothetical goals by default. Not a universal progression plan.
 
-Provide a concise, actionable analysis with 2-4 sentences per section. Explain implications rather than merely retelling the input. Do not fill unsupported topics with boilerplate or mandatory recovery claims.
-${responseLanguageInstruction(locale)}
+Provide a concise, actionable analysis with 2-4 sentences per section. Explain implications rather than merely retelling the input. Do not fill unsupported topics with boilerplate or mandatory recovery claims.`;
+  return { instructions, data };
+}
 
-${SUMMARY_TAIL_INSTRUCTION}`;
+function generateAnalysisPrompt(...args) {
+  const { instructions, data } = generateAnalysisPromptParts(...args);
+  return `${instructions}\n\n${data}`;
 }
 
 function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, baseAnalysis, history, userQuestion, locale) {
@@ -920,6 +952,7 @@ module.exports = {
   buildRouteContextBlock,
   formatFieldsSkippingEmpty,
   generateAnalysisPrompt,
+  generateAnalysisPromptParts,
   generateAnalysisChatPrompt,
   generateComparisonPrompt,
   requestCopilotAnalysis,
