@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Usage: node scripts/prompt-eval/check.js <dir-with-json-runs> [baseline-dir]
 // Each *.json file needs { prompt, response, kind? }; files whose kind is not "analysis" are
-// skipped. Works on eval runs written by "FIT: Evaluate Analysis Prompt" and on the extension's
-// LLM logs. Files are processed in name order so advice-category history builds up.
+// skipped. Meant for the extension's LLM logs (<database folder>/logs), ideally copied into a
+// folder per run with names that sort chronologically so advice-category history builds up.
+// The optional second directory is a baseline run for the deltas.
 
 const fs = require('node:fs');
 const path = require('node:path');

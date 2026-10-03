@@ -6,7 +6,6 @@ function registerCommands(context, services) {
     addAndBrowseManualActivity,
     editRouteNote,
     escapeHtml,
-    evaluateAnalysisPrompt,
     getLocalDbPath,
     indexFitFolder,
     indexFitUris,
@@ -79,12 +78,6 @@ function registerCommands(context, services) {
     () => editRouteNote()
   );
 
-  const evaluatePrompt = register(
-    'fitVisualizer.evaluateAnalysisPrompt',
-    'FIT prompt evaluation failed',
-    () => evaluateAnalysisPrompt()
-  );
-
   const indexOne = register('fitVisualizer.indexOne', 'FIT DB index failed', async (resource) => {
     const targetUri = resource?.fsPath?.toLowerCase().endsWith('.fit')
       ? resource
@@ -122,7 +115,7 @@ function registerCommands(context, services) {
     }
   );
 
-  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, rebuildFeatures, routeNote, evaluatePrompt, updateModelPrices, customEditor];
+  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, rebuildFeatures, routeNote, updateModelPrices, customEditor];
 }
 
 function createFitEditorProvider(context, services) {

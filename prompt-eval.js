@@ -1,5 +1,5 @@
-// Offline checks for analysis responses (B9). Pure module: used by the dev command
-// "FIT: Evaluate Analysis Prompt" and by scripts/prompt-eval/check.js on saved runs or LLM logs.
+// Offline checks for analysis responses (B9). Pure module, not part of the packaged extension:
+// used by scripts/prompt-eval/check.js on the LLM logs.
 
 const { normalizeSessionType, parseAnalysisSummary } = require('./analysis-summary');
 

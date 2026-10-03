@@ -35,7 +35,6 @@ const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
 const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteNote, readRoutes, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
-const { aggregateChecks, describeResult, evaluateEntries, formatAggregate } = require('./prompt-eval');
 const { describeRouteFeatures } = require('./route-features');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling } = require('./altitude-quality');
 const { buildRouteSignature } = require('./route-match');
@@ -169,7 +168,6 @@ function activate(context) {
     selectDatabaseFolder,
     showActivityBrowserInPanel,
     editRouteNote,
-    evaluateAnalysisPrompt,
     rebuildDerivedFeatures,
     tidyHeartRateProfiles,
     updateModelPriceTable,
@@ -297,101 +295,6 @@ async function editRouteNote() {
   } finally {
     db.close();
   }
-}
-
-// Dev command: regenerates the analysis for a fixed set of activities with the current prompt,
-// without touching stored analyses, and reports automatic checks against the previous run.
-async function evaluateAnalysisPrompt() {
-  const dbPath = await resolveActiveDbPath() || await selectDatabaseFolder();
-  if (!dbPath) {
-    return;
-  }
-  const evalRoot = path.join(path.dirname(dbPath), 'eval');
-  await fs.mkdir(evalRoot, { recursive: true });
-  const casesPath = path.join(evalRoot, 'cases.json');
-  let cases = safeParseJson(await fs.readFile(casesPath, 'utf8').catch(() => ''), null);
-  if (!Array.isArray(cases?.activityIds) || !cases.activityIds.length) {
-    const SQL = await getSqlJs();
-    const db = await openDatabase(SQL, dbPath);
-    let rows;
-    try {
-      rows = db.exec("SELECT id, file_name, start_time, total_distance_km FROM activities WHERE source = 'fit' ORDER BY datetime(start_time) DESC LIMIT 80")[0]?.values || [];
-    } finally {
-      db.close();
-    }
-    const picked = await vscode.window.showQuickPick(
-      rows.map(([id, name, start, km]) => ({ label: `${String(start).slice(0, 10)}  ${Number(km || 0).toFixed(1)} km`, description: String(name), id: Number(id) })),
-      { canPickMany: true, title: 'Activities for prompt evaluation (saved to eval/cases.json)' }
-    );
-    if (!picked?.length) {
-      return;
-    }
-    cases = { activityIds: picked.map((item) => item.id).sort((a, b) => a - b) };
-    await fs.writeFile(casesPath, JSON.stringify(cases, null, 2));
-  }
-
-  const runName = new Date().toISOString().replace(/[:.]/g, '-');
-  const runDir = path.join(evalRoot, runName);
-  await fs.mkdir(runDir, { recursive: true });
-  const modelId = String(cases.modelId || '').trim() || getAnalysisModelId();
-  const entries = [];
-  await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'FIT Visualizer: evaluating analysis prompt', cancellable: true },
-    async (progress, token) => {
-      const ordered = [];
-      const SQL = await getSqlJs();
-      const db = await openDatabase(SQL, dbPath);
-      try {
-        for (const id of cases.activityIds) {
-          const start = db.exec('SELECT start_time FROM activities WHERE id = ?', [id])[0]?.values?.[0]?.[0];
-          if (start) ordered.push({ id, start });
-        }
-      } finally {
-        db.close();
-      }
-      // Chronological order, so advice categories accumulate the way they do in real use.
-      ordered.sort((a, b) => new Date(a.start) - new Date(b.start));
-      for (const [index, item] of ordered.entries()) {
-        if (token.isCancellationRequested) break;
-        progress.report({ message: `${index + 1}/${ordered.length}` });
-        try {
-          const response = await enqueueLlmTask(async () => {
-            const { prompt } = await buildAnalysisPromptForActivity(dbPath, item.id);
-            const text = await requestCopilotAnalysis(vscode, prompt, {
-              vendor: getLanguageModelVendor(),
-              preferCheapModel: getPreferCheapAnalysisModel(),
-              modelId,
-              cheapModelMarkers: getCheapModelMarkers(),
-              onCompleted: (result) => { item.prompt = result.prompt; item.modelId = result.modelId; },
-            });
-            return text;
-          });
-          const file = `${String(index + 1).padStart(2, '0')}-${item.id}-analysis.json`;
-          const entry = { file, activityId: item.id, kind: 'analysis', modelId: item.modelId, prompt: item.prompt, response };
-          entries.push(entry);
-          await fs.writeFile(path.join(runDir, file), JSON.stringify(entry, null, 2));
-        } catch (error) {
-          entries.push({ file: `${item.id}-error`, error: error instanceof Error ? error.message : String(error) });
-        }
-      }
-    }
-  );
-
-  const results = evaluateEntries(entries);
-  const aggregate = aggregateChecks(results);
-  const previousDirs = (await fs.readdir(evalRoot, { withFileTypes: true }))
-    .filter((entry) => entry.isDirectory() && entry.name < runName).map((entry) => entry.name).sort();
-  const previous = previousDirs.length
-    ? safeParseJson(await fs.readFile(path.join(evalRoot, previousDirs.at(-1), 'aggregate.json'), 'utf8').catch(() => ''), null) : null;
-  await fs.writeFile(path.join(runDir, 'aggregate.json'), JSON.stringify(aggregate, null, 2));
-  const failures = entries.filter((entry) => entry.error).map((entry) => `${entry.file}: ${entry.error}`);
-  const report = [`# Prompt evaluation ${runName}`, `Model: ${modelId || 'cheapest available'}; analysis format ${ANALYSIS_VERSION}`, '',
-    '```', ...results.map(describeResult), '```', '', '```', formatAggregate(aggregate, previous), '```',
-    previous ? `Deltas are against the previous run (${previousDirs.at(-1)}).` : 'No previous run to compare with.',
-    failures.length ? `\nFailed:\n${failures.join('\n')}` : ''].join('\n');
-  const reportPath = path.join(runDir, 'report.md');
-  await fs.writeFile(reportPath, report);
-  await vscode.window.showTextDocument(vscode.Uri.file(reportPath));
 }
 
 // Eager variant of the lazy ensure path: computes and stores features for one activity.

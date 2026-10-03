@@ -3800,7 +3800,7 @@ test('every command handler used by commands.js is destructured from services an
   const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   const destructured = /const \{([^}]+)\} = services;/.exec(commandsSource)[1].split(',').map((name) => name.trim()).filter(Boolean);
   const supplied = /registerCommands\(context, \{([^}]+)\}\)/.exec(extensionSource)[1].split(',').map((name) => name.trim()).filter(Boolean);
-  for (const name of ['rebuildDerivedFeatures', 'tidyHeartRateProfiles', 'evaluateAnalysisPrompt', 'editRouteNote']) {
+  for (const name of ['rebuildDerivedFeatures', 'tidyHeartRateProfiles', 'editRouteNote']) {
     assert.ok(destructured.includes(name), `${name} destructured in commands.js`);
     assert.ok(supplied.includes(name), `${name} supplied from activate`);
   }

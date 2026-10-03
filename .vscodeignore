@@ -8,3 +8,4 @@ promo-post*.md
 .prompt-probe.js
 images/cover-*.png
 scripts/**
+prompt-eval.js

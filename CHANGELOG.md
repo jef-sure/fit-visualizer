@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.2 - 2026-10-03
+
+### Removed
+
+- The developer command **FIT: Evaluate Analysis Prompt** (and its `eval/` output). Prompt checks run offline on the existing LLM logs with `node scripts/prompt-eval/check.js <folder> [baseline-folder]`; the script and its checks are no longer part of the packaged extension.
+
 ## 0.18.1 - 2026-10-03
 
 ### Upgrade Notes
