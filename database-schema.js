@@ -151,7 +151,8 @@ function ensureDatabaseSchema(db) {
       last_seen           TEXT,
       elevation_profile_json TEXT,
       elevation_updated_at   TEXT,
-      note                   TEXT
+      note                   TEXT,
+      features_json          TEXT
     );
   `);
 
@@ -231,6 +232,7 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'heart_rate_profiles', 'lthr', 'REAL');
   addColumnIfMissing(db, 'activity_analysis', 'summary_json', 'TEXT');
   addColumnIfMissing(db, 'routes', 'note', 'TEXT');
+  addColumnIfMissing(db, 'routes', 'features_json', 'TEXT');
 }
 
 function addColumnIfMissing(db, table, column, type) {

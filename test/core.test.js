@@ -3911,3 +3911,95 @@ test('route notes are stored per route and rendered with the pattern in the prom
     {}, null, [], [], 'en');
   assert.match(prompt, /property of the route, not a finding of the day and not an open question/);
 });
+
+function loopRideRecords(speedAt, reversed = false, lengthKm = 20) {
+  const records = [];
+  let distance = 0;
+  let elapsed = 0;
+  while (distance < lengthKm) {
+    const fraction = distance / lengthKm;
+    const canonical = reversed ? 1 - fraction : fraction;
+    records.push({ elapsed_time: elapsed, distance });
+    elapsed += 10;
+    distance += (speedAt(canonical) * 10) / 3600;
+  }
+  records.push({ elapsed_time: elapsed, distance: lengthKm });
+  return records;
+}
+
+test('route features derive climbs, per-direction speeds and flat-ground direction effects', () => {
+  const { computeRouteFeatures, describeRouteFeatures, findClimbs, sectionCount, sectionSpeeds } = require('../route-features');
+  const bins = 800;
+  const consensus = Array.from({ length: bins }, (_, i) => (i < bins - 24 ? 100 : 100 + ((i - (bins - 24)) / 24) * 35));
+  const profile = { consensus, lengthKm: 20, ascentM: 35, descentM: 0 };
+  assert.equal(sectionCount(profile), 10);
+
+  const climbs = findClimbs(consensus, 20 / bins, false);
+  assert.equal(climbs.length, 1);
+  assert.ok(climbs[0].fromKm > 19.2 && climbs[0].gainM >= 30 && climbs[0].avgGradePct > 5);
+  assert.equal(findClimbs(consensus, 20 / bins, true).length, 0, 'the same ramp is a descent in the opposite direction');
+
+  // Canonical direction: fast on km 4-10, slow on km 10-16; the opposite direction is the mirror image.
+  const speedAt = (position) => (position >= 0.2 && position < 0.5 ? 28 : position >= 0.5 && position < 0.8 ? 23 : 25);
+  const rides = [];
+  for (let i = 0; i < 4; i += 1) {
+    rides.push({ relation: 'same', speeds: sectionSpeeds(loopRideRecords(speedAt), 10) });
+    rides.push({ relation: 'reversed', speeds: sectionSpeeds(loopRideRecords(speedAt, true), 10) });
+  }
+  const features = computeRouteFeatures(profile, rides);
+  assert.equal(features.rows.length, 10);
+  assert.ok(Math.abs(features.rows[3].sameKmh - 28) < 0.6);
+  assert.ok(Math.abs(features.rows[6].sameKmh - 23) < 0.6);
+  assert.ok(Math.abs(features.rows[3].reversedKmh - 28) < 0.6, 'reversed rides are stored on the canonical axis');
+
+  const same = describeRouteFeatures(features, 'same');
+  assert.equal(same.climbs.length, 1);
+  assert.equal(same.asymmetric.length, 0, 'the reversed rides mirror the speeds, so no direction effect');
+
+  // Now the opposite direction rides the same stretch slowly: a direction effect.
+  const windy = [];
+  for (let i = 0; i < 4; i += 1) {
+    windy.push({ relation: 'same', speeds: sectionSpeeds(loopRideRecords(speedAt), 10) });
+    windy.push({ relation: 'reversed', speeds: sectionSpeeds(loopRideRecords((position) => (position >= 0.2 && position < 0.5 ? 21 : 25), true), 10) });
+  }
+  const effect = describeRouteFeatures(computeRouteFeatures(profile, windy), 'same');
+  assert.equal(effect.asymmetric.length, 1);
+  assert.equal(effect.asymmetric[0].fromKm, 4);
+  assert.equal(effect.asymmetric[0].toKm, 10);
+  assert.ok(effect.asymmetric[0].ownKmh > effect.asymmetric[0].otherKmh);
+  const opposite = describeRouteFeatures(computeRouteFeatures(profile, windy), 'reversed');
+  assert.ok(opposite.asymmetric[0].ownKmh < opposite.asymmetric[0].otherKmh);
+
+  assert.equal(computeRouteFeatures({ consensus: [], lengthKm: 20 }, []), null);
+  assert.equal(sectionSpeeds([{ elapsed_time: 0, distance: 0 }], 10), null);
+});
+
+test('route profile block lists climbs, section speeds and direction effects, and is cached per member count', async () => {
+  const { buildRouteProfileBlock } = require('../analysis');
+  assert.equal(buildRouteProfileBlock(null), '');
+  const text = buildRouteProfileBlock({
+    direction: 'same', lengthKm: 20.4, ascentM: 117, descentM: 118, rideCounts: { same: 20, reversed: 14 },
+    described: {
+      rows: [{ fromKm: 0, toKm: 2, gradePct: -1.9, ownKmh: 27, otherKmh: 14.2 }],
+      climbs: [{ fromKm: 19.8, toKm: 20.4, gainM: 35, avgGradePct: 5.6 }],
+      asymmetric: [{ fromKm: 4, toKm: 10, ownKmh: 27.5, otherKmh: 23 }],
+    },
+  });
+  assert.match(text, /20 in the first-ride direction, 14 opposite/);
+  assert.match(text, /km 19\.8-20\.4 \+35 m \(avg 5\.6%\)/);
+  assert.match(text, /0-2 \(-1\.9%\): 27 vs 14\.2/);
+  assert.match(text, /km 4-10 is near-flat, yet about 27\.5 km\/h here vs 23 km\/h in the opposite direction/);
+  assert.match(text, /not with fitness/);
+
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { ensureRouteFeatures } = require('../route-store');
+    assert.equal(ensureRouteFeatures(db, null), null);
+    db.run("INSERT INTO routes (name, ride_count) VALUES ('Loop', 0)");
+    assert.equal(ensureRouteFeatures(db, 1), null, 'no rides, no consensus, no features');
+  } finally {
+    db.close();
+  }
+});

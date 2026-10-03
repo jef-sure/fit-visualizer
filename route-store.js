@@ -6,6 +6,7 @@
 
 const { buildRouteSignature, matchRoutes } = require('./route-match');
 const { buildAltitudeRide, computeConsensusProfile } = require('./altitude-quality');
+const { computeRouteFeatures, sectionCount, sectionSpeeds } = require('./route-features');
 
 const CHECKPOINT_SPACING_KM = 2;
 
@@ -244,6 +245,55 @@ function readRouteNote(db, routeId) {
   }
 }
 
+// Terrain and per-direction speed features of a route, cached in routes.features_json and refreshed
+// as new rides join. Needs the elevation consensus (five or more same-direction rides).
+function ensureRouteFeatures(db, routeId) {
+  if (!routeId) return null;
+  const profile = ensureRouteElevationProfile(db, routeId);
+  if (!profile) return null;
+  const members = [];
+  const memberStmt = db.prepare("SELECT activity_id, relation FROM activity_routes WHERE route_id = ? AND (relation LIKE 'same%' OR relation LIKE 'reversed%') ORDER BY activity_id");
+  try {
+    memberStmt.bind([routeId]);
+    while (memberStmt.step()) {
+      const row = memberStmt.getAsObject();
+      members.push({ id: row.activity_id, relation: String(row.relation).startsWith('same') ? 'same' : 'reversed' });
+    }
+  } finally {
+    memberStmt.free();
+  }
+  const stored = db.prepare('SELECT features_json FROM routes WHERE id = ?');
+  let cached = null;
+  try {
+    stored.bind([routeId]);
+    if (stored.step()) cached = safeJson(stored.getAsObject().features_json);
+  } finally {
+    stored.free();
+  }
+  const storedMembers = Number(cached?.members);
+  if (cached && Number.isFinite(storedMembers) && members.length - storedMembers < (storedMembers < 10 ? 1 : 3)) {
+    return cached.features || null;
+  }
+  const sections = sectionCount(profile);
+  const rides = members.map((member) => {
+    const stmt = db.prepare('SELECT elapsed_s, distance_km FROM records WHERE activity_id = ? ORDER BY record_index');
+    try {
+      stmt.bind([member.id]);
+      const records = [];
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        records.push({ elapsed_time: row.elapsed_s, distance: row.distance_km });
+      }
+      return { relation: member.relation, speeds: sectionSpeeds(records, sections) };
+    } finally {
+      stmt.free();
+    }
+  }).filter((ride) => ride.speeds);
+  const features = computeRouteFeatures(profile, rides);
+  db.run('UPDATE routes SET features_json = ? WHERE id = ?', [JSON.stringify({ members: members.length, features }), routeId]);
+  return features;
+}
+
 function safeJson(text) {
   try {
     return text ? JSON.parse(text) : null;
@@ -257,6 +307,7 @@ module.exports = {
   assignRoute,
   computeCheckpoints,
   ensureRouteElevationProfile,
+  ensureRouteFeatures,
   readAssignment,
   readRouteNote,
   readRouteAssignments,

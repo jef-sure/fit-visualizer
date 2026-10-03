@@ -232,6 +232,29 @@ function buildRouteContextBlock(routeContext) {
   ], '\n');
 }
 
+function buildRouteProfileBlock(routeProfile) {
+  const described = routeProfile?.described;
+  if (!described?.rows?.length) return '';
+  const reversed = routeProfile.direction === 'reversed';
+  const ascent = reversed ? routeProfile.descentM : routeProfile.ascentM;
+  const descent = reversed ? routeProfile.ascentM : routeProfile.descentM;
+  const fmtGrade = (value) => (value == null ? '?' : `${value > 0 ? '+' : ''}${value}%`);
+  const climbs = described.climbs.length
+    ? described.climbs.map((climb) => `km ${climb.fromKm}-${climb.toKm} +${climb.gainM} m (avg ${climb.avgGradePct}%)`).join('; ')
+    : 'no sustained climb steeper than 3%';
+  const sections = described.rows
+    .map((row) => `${row.fromKm}-${row.toKm} (${fmtGrade(row.gradePct)}): ${row.ownKmh ?? '?'}${row.otherKmh ? ` vs ${row.otherKmh}` : ''}`).join('; ');
+  const effects = described.asymmetric.map((stretch) =>
+    `- km ${stretch.fromKm}-${stretch.toKm} is near-flat, yet about ${stretch.ownKmh} km/h here vs ${stretch.otherKmh} km/h in the opposite direction`).join('\n');
+  return joinNonEmpty([
+    `**Route Profile (derived from earlier rides of this route${routeProfile.rideCounts ? `: ${routeProfile.rideCounts.same} in the first-ride direction, ${routeProfile.rideCounts.reversed} opposite` : ''}; riding ${reversed ? 'opposite to the first ride' : 'in the first-ride direction'}):**`,
+    `Length ${routeProfile.lengthKm} km, ascent ~${ascent} m, descent ~${descent} m. Climbs in this direction: ${climbs}.`,
+    `Typical moving speed by section, this direction vs opposite (km/h; terrain grade in this direction): ${sections}.`,
+    effects ? `Direction effects on near-flat ground (grade does not explain them; consistent with prevailing wind, surface or junctions, not with fitness):\n${effects}` : null,
+    'These are medians of earlier rides, not the conditions of this day.',
+  ], '\n');
+}
+
 function buildAltitudeQualityBlock(altitudeQuality) {
   if (!altitudeQuality || !(altitudeQuality.flags?.length || altitudeQuality.routeLine)) return '';
   const flags = (altitudeQuality.flags || []).map((flag) => `- ${flag.code}: ${flag.detail}`).join('\n');
@@ -283,6 +306,7 @@ function buildTrainingHistoryContext(context) {
     context.offsetChangeNote ? `**Device Timezone Consistency:**\n${context.offsetChangeNote}` : null,
     matches ? `**Candidate Segment Comparisons:**\n${matches}\nMatching uses ordered terrain, duration and distance, not equal HR/power. Similar structure does not establish identical route, intent, weather or training stimulus; consider intensity separately.` : '**Candidate Segment Comparisons:** No eligible matches; training-volume context remains available.',
     context.routeContext ? buildRouteContextBlock(context.routeContext) : null,
+    context.routeProfile ? buildRouteProfileBlock(context.routeProfile) : null,
     context.altitudeQuality ? buildAltitudeQualityBlock(context.altitudeQuality) : null,
     reports ? `**Dated User Context Across Activities:**\n${reports}\nMessage date and activity date are different. Reports may describe another effective period; do not apply later circumstances retrospectively without support.` : null,
   ], '\n\n');
@@ -507,7 +531,7 @@ function describeLanguageModelError(vscode, error) {
 // Character budgets per block (reference: a ~1 h, 1 Hz ride). Matching is by heading prefix; the
 // log shows budget/actual and an overshoot is reported as a warning, never truncated.
 const PROMPT_BLOCK_BUDGETS = Object.freeze([
-  ['This Workout', 1500], ['Segment Breakdown', 1600], ['Same-Route Context', 1500], ['Heuristic Session Class', 400],
+  ['This Workout', 1500], ['Segment Breakdown', 1600], ['Same-Route Context', 1500], ['Route Profile', 2400], ['Heuristic Session Class', 400],
   ['Time in Heart-Rate Zones', 900], ['Peak Sustained', 900], ['Recent Activity History', 4500],
   ['Training Volume and Covered Intensity', 3200], ['Dated User Context', 3200], ['Principles', 4000],
   ['Questions for Analysis', 1800],
@@ -792,7 +816,7 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
       ? 'Entries under Recent Activity History include facts and past analyses of other workouts, not measurements of this one; past analyses are revisable hypotheses. User messages about other workouts appear only under Dated User Context.'
       : null,
     progressSummary?.trainingContext?.routeContext
-      ? 'A pattern shared by nearly every ride of this route, or stated in the user\'s route note (a climb, prevailing wind), is a property of the route, not a finding of the day and not an open question; use only how this ride differs from it.'
+      ? 'A pattern shared by nearly every ride of this route, or stated in the user\'s route note or shown in the Route Profile (a climb, a stretch that is slow in one direction and fast in the other), is a property of the route, not a finding of the day and not an open question; use only how this ride differs from it.'
       : null,
     hasSegments
       ? 'Segments state which signal their effort is based on. Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.'
@@ -966,6 +990,7 @@ module.exports = {
   buildTrainingHistoryContext,
   buildAltitudeQualityBlock,
   buildRouteContextBlock,
+  buildRouteProfileBlock,
   formatFieldsSkippingEmpty,
   generateAnalysisPrompt,
   generateAnalysisPromptParts,

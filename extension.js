@@ -33,9 +33,10 @@ const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, loc
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
-const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, readRouteAssignments, readRouteNote, readRoutes, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
+const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteNote, readRoutes, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { aggregateChecks, describeResult, evaluateEntries, formatAggregate } = require('./prompt-eval');
+const { describeRouteFeatures } = require('./route-features');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling } = require('./altitude-quality');
 const { buildRouteSignature } = require('./route-match');
 
@@ -2893,6 +2894,8 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   context.routeContext = currentRouteInfo
     ? buildRouteContext({ routeInfo: currentRouteInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected, readRouteNote(db, currentRouteInfo.routeId))
     : null;
+  context.routeProfile = ['same', 'reversed'].includes(currentRouteInfo?.relation)
+    ? buildRouteProfile(db, currentRouteInfo) : null;
   context.altitudeQuality = buildAltitudeQuality({
     db, records: currentRecords, routeInfo: currentRouteInfo, activity: selected,
   });
@@ -2919,6 +2922,21 @@ function calculateProgressTrend(activities, field, unit) {
   }
   const changePct = trend.changePct;
   return `${trend.direction} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%, ${unit}; noise threshold ±${trend.thresholdPct.toFixed(1)}%)`;
+}
+
+// Terrain, climbs and per-direction speeds derived from the route's earlier rides.
+function buildRouteProfile(db, routeInfo) {
+  const features = ensureRouteFeatures(db, routeInfo.routeId);
+  if (!features) return null;
+  const described = describeRouteFeatures(features, routeInfo.relation);
+  if (!described) return null;
+  const counts = { same: 0, reversed: 0 };
+  for (const row of features.rows) {
+    counts.same = Math.max(counts.same, row.sameRides || 0);
+    counts.reversed = Math.max(counts.reversed, row.reversedRides || 0);
+  }
+  return { direction: routeInfo.relation, described, rideCounts: counts, lengthKm: features.lengthKm,
+    ascentM: features.ascentM, descentM: features.descentM };
 }
 
 // Altitude-quality flags for the current ride, sharpened by the route's consensus profile when
