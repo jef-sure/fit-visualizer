@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Upgrade Notes
+
+- Run **FIT: Rebuild Derived Features** once, then **FIT: Re-analyze Outdated Analyses** (analysis format 21). The rebuild now also assigns routes in chronological order.
+
+### Added
+
+- **Same-route identity (GPS)**: rides are matched by track geometry (same / reversed / partial / different), grouped into routes, and the prompt gets per-2-km checkpoint splits against the median of prior same-route rides plus the final-climb history.
+- **Route elevation consensus**: with at least five same-route rides, per-ride constant altitude offsets are removed and the per-bin median gives a stable route ascent/descent (about 117 m for the development loop, closed within 1 m) that is shown next to the computed and device figures.
+- **Altitude quality flags** in the prompt: `ALT_MISSING_START`, `ALT_GAP` and `ALT_SETTLING` (barometer drift in the first minutes, measured against the route consensus, or from start-vs-end of a closed loop).
+
+### Fixed
+
+- Derived features, route assignments and elevation profiles computed while building an analysis were never written back to the database, and **Rebuild Derived Features** did not save its result. They are now persisted.
+- Route assignment is idempotent: repeated analyses no longer inflate a route's ride count, and assignments no longer depend on a feature row existing.
+
 ## 0.16.0 - 2026-10-03
 
 ### Upgrade Notes

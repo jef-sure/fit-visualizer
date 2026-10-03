@@ -2207,7 +2207,7 @@ test('database schema creates only extension-owned tables', async () => {
     const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")[0]
       .values
       .flat();
-    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'activity_comparisons', 'activity_features', 'athlete_profile', 'heart_rate_profiles', 'records', 'routes', 'sqlite_sequence', 'wheel_calibration_samples']);
+    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'activity_comparisons', 'activity_features', 'activity_routes', 'athlete_profile', 'heart_rate_profiles', 'records', 'routes', 'sqlite_sequence', 'wheel_calibration_samples']);
   } finally {
     db.close();
   }
@@ -3611,3 +3611,108 @@ test('comparison entries are labeled from the activities list the same way as th
     /const comparisonEntries = \(Array\.isArray\(comparisons\) \? comparisons : \[\]\)\.map\(\(entry\) => \{\s*\n\s*const compared = activities\.find\(\(a\) => Number\(a\.id\) === entry\.comparedActivityId\);\s*\n\s*return \{\s*\n\s*comparedActivityId: entry\.comparedActivityId,\s*\n\s*label: compared \? formatActivityLabel\(compared\) : `#\$\{entry\.comparedActivityId\}`,/);
 });
 
+
+function syntheticAltitudeRide({ offsetM = 0, drift = null, dropFirstS = 0, seconds = 1200, speedMs = 5 } = {}) {
+  const records = [];
+  for (let i = 0; i < seconds; i += 1) {
+    const distanceKm = (i * speedMs) / 1000;
+    const base = 100 + 30 * Math.sin((2 * Math.PI * distanceKm) / ((seconds * speedMs) / 1000));
+    const driftM = drift ? drift.amplitudeM * Math.max(0, 1 - i / drift.seconds) : 0;
+    const angle = (2 * Math.PI * i) / seconds;
+    records.push({
+      elapsed_time: i,
+      distance: distanceKm,
+      altitude: i < dropFirstS ? null : (base + offsetM + driftM) / 1000,
+      position_lat: 52 + 0.01 * Math.sin(angle),
+      position_long: 13 + 0.01 * (1 - Math.cos(angle)),
+    });
+  }
+  return records;
+}
+
+test('consensus elevation aligns constant per-ride offsets and reports the route ascent', () => {
+  const { buildAltitudeRide, computeConsensusProfile } = require('../altitude-quality');
+  const offsets = [0, 40, -25, 80, -60, 15];
+  const rides = offsets.map((offsetM) => buildAltitudeRide(syntheticAltitudeRide({ offsetM })));
+  const profile = computeConsensusProfile(rides);
+  assert.equal(profile.rides, 6);
+  assert.ok(Math.abs(profile.ascentM - 60) <= 6, `ascent ${profile.ascentM}`);
+  assert.ok(Math.abs(profile.descentM - 60) <= 6, `descent ${profile.descentM}`);
+  assert.equal(computeConsensusProfile(rides.slice(0, 4)), null, 'fewer than five rides give no consensus');
+});
+
+test('altitude settling is detected against the consensus and not for a pure constant offset', () => {
+  const { buildAltitudeRide, computeConsensusProfile, detectAltitudeSettling } = require('../altitude-quality');
+  const rides = [0, 10, -10, 20, -20, 5].map((offsetM) => buildAltitudeRide(syntheticAltitudeRide({ offsetM })));
+  const profile = computeConsensusProfile(rides);
+  const drifting = buildAltitudeRide(syntheticAltitudeRide({ offsetM: 30, drift: { amplitudeM: -100, seconds: 180 } }));
+  const settling = detectAltitudeSettling(drifting, profile);
+  assert.ok(settling, 'start drift detected');
+  assert.ok(settling.startDeltaM < -50);
+  assert.ok(settling.settleSeconds >= 60 && settling.settleSeconds <= 240, `settles after ${settling.settleSeconds}s`);
+  assert.equal(detectAltitudeSettling(buildAltitudeRide(syntheticAltitudeRide({ offsetM: 90 })), profile), null);
+});
+
+test('altitude flags cover a missing start, interior gaps and closed-loop settling', () => {
+  const { buildAltitudeRide, computeAltitudeFlags } = require('../altitude-quality');
+  const clean = computeAltitudeFlags(buildAltitudeRide(syntheticAltitudeRide()));
+  assert.deepEqual(clean, []);
+  const missing = computeAltitudeFlags(buildAltitudeRide(syntheticAltitudeRide({ dropFirstS: 90 })));
+  assert.deepEqual(missing.map((flag) => flag.code), ['ALT_MISSING_START']);
+
+  const gappy = syntheticAltitudeRide();
+  for (let i = 400; i < 450; i += 1) gappy[i].altitude = null;
+  assert.ok(computeAltitudeFlags(buildAltitudeRide(gappy)).some((flag) => flag.code === 'ALT_GAP'));
+
+  // Closed loop, altitude 60 m lower at the start, nearly all of it recovered within 5 minutes.
+  const settling = syntheticAltitudeRide({ drift: { amplitudeM: -60, seconds: 280 } });
+  const flags = computeAltitudeFlags(buildAltitudeRide(settling));
+  assert.ok(flags.some((flag) => flag.code === 'ALT_SETTLING'), JSON.stringify(flags));
+});
+
+test('route assignment is idempotent and its elevation profile is cached by member count', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { assignRoute, ensureRouteElevationProfile, readRouteAssignments } = require('../route-store');
+    const { buildRouteSignature } = require('../route-match');
+    let routeId = null;
+    for (let id = 1; id <= 6; id += 1) {
+      const records = syntheticAltitudeRide({ offsetM: id * 12 });
+      db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)',
+        [id, `f${id}`, `f${id}`, `2026-08-0${id}T10:00:00Z`, 'fit']);
+      records.forEach((record, index) => {
+        db.run('INSERT INTO records (activity_id, record_index, elapsed_s, distance_km, altitude_m, latitude, longitude) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [id, index, record.elapsed_time, record.distance, record.altitude * 1000, record.position_lat, record.position_long]);
+      });
+      const signature = buildRouteSignature(records);
+      const first = assignRoute(db, { activityId: id, signature, createdAt: `2026-08-0${id}T10:00:00Z` });
+      const again = assignRoute(db, { activityId: id, signature, createdAt: `2026-08-0${id}T10:00:00Z` });
+      assert.equal(again.routeId, first.routeId);
+      routeId = first.routeId;
+    }
+    const rideCount = db.exec('SELECT ride_count FROM routes')[0].values[0][0];
+    assert.equal(rideCount, 6, 'repeated assignment does not recount rides');
+    assert.equal(readRouteAssignments(db).size, 6);
+
+    const profile = ensureRouteElevationProfile(db, routeId);
+    assert.equal(profile.rides, 6);
+    const stored = JSON.parse(db.exec('SELECT elevation_profile_json FROM routes')[0].values[0][0]);
+    assert.equal(stored.members, 6);
+    assert.deepEqual(ensureRouteElevationProfile(db, routeId), profile);
+  } finally {
+    db.close();
+  }
+});
+
+test('altitude quality block lists flags and the route elevation line', () => {
+  const { buildAltitudeQualityBlock } = require('../analysis');
+  assert.equal(buildAltitudeQualityBlock(null), '');
+  const text = buildAltitudeQualityBlock({
+    flags: [{ code: 'ALT_SETTLING', detail: 'recorded altitude starts 80 m below the route consensus level' }],
+    routeLine: 'Route elevation (offset-aligned consensus of 30 same-route rides): ascent ~115 m, descent ~114 m.',
+  });
+  assert.match(text, /ALT_SETTLING: recorded altitude starts 80 m below/);
+  assert.match(text, /ascent ~115 m/);
+});

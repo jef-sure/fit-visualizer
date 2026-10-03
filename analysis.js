@@ -211,6 +211,12 @@ function buildRouteContextBlock(routeContext) {
   return `**Same-Route Context (GPS-confirmed):**\nRoute "${routeContext.routeName}" (${routeContext.relation}); ${routeContext.priorRideCount} earlier rides on this route.\n${lines ? `Checkpoint splits (this ride vs median of up to 5 prior same-route rides):\n${lines}\n` : ''}${routeContext.climbLine ? `${routeContext.climbLine}\n` : ''}${routeContext.note}`;
 }
 
+function buildAltitudeQualityBlock(altitudeQuality) {
+  if (!altitudeQuality || !(altitudeQuality.flags?.length || altitudeQuality.routeLine)) return '';
+  const flags = (altitudeQuality.flags || []).map((flag) => `- ${flag.code}: ${flag.detail}`).join('\n');
+  return `**Altitude Quality (measured facts about this recording):**\n${joinNonEmpty([flags, altitudeQuality.routeLine], '\n')}\nUse these as the explanation for ascent/descent and first-segment grade discrepancies; the route consensus is the steadier figure for comparing days.`;
+}
+
 function buildTrainingHistoryContext(context) {
   if (!context) return '';
   const volume = context.volume.map((period) => {
@@ -256,6 +262,7 @@ function buildTrainingHistoryContext(context) {
     context.offsetChangeNote ? `**Device Timezone Consistency:**\n${context.offsetChangeNote}` : null,
     matches ? `**Candidate Segment Comparisons:**\n${matches}\nMatching uses ordered terrain, duration and distance, not equal HR/power. Similar structure does not establish identical route, intent, weather or training stimulus; consider intensity separately.` : '**Candidate Segment Comparisons:** No eligible matches; training-volume context remains available.',
     context.routeContext ? buildRouteContextBlock(context.routeContext) : null,
+    context.altitudeQuality ? buildAltitudeQualityBlock(context.altitudeQuality) : null,
     reports ? `**Dated User Context Across Activities:**\n${reports}\nMessage date and activity date are different. Reports may describe another effective period; do not apply later circumstances retrospectively without support.` : null,
   ], '\n\n');
 }
@@ -899,6 +906,7 @@ module.exports = {
   buildSegmentContext,
   buildSessionClassContext,
   buildTrainingHistoryContext,
+  buildAltitudeQualityBlock,
   buildRouteContextBlock,
   formatFieldsSkippingEmpty,
   generateAnalysisPrompt,

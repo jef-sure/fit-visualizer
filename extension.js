@@ -33,7 +33,8 @@ const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, loc
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
-const { assignRoute, computeCheckpoints, summarizeCheckpoints } = require('./route-store');
+const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, readRouteAssignments, summarizeCheckpoints } = require('./route-store');
+const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling } = require('./altitude-quality');
 const { buildRouteSignature } = require('./route-match');
 
 function safeParseJson(text, fallback) {
@@ -106,7 +107,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 20;
+const ANALYSIS_VERSION = 21;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
 const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
@@ -221,36 +222,33 @@ async function rebuildDerivedFeatures() {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
+    // Routes are re-derived in chronological order so the earliest ride defines each route.
     db.run('DELETE FROM activity_features');
+    db.run('DELETE FROM activity_routes');
+    db.run('DELETE FROM routes');
+    const ordered = (db.exec("SELECT id FROM activities WHERE source != 'manual' ORDER BY datetime(start_time), id")[0]?.values || [])
+      .map((value) => Number(value[0]));
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'FIT Visualizer: rebuilding derived features', cancellable: false },
+      async (progress) => {
+        let done = 0;
+        for (const id of ordered) {
+          try {
+            ensureFeaturesForActivity(db, id);
+          } catch {
+            // A single broken activity must not abort the rebuild.
+          }
+          done += 1;
+          progress.report({ message: `${done}/${ordered.length}` });
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      }
+    );
     await persistDatabase(db, dbPath);
+    vscode.window.showInformationMessage(`Derived features rebuilt for ${ordered.length} activities.`);
   } finally {
     db.close();
   }
-  const total = await countFitActivities(dbPath);
-  await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'FIT Visualizer: rebuilding derived features', cancellable: false },
-    async (progress) => {
-      let done = 0;
-      // One activity at a time: getTrainingContextFromDb opens its own connection and
-      // recomputes (and stores) exactly the stale rows it touches.
-      for (let id = 1; id <= total.maxId; id += 1) {
-        if (!total.ids.has(id)) continue;
-        try {
-          const db2 = await openDatabase(SQL, dbPath);
-          try {
-            ensureFeaturesForActivity(db2, id);
-          } finally {
-            db2.close();
-          }
-        } catch {
-          // A single broken activity must not abort the rebuild.
-        }
-        done += 1;
-        progress.report({ message: `${done}/${total.ids.size}` });
-      }
-    }
-  );
-  vscode.window.showInformationMessage(`Derived features rebuilt for ${total.ids.size} activities.`);
 }
 
 // Eager variant of the lazy ensure path: computes and stores features for one activity.
@@ -299,6 +297,7 @@ function ensureFeaturesForActivity(db, activityId) {
   const peakHr = calculatePeakHeartRates(power.records);
   const timerS = asNumber(row.total_timer_s);
   const sessionClass = buildSessionClassForActivity(power.records, { total_timer_s: timerS }, hrConfig, profile, segments);
+  assignRoute(db, { activityId: row.id, signature: buildRouteSignature(records), createdAt: row.start_time });
   db.run(`
     INSERT INTO activity_features (
       activity_id, features_version, settings_hash, hr_profile_key, athlete_key, feature_cache_key, computed_at,
@@ -1180,6 +1179,10 @@ async function openDatabase(SQL, dbPath) {
   const db = new SQL.Database();
   ensureDatabaseSchema(db);
   return db;
+}
+
+function totalChanges(db) {
+  return Number(db.exec('SELECT total_changes()')[0].values[0][0]);
 }
 
 async function persistDatabase(db, dbPath) {
@@ -2549,7 +2552,10 @@ async function getProgressSummaryFromDb(dbPath, activityId, currentData = null) 
     summary.trend_heart_rate = calculateProgressTrend(prior.filter((activity) => activity.source === 'fit'), 'avg_hr', 'bpm');
     stmt.free();
     stmt = null;
+    const changesBefore = totalChanges(db);
     summary.trainingContext = getTrainingContextFromDb(db, activityId, currentData);
+    // Lazily computed features, route assignments and elevation profiles must survive the connection.
+    if (totalChanges(db) !== changesBefore) await persistDatabase(db, dbPath);
     return summary;
   } finally {
     stmt?.free();
@@ -2676,6 +2682,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       trimp: summary.trimp, hrTss: summary.hrTss,
       elapsedCoveragePct: payload.elapsedCoveragePct, hrConfig, powerSource: detail.powerSource };
   };
+  const routeAssignments = readRouteAssignments(db);
   const activities = rows.map((row) => {
     const count = detailedPerSport.get(row.sport) || 0;
     detailedPerSport.set(row.sport, count + 1);
@@ -2699,8 +2706,8 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       trimp: asNumber(detail?.trimp) > 0 ? asNumber(detail.trimp) : asNumber(row.trimp),
       hrTss: asNumber(detail?.hrTss) > 0 ? asNumber(detail.hrTss) : asNumber(row.hr_tss),
       sessionClass: detail?.sessionClass || null,
-      routeId: detail?.routeInfo?.routeId ?? null,
-      routeRelation: detail?.routeInfo?.relation ?? null,
+      routeId: detail?.routeInfo?.routeId ?? routeAssignments.get(row.id)?.routeId ?? null,
+      routeRelation: detail?.routeInfo?.relation ?? routeAssignments.get(row.id)?.relation ?? null,
       checkpoints: detail?.checkpoints || [],
       segments: detail?.segments || [], conversation,
       source: row.source,
@@ -2726,6 +2733,9 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   context.routeContext = currentRouteInfo
     ? buildRouteContext({ routeInfo: currentRouteInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected)
     : null;
+  context.altitudeQuality = buildAltitudeQuality({
+    db, records: currentData?.records || currentDetail?.records, routeInfo: currentRouteInfo, activity: selected,
+  });
   const conversations = readRows(`SELECT a.start_time, aac.chat_json
     FROM activities a JOIN activity_analysis_chat aac ON aac.activity_id = a.id
     WHERE datetime(a.start_time) < datetime(?) ORDER BY datetime(a.start_time) DESC LIMIT 24`, [selected.start_time]);
@@ -2749,6 +2759,29 @@ function calculateProgressTrend(activities, field, unit) {
   }
   const changePct = trend.changePct;
   return `${trend.direction} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%, ${unit}; noise threshold ±${trend.thresholdPct.toFixed(1)}%)`;
+}
+
+// Altitude-quality flags for the current ride, sharpened by the route's consensus profile when
+// enough same-route rides exist. Returns null when there is nothing to report.
+function buildAltitudeQuality({ db, records, routeInfo, activity }) {
+  const ride = buildAltitudeRide(records);
+  if (!ride) return null;
+  let flags = computeAltitudeFlags(ride);
+  let routeLine = null;
+  const profile = routeInfo?.routeId && routeInfo.relation === 'same' ? ensureRouteElevationProfile(db, routeInfo.routeId) : null;
+  if (profile) {
+    const settling = detectAltitudeSettling(ride, profile);
+    if (settling) {
+      flags = flags.filter((flag) => flag.code !== 'ALT_SETTLING');
+      flags.push({ code: 'ALT_SETTLING', detail: settling.detail });
+    }
+    const computed = [asNumber(activity.total_ascent_m), asNumber(activity.total_descent_m)];
+    const device = [asNumber(activity.device_ascent_m), asNumber(activity.device_descent_m)];
+    routeLine = `Route elevation (offset-aligned consensus of ${profile.rides} same-route rides): ascent ~${profile.ascentM} m, descent ~${profile.descentM} m`
+      + `${computed.every(Number.isFinite) ? `; this ride computed ${Math.round(computed[0])}/${Math.round(computed[1])} m` : ''}`
+      + `${device.every(Number.isFinite) ? `, device ${Math.round(device[0])}/${Math.round(device[1])} m` : ''}.`;
+  }
+  return flags.length || routeLine ? { flags, routeLine } : null;
 }
 
 // Same-route comparisons the code can state as fact: checkpoint splits against the median of

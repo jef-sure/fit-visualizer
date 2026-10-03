@@ -5,23 +5,27 @@
 // all others (a medoid, recomputed lazily).
 
 const { buildRouteSignature, matchRoutes } = require('./route-match');
+const { buildAltitudeRide, computeConsensusProfile } = require('./altitude-quality');
 
 const CHECKPOINT_SPACING_KM = 2;
 
-// Assign (or create) a route for one ride against existing canonical signatures.
+// Assign (or create) a route for one ride against existing canonical signatures. Idempotent:
+// a ride that already has an assignment keeps it, so repeated context builds do not recount.
 // Returns { routeId, relation, routeName, rideCount }.
 function assignRoute(db, { activityId, signature, createdAt }) {
   if (!signature) return { routeId: null, relation: null };
+  const existing = readAssignment(db, activityId);
+  if (existing) return existing;
   const routes = readRoutes(db);
   for (const route of routes) {
     const canonical = parseCanonical(route.canonical_signature);
     if (!canonical) continue;
     const match = matchRoutes(signature, canonical);
     if (['same', 'reversed', 'partial'].includes(match.type)) {
-      db.run('UPDATE activity_features SET route_id = ?, route_relation = ? WHERE activity_id = ?',
-        [route.id, `${match.type} (${match.detail})`, activityId]);
-      db.run('UPDATE routes SET ride_count = ride_count + 1, last_seen = MAX(COALESCE(last_seen, ?), ?) WHERE id = ?',
-        [createdAt, createdAt, route.id]);
+      db.run('INSERT OR REPLACE INTO activity_routes (activity_id, route_id, relation) VALUES (?, ?, ?)',
+        [activityId, route.id, `${match.type} (${match.detail})`]);
+      db.run('UPDATE routes SET ride_count = ride_count + 1, first_seen = MIN(COALESCE(first_seen, ?), ?), last_seen = MAX(COALESCE(last_seen, ?), ?) WHERE id = ?',
+        [createdAt, createdAt, createdAt, createdAt, route.id]);
       return { routeId: route.id, relation: match.type, routeName: route.name, rideCount: route.ride_count + 1 };
     }
   }
@@ -29,9 +33,37 @@ function assignRoute(db, { activityId, signature, createdAt }) {
   db.run('INSERT INTO routes (name, canonical_signature, ride_count, first_seen, last_seen) VALUES (?, ?, 1, ?, ?)',
     [name, JSON.stringify(signature), createdAt, createdAt]);
   const id = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
-  db.run('UPDATE activity_features SET route_id = ?, route_relation = ? WHERE activity_id = ?',
-    [id, 'same (defines the route)', activityId]);
+  db.run('INSERT OR REPLACE INTO activity_routes (activity_id, route_id, relation) VALUES (?, ?, ?)',
+    [activityId, id, 'same (defines the route)']);
   return { routeId: id, relation: 'same', routeName: name, rideCount: 1 };
+}
+
+function readAssignment(db, activityId) {
+  const stmt = db.prepare(`SELECT ar.route_id, ar.relation, r.name, r.ride_count
+    FROM activity_routes ar JOIN routes r ON r.id = ar.route_id WHERE ar.activity_id = ?`);
+  try {
+    stmt.bind([activityId]);
+    if (!stmt.step()) return null;
+    const row = stmt.getAsObject();
+    return { routeId: row.route_id, relation: String(row.relation || '').split(' ')[0] || 'same', routeName: row.name, rideCount: row.ride_count };
+  } finally {
+    stmt.free();
+  }
+}
+
+// Route id per activity for rides already assigned (cheap lookup for cached history rows).
+function readRouteAssignments(db) {
+  const stmt = db.prepare('SELECT activity_id, route_id, relation FROM activity_routes');
+  try {
+    const map = new Map();
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      map.set(row.activity_id, { routeId: row.route_id, relation: String(row.relation || '').split(' ')[0] || 'same' });
+    }
+    return map;
+  } finally {
+    stmt.free();
+  }
 }
 
 function readRoutes(db) {
@@ -118,10 +150,67 @@ function summarizeCheckpoints(current, priorRides) {
   });
 }
 
+// Consensus elevation profile of a route, cached in routes.elevation_profile_json and refreshed
+// when enough new same-route rides have joined since it was computed.
+function ensureRouteElevationProfile(db, routeId) {
+  if (!routeId) return null;
+  const memberIds = [];
+  const members = db.prepare("SELECT activity_id FROM activity_routes WHERE route_id = ? AND relation LIKE 'same%' ORDER BY activity_id");
+  try {
+    members.bind([routeId]);
+    while (members.step()) memberIds.push(members.getAsObject().activity_id);
+  } finally {
+    members.free();
+  }
+  const stored = db.prepare('SELECT elevation_profile_json FROM routes WHERE id = ?');
+  let cached = null;
+  try {
+    stored.bind([routeId]);
+    if (stored.step()) cached = safeJson(stored.getAsObject().elevation_profile_json);
+  } finally {
+    stored.free();
+  }
+  const storedMembers = Number(cached?.members);
+  if (cached && Number.isFinite(storedMembers) && memberIds.length - storedMembers < (storedMembers < 10 ? 1 : 3)) {
+    return cached.profile || null;
+  }
+  const rides = memberIds.map((id) => {
+    const stmt = db.prepare('SELECT elapsed_s, distance_km, altitude_m, latitude, longitude FROM records WHERE activity_id = ? ORDER BY record_index');
+    try {
+      stmt.bind([id]);
+      const records = [];
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        records.push({ elapsed_time: row.elapsed_s, distance: row.distance_km,
+          altitude: row.altitude_m == null ? null : row.altitude_m / 1000,
+          position_lat: row.latitude, position_long: row.longitude });
+      }
+      return buildAltitudeRide(records);
+    } finally {
+      stmt.free();
+    }
+  }).filter(Boolean);
+  const profile = computeConsensusProfile(rides);
+  db.run('UPDATE routes SET elevation_profile_json = ?, elevation_updated_at = ? WHERE id = ?',
+    [JSON.stringify({ members: memberIds.length, profile }), new Date().toISOString(), routeId]);
+  return profile;
+}
+
+function safeJson(text) {
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
   CHECKPOINT_SPACING_KM,
   assignRoute,
   computeCheckpoints,
+  ensureRouteElevationProfile,
+  readAssignment,
+  readRouteAssignments,
   readRoutes,
   summarizeCheckpoints,
 };
