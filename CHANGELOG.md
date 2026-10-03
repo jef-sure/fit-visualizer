@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.16.0 - 2026-10-03
+
+### Upgrade Notes
+
+- Run **FIT: Re-analyze Outdated Analyses** after updating (analysis format 20). Re-indexing is not required, but **FIT: Rebuild Derived Features** once will pre-populate the new cache for all activities (it is also filled lazily as analyses run).
+
+### Added
+
+- **Heuristic session class**: a deterministic classifier (session-class.js) labels each ride as recovery / endurance / tempo / threshold / VO2max-anaerobic / mixed / unstructured / undetermined from zone shares, the 20-minute peak versus the LTHR estimate, sustained Zone-4 runs and hard-effort counts, with confidence, reasons and alternatives. The prompt receives it as a computed, revisable label and asks the model to confirm or dispute it in one sentence instead of re-deriving zone percentages.
+- **Per-session intensity in history**: recent-activity rows now include the L/M/H split, the 20-minute peak, TRIMP and the session class, so the stimulus mix of recent sessions is visible to the model.
+- **Period load**: 7/28-day blocks report the TRIMP sum with HR coverage and the session-class mix, plus a Foster-style week monotony and strain (descriptive, imported days only).
+- **Derived-feature cache**: an `activity_features` table stores segments, zones, peaks, session class and load per activity, keyed by feature version, segmentation/power settings, the dated HR profile and the athlete profile. Stale keys recompute lazily; **FIT: Rebuild Derived Features** refreshes everything with progress. History beyond the 40 most recent activities per sport is now served from the cache instead of being skipped.
+- **Tested LTHR**: an optional lactate-threshold HR field on the dated profile; hrTSS and the prompt use it directly instead of an estimate when present.
+- Zone 1's floor now follows the Karvonen reserve when a resting HR is known, and TRIMP's averaged male/female coefficients for sex "other" are disclosed in the provenance block.
+
+### Changed
+
+- LTHR estimation priority: tested value > middle of the Threshold zone > 85 % of the reserve > 85 % of max HR, removing the previous ~5 bpm disagreement between the two zone systems.
+
 ## 0.15.0 - 2026-10-03
 
 ### Upgrade Notes
