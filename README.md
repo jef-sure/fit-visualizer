@@ -272,6 +272,7 @@ Most settings can be left at their defaults. Segmentation thresholds are mainly 
 | `fitVisualizer.maxHeartRate`                     | —       | Legacy fallback max HR; prefer a dated zone profile in the activity view.                                          |
 | `fitVisualizer.logLlmRequests`                   | `true`  | Write each Copilot prompt/response to `.fit-visualizer/logs`.                                                      |
 | `fitVisualizer.llmLogRetentionDays`              | `30`    | Delete request logs older than this; `0` keeps them indefinitely.                                                  |
+| `fitVisualizer.llmChatLogRetentionDays`          | `180`   | Delete chat/comparison logs older than this; conversations outlive one-off analyses. `0` keeps them indefinitely. |
 | `fitVisualizer.lmVendor`                          | `copilot` | VS Code language-model vendor ID used for activity analysis and chat.                                            |
 | `fitVisualizer.powerModel.dragArea`              | `0.32`  | Effective frontal area CdA (m²) for estimated power: ~0.25 tucked on a TT bike, ~0.32 on the hoods, 0.40+ upright. |
 | `fitVisualizer.powerModel.rollingResistance`     | `0.004` | Rolling resistance Crr for estimated power; raise it for wider or knobbly tyres.                                   |

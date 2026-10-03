@@ -98,6 +98,30 @@ const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
 // sql.js rewrites the whole database file, so overlapping analyses would clobber each other.
 let llmTaskQueue = Promise.resolve();
 let llmLogCleanupDone = false;
+let analysisWarningChannel = null;
+let analysisWarningNotified = false;
+
+// Segment-budget warnings used to live only in the JSON log; surface them in the Output channel
+// and, once per session, in a notification so thresholds actually get reviewed.
+function reportAnalysisWarning(message) {
+  try {
+    analysisWarningChannel ??= vscode.window.createOutputChannel('FIT Visualizer: Analysis');
+    analysisWarningChannel.appendLine(`[${new Date().toISOString()}] ${message}`);
+    if (!analysisWarningNotified) {
+      analysisWarningNotified = true;
+      vscode.window.showWarningMessage(
+        `${message} See the "FIT Visualizer: Analysis" output for later warnings.`,
+        'Open Output'
+      ).then((choice) => {
+        if (choice === 'Open Output' && analysisWarningChannel) {
+          analysisWarningChannel.show();
+        }
+      });
+    }
+  } catch {
+    // Diagnostics must never break an analysis.
+  }
+}
 
 function enqueueLlmTask(task) {
   const result = llmTaskQueue.then(task, task);
@@ -753,8 +777,8 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     } else if (msg.type === 'analyzeActivity') {
       try {
         const requestedActivityId = Number(msg.id);
-        const analysis = await generateActivityAnalysis(dbPath, requestedActivityId, msg.force);
-        panel.webview.postMessage({ type: 'analysisResult', id: requestedActivityId, analysis });
+        const { text: analysis, warnings } = await generateActivityAnalysis(dbPath, requestedActivityId, msg.force);
+        panel.webview.postMessage({ type: 'analysisResult', id: requestedActivityId, analysis, warnings });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         panel.webview.postMessage({ type: 'analysisError', id: Number(msg.id), error: errorMsg });
@@ -1373,7 +1397,7 @@ async function runActivityAnalysis(dbPath, activityId, force) {
   if (!force) {
     const existing = await getCachedAnalysisForCurrentVersion(dbPath, numId);
     if (existing) {
-      return existing;
+      return { text: existing, warnings: [] };
     }
   }
 
@@ -1408,8 +1432,12 @@ async function runActivityAnalysis(dbPath, activityId, force) {
     }),
   });
   await storeAnalysisInDb(dbPath, numId, analysis);
+  const warnings = segmentBudgetWarnings(analysisData);
+  for (const warning of warnings) {
+    reportAnalysisWarning(`Activity ${numId}: ${warning}`);
+  }
 
-  return analysis;
+  return { text: analysis, warnings };
 }
 
 // Overshooting the budget means the segmentation thresholds misfired; the list is logged, never truncated.
@@ -1431,9 +1459,11 @@ function segmentBudgetWarnings(analysisData) {
 function getLlmLogConfig() {
   const config = vscode.workspace.getConfiguration('fitVisualizer');
   const retentionDays = Number(config.get('llmLogRetentionDays'));
+  const chatRetentionDays = Number(config.get('llmChatLogRetentionDays'));
   return {
     enabled: config.get('logLlmRequests') !== false,
     retentionDays: Number.isFinite(retentionDays) && retentionDays > 0 ? retentionDays : 0,
+    chatRetentionDays: Number.isFinite(chatRetentionDays) && chatRetentionDays > 0 ? chatRetentionDays : 0,
   };
 }
 
@@ -1461,7 +1491,7 @@ function getCheapModelMarkers() {
 }
 
 async function logLlmRequest(dbPath, entry) {
-  const { enabled, retentionDays } = getLlmLogConfig();
+  const { enabled, retentionDays, chatRetentionDays } = getLlmLogConfig();
   if (!enabled || !dbPath) {
     return;
   }
@@ -1486,18 +1516,26 @@ async function logLlmRequest(dbPath, entry) {
     error: entry.error ?? null,
   }, null, 2));
 
-  if (retentionDays && !llmLogCleanupDone) {
+  if ((retentionDays || chatRetentionDays) && !llmLogCleanupDone) {
     llmLogCleanupDone = true;
-    await pruneLlmLogs(logDir, retentionDays);
+    await pruneLlmLogs(logDir, retentionDays, chatRetentionDays);
   }
 }
 
-async function pruneLlmLogs(logDir, retentionDays) {
-  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+// Conversations are rarer and more valuable for debugging than one-off analyses,
+// so they survive longer by default.
+async function pruneLlmLogs(logDir, analysisRetentionDays, chatRetentionDays) {
+  const analysisCutoff = analysisRetentionDays ? Date.now() - analysisRetentionDays * 24 * 60 * 60 * 1000 : null;
+  const chatCutoff = chatRetentionDays ? Date.now() - chatRetentionDays * 24 * 60 * 60 * 1000 : null;
   try {
     const names = await fs.readdir(logDir);
     for (const name of names) {
       if (!name.endsWith('.json')) {
+        continue;
+      }
+      const isConversationLog = name.endsWith('-chat.json') || name.endsWith('-comparison.json');
+      const cutoff = isConversationLog ? chatCutoff : analysisCutoff;
+      if (!cutoff) {
         continue;
       }
       const filePath = path.join(logDir, name);

@@ -248,7 +248,7 @@ function renderActivityTable(segments, laps, ui) {
   if (!segmentRows.length) return '';
   const tabs = lapRows.length ? `<div class="activityTableTabs"><button type="button" data-activity-table-tab="segments" aria-pressed="true">${escapeHtml(ui.segments)}</button><button type="button" data-activity-table-tab="laps" aria-pressed="false">${escapeHtml(ui.laps)}</button></div>` : '';
   const segmentView = renderGroupedSegmentRows(segmentRows, ui);
-  return `<section class="chart"><h2>${escapeHtml(lapRows.length ? ui.segments : ui.segment)}</h2>${tabs}${segmentView}${lapRows.length ? renderRows(lapRows, 'laps', true, lapColumns) : ''}</section>`;
+  return `<section class="chart"><h2>${escapeHtml(lapRows.length ? ui.segments : ui.segment)}</h2><div id="segmentBudgetWarning" class="mapHint" style="display:none"></div>${tabs}${segmentView}${lapRows.length ? renderRows(lapRows, 'laps', true, lapColumns) : ''}</section>`;
 }
 
 function renderGroupedSegmentRows(rows, ui) {
@@ -692,6 +692,14 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         analysisContent.innerHTML = note + '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(text) + '</div>';
       }
 
+      function setSegmentBudgetWarning(warnings) {
+        const el = document.getElementById('segmentBudgetWarning');
+        if (!el) return;
+        const text = warnings.filter(Boolean).join(' ');
+        el.style.display = text ? 'block' : 'none';
+        el.textContent = text;
+      }
+
       function compareButtonLabel() {
         const alreadyCompared = comparisons.some((entry) => entry.comparedActivityId === compareActivityId);
         return alreadyCompared ? ui.compareAgain : ui.compareWithAI;
@@ -769,6 +777,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           showAnalysisText(msg.analysis);
           analyzeBtn.disabled = false;
           analyzeBtn.textContent = analyzeButtonLabel();
+          setSegmentBudgetWarning(Array.isArray(msg.warnings) ? msg.warnings : []);
         } else if (msg.type === 'noAnalysis') {
           hasAnalysis = false;
           analysisOutdated = false;
