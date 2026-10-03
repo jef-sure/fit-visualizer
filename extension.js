@@ -32,6 +32,16 @@ const { createManualActivity } = require('./manual-activity');
 const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, localDate } = require('./activity-time');
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
+const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
+
+function safeParseJson(text, fallback) {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
 const { fileExists, getFitUris, getParsedLaps, parseFitFile } = require('./fit-files');
 const {
   calculateAutoHeartRateProfile,
@@ -151,6 +161,7 @@ function activate(context) {
     resolveFitUri,
     selectDatabaseFolder,
     showActivityBrowserInPanel,
+    rebuildDerivedFeatures,
     tidyHeartRateProfiles,
     updateModelPriceTable,
   }));
@@ -197,6 +208,123 @@ async function tidyHeartRateProfiles() {
     db2.close();
   }
   vscode.window.showInformationMessage(`Removed ${redundant.length} duplicate heart-rate profile${redundant.length > 1 ? 's' : ''}.`);
+}
+
+async function rebuildDerivedFeatures() {
+  const dbPath = await resolveActiveDbPath() || await selectDatabaseFolder();
+  if (!dbPath) {
+    return;
+  }
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  try {
+    db.run('DELETE FROM activity_features');
+    await persistDatabase(db, dbPath);
+  } finally {
+    db.close();
+  }
+  const total = await countFitActivities(dbPath);
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'FIT Visualizer: rebuilding derived features', cancellable: false },
+    async (progress) => {
+      let done = 0;
+      // One activity at a time: getTrainingContextFromDb opens its own connection and
+      // recomputes (and stores) exactly the stale rows it touches.
+      for (let id = 1; id <= total.maxId; id += 1) {
+        if (!total.ids.has(id)) continue;
+        try {
+          const db2 = await openDatabase(SQL, dbPath);
+          try {
+            ensureFeaturesForActivity(db2, id);
+          } finally {
+            db2.close();
+          }
+        } catch {
+          // A single broken activity must not abort the rebuild.
+        }
+        done += 1;
+        progress.report({ message: `${done}/${total.ids.size}` });
+      }
+    }
+  );
+  vscode.window.showInformationMessage(`Derived features rebuilt for ${total.ids.size} activities.`);
+}
+
+// Eager variant of the lazy ensure path: computes and stores features for one activity.
+function ensureFeaturesForActivity(db, activityId) {
+  const readRows = (sql, params) => {
+    const statement = db.prepare(sql);
+    try {
+      statement.bind(params);
+      const rows = [];
+      while (statement.step()) rows.push(statement.getAsObject());
+      return rows;
+    } finally {
+      statement.free();
+    }
+  };
+  const row = readRows('SELECT * FROM activities WHERE id = ?', [activityId])[0];
+  if (!row || row.source === 'manual') return;
+  const profile = getAthleteProfileFromDbConnection(db);
+  const segmentationOptions = getSegmentationOptions();
+  const powerModelOptions = getPowerModelOptions();
+  const settingsHash = settingsKey({ segmentation: segmentationOptions, powerModel: powerModelOptions });
+  const hrConfig = attachRestingHeartRate(getProfileHeartRateConfig(db, row.start_time), profile);
+  const key = featureCacheKey({ featuresVersion: FEATURES_VERSION, settingsHash, hrProfile: hrConfig, athlete: profile });
+  const records = readRows('SELECT * FROM records WHERE activity_id = ? ORDER BY record_index', [row.id]).map((record) => ({
+    elapsed_time: record.elapsed_s, distance: record.distance_km, speed: record.speed_kmh,
+    altitude: record.altitude_m == null ? null : record.altitude_m / 1000,
+    heart_rate: record.heart_rate, power: record.power, cadence: record.cadence,
+    position_lat: record.latitude, position_long: record.longitude,
+  }));
+  const normalized = normalizeRecordSpeeds(records);
+  const power = addEstimatedPowerWhenMissing(normalized, {
+    riderMassKg: row.rider_mass_kg ?? profile.riderMassKg,
+    bikeMassKg: row.bike_mass_kg ?? profile.bikeMassKg, ...powerModelOptions,
+  });
+  const segments = buildActivitySegments(power.records, { sport: row.sport, powerSource: power.source,
+    thresholds: segmentationOptions, athlete: { ftp: profile.ftp, restingHeartRate: profile.restingHeartRate,
+      maxHeartRate: hrConfig?.maxHeartRate } });
+  const summary = buildSummary(power.records, [{ total_timer_s: row.total_timer_s, total_elapsed_s: row.total_elapsed_s, total_distance: row.total_distance_km }], {
+    restingHeartRate: profile.restingHeartRate, sex: profile.sex,
+    maxHeartRateForHrr: asNumber(hrConfig?.maxHeartRate) || row.max_hr,
+    heartRateThresholds: hrConfig?.thresholds, lactateThresholdHeartRate: hrConfig?.lthr ?? undefined,
+    powerSource: power.source,
+  });
+  const zones = computeHeartRateZones(power.records, hrConfig?.maxHeartRate, hrConfig?.thresholds,
+    { restingHeartRate: asNumber(profile.restingHeartRate) });
+  const peakHr = calculatePeakHeartRates(power.records);
+  const timerS = asNumber(row.total_timer_s);
+  const sessionClass = buildSessionClassForActivity(power.records, { total_timer_s: timerS }, hrConfig, profile, segments);
+  db.run(`
+    INSERT INTO activity_features (
+      activity_id, features_version, settings_hash, hr_profile_key, athlete_key, feature_cache_key, computed_at,
+      segments_json, zones_json, peak_hr_json, session_class_json, trimp, hr_tss, elapsed_coverage_pct
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(activity_id) DO UPDATE SET
+      features_version=excluded.features_version, settings_hash=excluded.settings_hash,
+      hr_profile_key=excluded.hr_profile_key, athlete_key=excluded.athlete_key,
+      feature_cache_key=excluded.feature_cache_key, computed_at=excluded.computed_at,
+      segments_json=excluded.segments_json, zones_json=excluded.zones_json,
+      peak_hr_json=excluded.peak_hr_json, session_class_json=excluded.session_class_json,
+      trimp=excluded.trimp, hr_tss=excluded.hr_tss, elapsed_coverage_pct=excluded.elapsed_coverage_pct
+  `, [row.id, FEATURES_VERSION, settingsHash, hrProfileKey(hrConfig), athleteKey(profile), key, new Date().toISOString(),
+    JSON.stringify(segments.map((segment) => ({ ...segment, routePoints: undefined }))),
+    JSON.stringify(zones), JSON.stringify(peakHr), JSON.stringify(sessionClass),
+    summary.trimp ?? null, summary.hrTss ?? null,
+    zones?.enabled && timerS > 0 ? 100 * zones.totalSeconds / timerS : null]);
+}
+
+async function countFitActivities(dbPath) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  try {
+    const rows = db.exec("SELECT id FROM activities WHERE source != 'manual'")[0]?.values || [];
+    const ids = new Set(rows.map((value) => Number(value[0])));
+    return { ids, maxId: rows.reduce((max, value) => Math.max(max, Number(value[0])), 0) };
+  } finally {
+    db.close();
+  }
 }
 
 async function updateModelPriceTable() {
@@ -2432,6 +2560,31 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     ORDER BY datetime(a.start_time) DESC, a.id DESC`, [selected.start_time, selected.start_time]);
   const profile = getAthleteProfileFromDbConnection(db);
   const detailedPerSport = new Map();
+  // The full per-record pipeline stays for the current activity and for rows whose cached
+  // features are stale; fresh cache rows skip the record scan entirely.
+  const segmentationOptions = getSegmentationOptions();
+  const powerModelOptions = getPowerModelOptions();
+  const settingsHash = settingsKey({ segmentation: segmentationOptions, powerModel: powerModelOptions });
+  const readFeatureRow = (id) => readRows('SELECT * FROM activity_features WHERE activity_id = ?', [id])[0] || null;
+  const storeFeatureRow = (id, payload) => {
+    db.run(`
+      INSERT INTO activity_features (
+        activity_id, features_version, settings_hash, hr_profile_key, athlete_key, feature_cache_key, computed_at,
+        segments_json, zones_json, peak_hr_json, session_class_json, trimp, hr_tss, elapsed_coverage_pct
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(activity_id) DO UPDATE SET
+        features_version=excluded.features_version, settings_hash=excluded.settings_hash,
+        hr_profile_key=excluded.hr_profile_key, athlete_key=excluded.athlete_key,
+        feature_cache_key=excluded.feature_cache_key, computed_at=excluded.computed_at,
+        segments_json=excluded.segments_json, zones_json=excluded.zones_json,
+        peak_hr_json=excluded.peak_hr_json, session_class_json=excluded.session_class_json,
+        trimp=excluded.trimp, hr_tss=excluded.hr_tss, elapsed_coverage_pct=excluded.elapsed_coverage_pct
+    `, [id, payload.featuresVersion, payload.settingsHash, payload.hrProfileKey, payload.athleteKey,
+      payload.featureCacheKey, new Date().toISOString(),
+      JSON.stringify(payload.segments ?? []), JSON.stringify(payload.zones ?? null),
+      JSON.stringify(payload.peakHr ?? []), JSON.stringify(payload.sessionClass ?? null),
+      payload.trimp ?? null, payload.hrTss ?? null, payload.elapsedCoveragePct ?? null]);
+  };
   const buildDetail = (row) => {
     const records = readRows('SELECT * FROM records WHERE activity_id = ? ORDER BY record_index', [row.id]).map((record) => ({
       elapsed_time: record.elapsed_s, distance: record.distance_km, speed: record.speed_kmh,
@@ -2443,18 +2596,61 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     const normalized = normalizeRecordSpeeds(records);
     const power = addEstimatedPowerWhenMissing(normalized, {
       riderMassKg: row.rider_mass_kg ?? profile.riderMassKg,
-      bikeMassKg: row.bike_mass_kg ?? profile.bikeMassKg, ...getPowerModelOptions(),
-    });
-    const hrConfig = getProfileHeartRateConfig(db, row.start_time);
+      bikeMassKg: row.bike_mass_kg ?? profile.bikeMassKg, ...powerModelOptions,
+    });    const hrConfig = attachRestingHeartRate(
+      getProfileHeartRateConfig(db, row.start_time),
+      row.rider_mass_kg != null ? { restingHeartRate: profile.restingHeartRate } : profile,
+    );
     const segments = buildActivitySegments(power.records, { sport: row.sport, powerSource: power.source,
-      thresholds: getSegmentationOptions(), athlete: { ftp: profile.ftp, restingHeartRate: profile.restingHeartRate,
+      thresholds: segmentationOptions, athlete: { ftp: profile.ftp, restingHeartRate: profile.restingHeartRate,
         maxHeartRate: hrConfig?.maxHeartRate } });
     return { records: normalized, segments, hrConfig, powerSource: power.source };
+  };
+  // Cached feature payload for one earlier activity; recomputes (and stores) only when the key changed.
+  const ensureFeaturesRow = (row) => {
+    const hrConfig = attachRestingHeartRate(getProfileHeartRateConfig(db, row.start_time), profile);
+    const key = featureCacheKey({ featuresVersion: FEATURES_VERSION, settingsHash, hrProfile: hrConfig, athlete: profile });
+    const existing = readFeatureRow(row.id);
+    if (isFeatureRowFresh(existing, key)) {
+      return {
+        segments: safeParseJson(existing.segments_json, []),
+        zones: safeParseJson(existing.zones_json, null),
+        peakHr: safeParseJson(existing.peak_hr_json, []),
+        sessionClass: safeParseJson(existing.session_class_json, null),
+        trimp: existing.trimp, hrTss: existing.hr_tss,
+        elapsedCoveragePct: existing.elapsed_coverage_pct, hrConfig, powerSource: 'cached',
+      };
+    }
+    const detail = buildDetail(row);
+    const summary = buildSummary(detail.records, [{ total_timer_s: row.total_timer_s, total_elapsed_s: row.total_elapsed_s, total_distance: row.total_distance_km }], {
+      restingHeartRate: profile.restingHeartRate, sex: profile.sex,
+      maxHeartRateForHrr: asNumber(hrConfig?.maxHeartRate) || row.max_hr,
+      heartRateThresholds: hrConfig?.thresholds, lactateThresholdHeartRate: hrConfig?.lthr ?? undefined,
+      powerSource: detail.powerSource,
+    });
+    const zones = computeHeartRateZones(detail.records, hrConfig?.maxHeartRate, hrConfig?.thresholds,
+      { restingHeartRate: asNumber(profile.restingHeartRate) });
+    const peakHr = calculatePeakHeartRates(detail.records);
+    const timerS = asNumber(row.total_timer_s);
+    const sessionClass = buildSessionClassForActivity(detail.records, { total_timer_s: timerS }, hrConfig, profile, detail.segments);
+    const payload = {
+      featuresVersion: FEATURES_VERSION, settingsHash, hrProfileKey: hrProfileKey(hrConfig), athleteKey: athleteKey(profile),
+      featureCacheKey: key,
+      segments: detail.segments.map((segment) => ({ ...segment, routePoints: undefined })),
+      zones, peakHr, sessionClass,
+      trimp: summary.trimp, hrTss: summary.hrTss,
+      elapsedCoveragePct: zones?.enabled && timerS > 0 ? 100 * zones.totalSeconds / timerS : null,
+    };
+    storeFeatureRow(row.id, payload);
+    return { segments: payload.segments, zones, peakHr, sessionClass,
+      trimp: summary.trimp, hrTss: summary.hrTss,
+      elapsedCoveragePct: payload.elapsedCoveragePct, hrConfig, powerSource: detail.powerSource };
   };
   const activities = rows.map((row) => {
     const count = detailedPerSport.get(row.sport) || 0;
     detailedPerSport.set(row.sport, count + 1);
-    const detail = count < 40 && row.source !== 'manual' ? buildDetail(row) : null;
+    const useCache = count >= 40;
+    const detail = row.source === 'manual' ? null : (useCache ? ensureFeaturesRow(row) : buildDetail(row));
     let conversation = [];
     try {
       const parsed = JSON.parse(row.chat_json || '[]');
@@ -2470,6 +2666,8 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       powerSource: detail?.powerSource || 'unknown',
       trainingStressScore: detail?.powerSource === 'measured' ? row.training_stress_score : null,
       hrProfileDate: detail?.hrConfig?.effectiveDate || null,
+      trimp: asNumber(row.trimp), hrTss: asNumber(row.hr_tss),
+      sessionClass: detail?.sessionClass || null,
       segments: detail?.segments || [], conversation,
       source: row.source,
       analysisText: row.source === 'fit' && row.analysis_version >= ANALYSIS_VERSION && row.manual_avg_hr == null && row.manual_max_hr == null

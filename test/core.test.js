@@ -1548,9 +1548,9 @@ test('power model coefficients are configurable and reach every estimation call 
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /function getPowerModelOptions\(\)/);
   const callSites = source.match(/addEstimatedPowerWhenMissing\([\s\S]*?\}\);/g) || [];
-  assert.equal(callSites.length, 3);
+  assert.equal(callSites.length, 4);
   for (const callSite of callSites) {
-    assert.match(callSite, /\.\.\.getPowerModelOptions\(\)/);
+    assert.match(callSite, /\.\.\.(getPowerModelOptions\(\)|powerModelOptions)/);
   }
 });
 
@@ -2207,7 +2207,7 @@ test('database schema creates only extension-owned tables', async () => {
     const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")[0]
       .values
       .flat();
-    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'activity_comparisons', 'athlete_profile', 'heart_rate_profiles', 'records', 'sqlite_sequence', 'wheel_calibration_samples']);
+    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'activity_comparisons', 'activity_features', 'athlete_profile', 'heart_rate_profiles', 'records', 'sqlite_sequence', 'wheel_calibration_samples']);
   } finally {
     db.close();
   }
@@ -3130,6 +3130,53 @@ test('sustained Z4 runs and hard effort counts come from the sample stream', () 
   assert.equal(longestSustainedZ4Seconds(samples), 180);
   assert.equal(countHardEfforts(samples), 2);
   assert.equal(countHardEfforts(samples, { minEffortSeconds: 90 }), 0);
+});
+
+test('feature cache keys change with every input factor', () => {
+  const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('../activity-features');
+  const settings = settingsKey({ segmentation: { gradeThresholdPct: 2.5 }, powerModel: { dragArea: 0.32 } });
+  const profile = { effectiveDate: '2026-08-19', maxHeartRate: 171, thresholds: [127, 138, 149, 160], lthr: null };
+  const athlete = { sex: 'male', restingHeartRate: 62, ftp: 117, riderMassKg: 88, bikeMassKg: 10 };
+  const base = featureCacheKey({ featuresVersion: FEATURES_VERSION, settingsHash: settings, hrProfile: profile, athlete });
+
+  assert.notEqual(featureCacheKey({ featuresVersion: FEATURES_VERSION, settingsHash: settingsKey({ segmentation: { gradeThresholdPct: 3 }, powerModel: { dragArea: 0.32 } }), hrProfile: profile, athlete }), base, 'segmentation change invalidates');
+  assert.notEqual(featureCacheKey({ featuresVersion: FEATURES_VERSION, settingsHash: settingsKey({ segmentation: { gradeThresholdPct: 2.5 }, powerModel: { dragArea: 0.4 } }), hrProfile: profile, athlete }), base, 'power model change invalidates');
+  assert.notEqual(featureCacheKey({ featuresVersion: FEATURES_VERSION, settingsHash: settings, hrProfile: { ...profile, lthr: 158 }, athlete }), base, 'LTHR change invalidates');
+  assert.notEqual(featureCacheKey({ featuresVersion: FEATURES_VERSION, settingsHash: settings, hrProfile: profile, athlete: { ...athlete, restingHeartRate: 64 } }), base, 'athlete change invalidates');
+  assert.ok(isFeatureRowFresh({ features_version: FEATURES_VERSION, feature_cache_key: base }, base));
+  assert.ok(!isFeatureRowFresh({ features_version: FEATURES_VERSION, feature_cache_key: base + 'x' }, base));
+  assert.ok(!isFeatureRowFresh({ features_version: FEATURES_VERSION - 1, feature_cache_key: base }, base));
+  assert.equal(hrProfileKey(null), 'none');
+  assert.equal(athleteKey(null), 'none');
+});
+
+test('derived features are stored once and reused while the key is unchanged', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    db.run(`INSERT INTO activities (id, file_path, file_name, start_time, source, sport, total_timer_s, total_distance_km)
+      VALUES (7, 'a.fit', 'a.fit', '2026-08-19T17:00:00.000Z', 'fit', 'cycling', 3000, 20)`);
+    db.run(`INSERT INTO heart_rate_profiles (effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start)
+      VALUES ('2026-08-01', 171, 127, 138, 149, 160)`);
+    const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, settingsKey } = require('../activity-features');
+    const settingsHash = settingsKey({ segmentation: null, powerModel: null });
+    const profile = { effectiveDate: '2026-08-01', maxHeartRate: 171, thresholds: [127, 138, 149, 160], lthr: null };
+    const athlete = { sex: null, restingHeartRate: null, ftp: null, riderMassKg: null, bikeMassKg: null };
+    const key = featureCacheKey({ featuresVersion: FEATURES_VERSION, settingsHash, hrProfile: profile, athlete });
+    db.run(`INSERT INTO activity_features (activity_id, features_version, settings_hash, hr_profile_key, athlete_key, feature_cache_key, computed_at, segments_json, zones_json, peak_hr_json, session_class_json, trimp, hr_tss)
+      VALUES (7, ?, ?, ?, ?, ?, '2026-10-03T00:00:00Z', '[]', NULL, '[]', NULL, 100, 65)`,
+      [FEATURES_VERSION, settingsHash, hrProfileKey(profile), athleteKey(athlete), key]);
+    const row = db.prepare('SELECT * FROM activity_features WHERE activity_id = 7');
+    row.step();
+    const stored = row.getAsObject();
+    row.free();
+    const { isFeatureRowFresh } = require('../activity-features');
+    assert.ok(isFeatureRowFresh(stored, key), 'same key is fresh, no recompute');
+    assert.ok(!isFeatureRowFresh(stored, key.replace('171', '172')), 'different key forces recompute');
+  } finally {
+    db.close();
+  }
 });
 
 test('pinned analysis model id overrides the cheapest-model selection', async () => {

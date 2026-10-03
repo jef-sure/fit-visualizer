@@ -141,6 +141,25 @@ function ensureDatabaseSchema(db) {
     );
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS activity_features (
+      activity_id          INTEGER PRIMARY KEY REFERENCES activities(id) ON DELETE CASCADE,
+      features_version     INTEGER NOT NULL,
+      settings_hash        TEXT,
+      hr_profile_key       TEXT,
+      athlete_key          TEXT,
+      feature_cache_key    TEXT,
+      computed_at          TEXT,
+      segments_json        TEXT,
+      zones_json           TEXT,
+      peak_hr_json         TEXT,
+      session_class_json   TEXT,
+      trimp                REAL,
+      hr_tss               REAL,
+      elapsed_coverage_pct REAL
+    );
+  `);
+
   addColumnIfMissing(db, 'activities', 'manual_avg_hr', 'REAL');
   addColumnIfMissing(db, 'activities', 'manual_max_hr', 'REAL');
   addColumnIfMissing(db, 'activities', 'rider_mass_kg', 'REAL');
