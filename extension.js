@@ -2618,7 +2618,15 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     const segments = buildActivitySegments(power.records, { sport: row.sport, powerSource: power.source,
       thresholds: segmentationOptions, athlete: { ftp: profile.ftp, restingHeartRate: profile.restingHeartRate,
         maxHeartRate: hrConfig?.maxHeartRate } });
-    return { records: normalized, segments, hrConfig, powerSource: power.source };
+    const summary = buildSummary(power.records, [{ total_timer_s: row.total_timer_s, total_elapsed_s: row.total_elapsed_s, total_distance: row.total_distance_km }], {
+      restingHeartRate: profile.restingHeartRate, sex: profile.sex,
+      maxHeartRateForHrr: asNumber(hrConfig?.maxHeartRate) || row.max_hr,
+      heartRateThresholds: hrConfig?.thresholds, lactateThresholdHeartRate: hrConfig?.lthr ?? undefined,
+      powerSource: power.source,
+    });
+    const timerS = asNumber(row.total_timer_s);
+    const sessionClass = buildSessionClassForActivity(power.records, { total_timer_s: timerS }, hrConfig, profile, segments);
+    return { records: normalized, segments, hrConfig, powerSource: power.source, sessionClass, trimp: summary.trimp, hrTss: summary.hrTss };
   };
   // Cached feature payload for one earlier activity; recomputes (and stores) only when the key changed.
   const ensureFeaturesRow = (row) => {
@@ -2680,7 +2688,8 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       powerSource: detail?.powerSource || 'unknown',
       trainingStressScore: detail?.powerSource === 'measured' ? row.training_stress_score : null,
       hrProfileDate: detail?.hrConfig?.effectiveDate || null,
-      trimp: asNumber(row.trimp), hrTss: asNumber(row.hr_tss),
+      trimp: asNumber(detail?.trimp) > 0 ? asNumber(detail.trimp) : asNumber(row.trimp),
+      hrTss: asNumber(detail?.hrTss) > 0 ? asNumber(detail.hrTss) : asNumber(row.hr_tss),
       sessionClass: detail?.sessionClass || null,
       segments: detail?.segments || [], conversation,
       source: row.source,
