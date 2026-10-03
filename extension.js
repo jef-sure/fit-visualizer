@@ -115,16 +115,17 @@ let llmLogCleanupDone = false;
 let analysisWarningChannel = null;
 let analysisWarningNotified = false;
 
-// Segment-budget warnings used to live only in the JSON log; surface them in the Output channel
-// and, once per session, in a notification so thresholds actually get reviewed.
-function reportAnalysisWarning(message) {
+// Segment-budget diagnostics used to live only in the JSON log; now they also go to the Output
+// channel. Only a large overshoot (thresholds probably misfired) triggers the once-per-session
+// notification; small overshoots are informational and silent beyond the log line.
+function reportAnalysisWarning(message, severity = 'info') {
   try {
     analysisWarningChannel ??= vscode.window.createOutputChannel('FIT Visualizer: Analysis');
-    analysisWarningChannel.appendLine(`[${new Date().toISOString()}] ${message}`);
-    if (!analysisWarningNotified) {
+    analysisWarningChannel.appendLine(`[${severity}] ${new Date().toISOString()} ${message}`);
+    if (severity === 'warn' && !analysisWarningNotified) {
       analysisWarningNotified = true;
       vscode.window.showWarningMessage(
-        `${message} See the "FIT Visualizer: Analysis" output for later warnings.`,
+        `${message} See the "FIT Visualizer: Analysis" output for later notes.`,
         'Open Output'
       ).then((choice) => {
         if (choice === 'Open Output' && analysisWarningChannel) {
@@ -1681,13 +1682,15 @@ async function runActivityAnalysis(dbPath, activityId, force) {
   await storeAnalysisInDb(dbPath, numId, analysis);
   const warnings = segmentBudgetWarnings(analysisData);
   for (const warning of warnings) {
-    reportAnalysisWarning(`Activity ${numId}: ${warning}`);
+    reportAnalysisWarning(`Activity ${numId}: ${warning.text}`, warning.severity);
   }
 
-  return { text: analysis, warnings };
+  return { text: analysis, warnings: warnings.map(({ severity, text }) => `${severity}: ${text}`) };
 }
 
-// Overshooting the budget means the segmentation thresholds misfired; the list is logged, never truncated.
+// The line budget is a rough guideline for prompt size, never a truncation cap. A small overshoot
+// is normal on varied terrain and only worth a log line; a large one suggests the thresholds
+// actually misfired and deserves the once-per-session notification.
 function segmentBudgetWarnings(analysisData) {
   const segments = Array.isArray(analysisData?.segments) ? analysisData.segments : [];
   if (!segments.length) {
@@ -1698,9 +1701,20 @@ function segmentBudgetWarnings(analysisData) {
   const rows = buildSegmentContext(segments).displayRows.filter((row) => row.time);
   const durationS = segments[segments.length - 1].endElapsed - segments[0].startElapsed;
   const maxLines = segmentLineBudget(durationS);
-  return rows.length > maxLines
-    ? [`Segment breakdown produced ${rows.length} lines for ${(durationS / 3600).toFixed(2)} h (budget ${maxLines}); review the segmentation thresholds.`]
-    : [];
+  if (!(rows.length > maxLines)) {
+    return [];
+  }
+  const overshoot = rows.length / maxLines;
+  if (overshoot > 1.5) {
+    return [{
+      severity: 'warn',
+      text: `Segment breakdown produced ${rows.length} lines for ${(durationS / 3600).toFixed(2)} h (guideline ${maxLines}); nothing was truncated. If this repeats, review the segmentation thresholds.`,
+    }];
+  }
+  return [{
+    severity: 'info',
+    text: `Segment breakdown: ${rows.length} lines for ${(durationS / 3600).toFixed(2)} h (guideline ${maxLines}); nothing was truncated.`,
+  }];
 }
 
 function getLlmLogConfig() {
