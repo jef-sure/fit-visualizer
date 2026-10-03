@@ -117,6 +117,7 @@ const UI_STRINGS = {
   stopped: 'Stopped',
   technical: 'Technical descent',
   mapTiles: 'Map tiles from OpenStreetMap.',
+  mapTilesOffline: 'Offline map: route only, no tile requests.',
   aiAnalysis: 'AI Analysis',
   loadingAnalysis: 'Loading analysis...',
   analyzeActivity: 'Analyze Activity',

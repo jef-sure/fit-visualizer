@@ -97,6 +97,7 @@
   "Manual distance, duration and elevation are used in analysis. Manually entered HR overrides are not sent to AI; a heart-rate chart requires time-series samples.": "Manual distance, duration and elevation are used in analysis. Manually entered HR overrides are not sent to AI; a heart-rate chart requires time-series samples.",
   "Map library failed to load. Run npm install in fit-visualizer.": "Map library failed to load. Run npm install in fit-visualizer.",
   "Map tiles from OpenStreetMap.": "Map tiles from OpenStreetMap.",
+  "Offline map: route only, no tile requests.": "Offline map: route only, no tile requests.",
   "Max": "Max",
   "Max HR (bpm)": "Max HR (bpm)",
   "Max Power (W)": "Max Power (W)",

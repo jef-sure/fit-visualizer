@@ -245,6 +245,8 @@ FIT Visualizer is local-first.
 
 Browsing FIT files, indexing activities, charts, maps, segmentation, heart-rate zones, wheel calibration, and activity history work locally in VS Code. The original `.fit` files are not uploaded or copied to a remote service by FIT Visualizer.
 
+One network exception: by default the map loads background tiles from `tile.openstreetmap.org`, so the tile server sees which map area is being viewed (not the track itself). Set `fitVisualizer.map.tiles` to `none` to draw the route on a plain background with no tile requests. Price updates fetch GitHub's public pricing page on request and send no activity data.
+
 FIT files may contain sensitive information such as GPS coordinates, timestamps, heart-rate data, device information, and training history.
 
 AI-assisted analysis is optional. When you run it, FIT Visualizer sends an analysis context through GitHub Copilot. This context may include activity facts, derived metrics, segments, prior training and AI hypotheses, and user messages from earlier activity chats, including any health information you wrote there. The original FIT file and segment GPS coordinates are not sent. Logs may contain the same sensitive context.
@@ -284,3 +286,6 @@ Most settings can be left at their defaults. Segmentation thresholds are mainly 
 | `fitVisualizer.segmentation.stopSpeedKmh`        | `1`     | Speed at/below which a record counts as stopped.                                                                   |
 | `fitVisualizer.segmentation.stopMinSeconds`      | `10`    | Minimum duration to count as a stop or auto-paused gap.                                                            |
 | `fitVisualizer.segmentation.gpsTrustMinKm`       | `1`     | Minimum continuous, straight distance before a GPS window can confirm — or calibrate against — the recorded speed. |
+| `fitVisualizer.map.tiles`                        | `osm`   | Map tiles: `osm` loads OpenStreetMap tiles over the network; `none` draws the route offline with no tile requests. |
+
+> The settings table lists the keys most users need. `preferCheapAnalysisModel`, `cheapModelMarkers` and `lmVendor` control which language model answers; see the AI section above.

@@ -223,6 +223,19 @@
           "minimum": 0.2,
           "maximum": 10,
           "description": "Minimum continuous distance before a GPS window can confirm the recorded speed."
+        },
+        "fitVisualizer.map.tiles": {
+          "type": "string",
+          "enum": [
+            "osm",
+            "none"
+          ],
+          "default": "osm",
+          "enumDescriptions": [
+            "Load OpenStreetMap tiles over the network (the tile server sees which map area you view).",
+            "Draw the route on a plain background with no network requests."
+          ],
+          "description": "Map tile source. \"none\" keeps the map fully offline: the route is drawn without a background map and no tile requests are made."
         }
       }
     }

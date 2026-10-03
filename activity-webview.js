@@ -37,6 +37,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
   const ui = localizeUi(translate);
   const glossary = localizeGlossary(translate);
+  const mapTiles = String(vscode.workspace.getConfiguration('fitVisualizer').get('map.tiles') || 'osm');
   const locale = String(vscode.env.language || 'en').replace(/_/g, '-');
   const shouldOfferTranslations = !generatedTranslations && !locale.startsWith('en') && ui.activity === 'Activity';
   const hasData = fitData && Array.isArray(fitData.records) && fitData.records.length > 0;
@@ -87,7 +88,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles)
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -334,7 +335,7 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm') {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -615,7 +616,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         </div>
         <div id="${mapId}SegmentLegend" class="segmentLegend" style="display:none"></div>
         <div id="${mapId}"></div>
-        <div class="mapHint">${escapeHtml(ui.mapTiles)}</div>
+        <div class="mapHint">${escapeHtml(mapTiles === 'none' ? ui.mapTilesOffline : ui.mapTiles)}</div>
       </div>
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
@@ -1127,9 +1128,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       } else {
         if (gpsRouteSection) gpsRouteSection.style.display = 'none';
         map = L.map('${mapId}', { preferCanvas: true, zoomControl: true, scrollWheelZoom: false });
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        ${mapTiles === 'none' ? '' : `L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
-        }).addTo(map);
+        }).addTo(map);`}
         setupCooperativeZoom(map);
         const latLngs = routePoints.map((p) => [p.lat, p.lon]);
         map.fitBounds(L.latLngBounds(latLngs).pad(0.08));
