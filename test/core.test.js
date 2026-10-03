@@ -14,6 +14,7 @@ const {
   generateComparisonPrompt,
   requestCopilotAnalysis,
   responseLanguageInstruction,
+  selectPreferredModel,
   summarizePromptBlocks,
 } = require('../analysis');
 const { ensureDatabaseSchema } = require('../database-schema');
@@ -3018,6 +3019,25 @@ test('analysis prompt shows local start time, elapsed reconciliation and ascent 
   assert.match(prompt, /device session elapsed 0?8:54:07 inconsistent, recording probably left open; elapsed taken from records/);
   assert.match(prompt, /device reports 128\/128 m; sources disagree, treat ascent\/descent and first-segment grade with caution/);
 });
+
+test('pinned analysis model id overrides the cheapest-model selection', async () => {
+  const models = [
+    { id: 'gpt-6-luna', name: 'Luna', family: 'luna' },
+    { id: 'gpt-6-sol', name: 'Sol', family: 'sol' },
+  ];
+  const pinned = await selectPreferredModel(fakeVscode(), 'copilot', models, { modelId: 'gpt-6-sol', preferCheapModel: true });
+  assert.equal(pinned.id, 'gpt-6-sol');
+  await assert.rejects(
+    () => selectPreferredModel(fakeVscode(), 'copilot', models, { modelId: 'missing-model', preferCheapModel: true }),
+    /not available/
+  );
+  const unpinned = await selectPreferredModel(fakeVscode(), 'copilot', models, {});
+  assert.equal(unpinned, models[0]);
+});
+
+function fakeVscode() {
+  return { lm: { selectChatModels: async () => { throw new Error('unexpected call'); } } };
+}
 
 test('recent history marks user-reported heart rate as a summary without a series', () => {  const text = buildRecentHistoryContext([
     { startTime: '2026-07-19T08:22:00.000Z', distanceKm: 20.9, durationS: 3392, reportedAvgHr: 131, reportedMaxHr: 177, source: 'fit' },

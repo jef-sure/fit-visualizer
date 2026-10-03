@@ -122,6 +122,14 @@
           "default": true,
           "description": "For one-off activity analysis (not chat), use the cheapest available Copilot model by published per-token price instead of whichever model Copilot lists first. Run FIT: Update Model Prices to refresh the local price table from GitHub. Unknown models fall back to an Auto model family, then to a model-name heuristic. Turn off to use the default model. None of this is officially guaranteed by the VS Code API."
         },
+        "fitVisualizer.analysisModelId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Pin one-off activity analysis to a specific language-model id (overrides the cheapest-model selection). Useful for reproducing prompt experiments; the log records which model answered. Chat and comparison always use the provider's first model."
+        },
         "fitVisualizer.cheapModelMarkers": {
           "type": "array",
           "items": {

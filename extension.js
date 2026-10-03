@@ -1479,6 +1479,7 @@ async function runActivityAnalysis(dbPath, activityId, force) {
   const analysis = await requestCopilotAnalysis(vscode, prompt, {
     vendor: getLanguageModelVendor(),
     preferCheapModel: getPreferCheapAnalysisModel(),
+    modelId: getAnalysisModelId(),
     cheapModelMarkers: getCheapModelMarkers(),
     onCompleted: (result) => logLlmRequest(dbPath, {
       activityId: numId,
@@ -1539,6 +1540,11 @@ function withTimeout(promise, ms, message) {
 
 function getPreferCheapAnalysisModel() {
   return vscode.workspace.getConfiguration('fitVisualizer').get('preferCheapAnalysisModel') !== false;
+}
+
+function getAnalysisModelId() {
+  const modelId = String(vscode.workspace.getConfiguration('fitVisualizer').get('analysisModelId') || '').trim();
+  return modelId || undefined;
 }
 
 function getCheapModelMarkers() {

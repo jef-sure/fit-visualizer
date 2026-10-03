@@ -293,4 +293,4 @@ AI-анализ необязателен. Данные уходят через G
 | `fitVisualizer.segmentation.gpsTrustMinKm` | `1` | Минимальная непрерывная прямая дистанция, после которой окно GPS может подтвердить записанную скорость или откалибровать её. |
 | `fitVisualizer.map.tiles` | `osm` | Тайлы карты: `osm` — загружать тайлы OpenStreetMap через сеть; `none` — рисовать маршрут автономно, без сетевых запросов. |
 
-> В таблице перечислены самые нужные ключи. `preferCheapAnalysisModel`, `cheapModelMarkers` и `lmVendor` управляют тем, какая модель отвечает; см. раздел об AI выше.
+> В таблице перечислены самые нужные ключи. `preferCheapAnalysisModel`, `cheapModelMarkers`, `analysisModelId` и `lmVendor` управляют тем, какая модель отвечает; см. раздел об AI выше.

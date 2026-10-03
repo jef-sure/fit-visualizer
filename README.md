@@ -297,4 +297,4 @@ Most settings can be left at their defaults. Segmentation thresholds are mainly 
 | `fitVisualizer.segmentation.gpsTrustMinKm`       | `1`     | Minimum continuous, straight distance before a GPS window can confirm — or calibrate against — the recorded speed. |
 | `fitVisualizer.map.tiles`                        | `osm`   | Map tiles: `osm` loads OpenStreetMap tiles over the network; `none` draws the route offline with no tile requests. |
 
-> The settings table lists the keys most users need. `preferCheapAnalysisModel`, `cheapModelMarkers` and `lmVendor` control which language model answers; see the AI section above.
+> The settings table lists the keys most users need. `preferCheapAnalysisModel`, `cheapModelMarkers`, `analysisModelId` and `lmVendor` control which language model answers; see the AI section above.

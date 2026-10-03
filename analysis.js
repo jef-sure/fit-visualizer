@@ -386,7 +386,16 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
 const DEFAULT_CHEAP_MODEL_MARKERS = ['haiku', 'mini', 'flash', 'nano', 'lite', 'small', 'luna'];
 
 // Cheapest model by published price; Auto and name markers cover models missing from the price table.
+// A fixed model id wins when set, so prompt experiments stay reproducible.
 async function selectPreferredModel(vscode, vendor, models, options) {
+  const wantedId = String(options.modelId || '').trim();
+  if (wantedId) {
+    const exact = models.find((model) => model.id === wantedId || model.name === wantedId);
+    if (exact) {
+      return exact;
+    }
+    throw new Error(`Configured analysis model "${wantedId}" is not available for vendor "${vendor}". Clear fitVisualizer.analysisModelId or pick an available model.`);
+  }
   if (!options.preferCheapModel) {
     return models[0];
   }
@@ -838,5 +847,6 @@ module.exports = {
   generateComparisonPrompt,
   requestCopilotAnalysis,
   responseLanguageInstruction,
+  selectPreferredModel,
   summarizePromptBlocks,
 };
