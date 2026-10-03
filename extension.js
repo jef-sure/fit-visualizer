@@ -27,6 +27,7 @@ const { registerCommands } = require('./commands');
 const { MODEL_PRICE_CACHE_KEY, restoreModelPriceCache, updateModelPrices } = require('./model-pricing');
 const { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, buildTranslationPrompt } = require('./activity-webview');
 const { ensureDatabaseSchema } = require('./database-schema');
+const { applyHeartRateProfileUpsert, planHeartRateProfileTidy, readHeartRateProfiles } = require('./heart-rate-profiles');
 const { createManualActivity } = require('./manual-activity');
 const { fileExists, getFitUris, getParsedLaps, parseFitFile } = require('./fit-files');
 const {
@@ -122,8 +123,52 @@ function activate(context) {
     resolveFitUri,
     selectDatabaseFolder,
     showActivityBrowserInPanel,
+    tidyHeartRateProfiles,
     updateModelPriceTable,
   }));
+}
+
+async function tidyHeartRateProfiles() {
+  const dbPath = await resolveActiveDbPath() || await selectDatabaseFolder();
+  if (!dbPath) {
+    return;
+  }
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  let rows;
+  try {
+    rows = readHeartRateProfiles(db);
+  } finally {
+    db.close();
+  }
+  const { redundant, flips } = planHeartRateProfileTidy(rows);
+  if (!redundant.length) {
+    vscode.window.showInformationMessage(
+      flips.length
+        ? `No duplicate heart-rate profiles found. Max-HR changes: ${flips.join('; ')}.`
+        : 'No duplicate heart-rate profiles found.'
+    );
+    return;
+  }
+  const detail = redundant.map((date) => `${date} (duplicate of the previous profile)`).join('\n');
+  const pick = await vscode.window.showWarningMessage(
+    `Remove ${redundant.length} duplicate heart-rate profile${redundant.length > 1 ? 's' : ''}?\n${detail}`,
+    { modal: true },
+    'Remove duplicates'
+  );
+  if (pick !== 'Remove duplicates') {
+    return;
+  }
+  const db2 = await openDatabase(SQL, dbPath);
+  try {
+    for (const date of redundant) {
+      db2.run('DELETE FROM heart_rate_profiles WHERE effective_date = ?', [date]);
+    }
+    await persistDatabase(db2, dbPath);
+  } finally {
+    db2.close();
+  }
+  vscode.window.showInformationMessage(`Removed ${redundant.length} duplicate heart-rate profile${redundant.length > 1 ? 's' : ''}.`);
 }
 
 async function updateModelPriceTable() {
@@ -761,9 +806,9 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       }
     } else if (msg.type === 'updateHeartRateProfile') {
       try {
-        await updateHeartRateProfile(dbPath, msg);
+        const { notice } = await updateHeartRateProfile(dbPath, msg);
         await render(Number(msg.id), msg.compId ? Number(msg.compId) : null);
-        vscode.window.showInformationMessage('Dated heart-rate profile saved.');
+        vscode.window.showInformationMessage(notice || 'Dated heart-rate profile saved.');
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         panel.webview.postMessage({ type: 'heartRateProfileError', error: errorMsg });
@@ -878,6 +923,10 @@ async function loadFitDataFromDb(dbPath, activityId) {
         max_hr:                activity.manual_max_hr ?? activity.max_hr,
         _device_avg_hr:        activity.avg_hr,
         _device_max_hr:        activity.max_hr,
+        _reportedAvgHr:        activity.source !== 'manual' && (activity.manual_avg_hr != null || activity.manual_max_hr != null)
+          ? activity.manual_avg_hr : null,
+        _reportedMaxHr:        activity.source !== 'manual' && (activity.manual_avg_hr != null || activity.manual_max_hr != null)
+          ? activity.manual_max_hr : null,
         _source:               activity.source || 'fit',
         _hasManualHrOverrides: activity.source === 'manual'
           || activity.manual_avg_hr != null
@@ -1674,18 +1723,7 @@ async function updateHeartRateProfile(dbPath, message) {
   const db = await openDatabase(SQL, dbPath);
   try {
     const now = new Date().toISOString();
-    db.run(`
-      INSERT INTO heart_rate_profiles (
-        effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(effective_date) DO UPDATE SET
-        max_hr = excluded.max_hr,
-        zone2_start = excluded.zone2_start,
-        zone3_start = excluded.zone3_start,
-        zone4_start = excluded.zone4_start,
-        zone5_start = excluded.zone5_start,
-        updated_at = excluded.updated_at
-    `, [effectiveDate, maxHeartRate, ...thresholds, now, now]);
+    const { inserted, notice } = applyHeartRateProfileUpsert(db, { effectiveDate, maxHeartRate, thresholds }, now);
     if (athleteProfile || ftp != null || wheelCircumferenceMm != null) {
       upsertAthleteProfile(db, {
         sex: athleteProfile?.sex,
@@ -1708,6 +1746,7 @@ async function updateHeartRateProfile(dbPath, message) {
       );
     }
     await persistDatabase(db, dbPath);
+    return { inserted, notice };
   } finally {
     db.close();
   }
@@ -2254,6 +2293,8 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       subSport: row.sub_sport, durationS: row.total_timer_s, distanceKm: row.total_distance_km,
       elevationM: row.total_ascent_m, avgSpeedKmh: row.avg_speed_kmh,
       avgHr: row.source === 'fit' ? row.avg_hr : null,
+      reportedAvgHr: row.source === 'fit' ? row.manual_avg_hr : null,
+      reportedMaxHr: row.source === 'fit' ? row.manual_max_hr : null,
       powerSource: detail?.powerSource || 'unknown',
       trainingStressScore: detail?.powerSource === 'measured' ? row.training_stress_score : null,
       hrProfileDate: detail?.hrConfig?.effectiveDate || null,

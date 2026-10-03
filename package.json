@@ -60,6 +60,10 @@
         "title": "FIT: Re-analyze Outdated Analyses"
       },
       {
+        "command": "fitVisualizer.tidyHeartRateProfiles",
+        "title": "FIT: Tidy Heart-Rate Profiles"
+      },
+      {
         "command": "fitVisualizer.updateModelPrices",
         "title": "FIT: Update Model Prices"
       }

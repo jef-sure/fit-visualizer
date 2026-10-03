@@ -57,6 +57,12 @@ function registerCommands(context, services) {
     () => reanalyzeOutdatedActivities()
   );
 
+  const tidyHrProfiles = register(
+    'fitVisualizer.tidyHeartRateProfiles',
+    'FIT heart-rate profile tidy-up failed',
+    () => tidyHeartRateProfiles()
+  );
+
   const indexOne = register('fitVisualizer.indexOne', 'FIT DB index failed', async (resource) => {
     const targetUri = resource?.fsPath?.toLowerCase().endsWith('.fit')
       ? resource
@@ -94,7 +100,7 @@ function registerCommands(context, services) {
     }
   );
 
-  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, updateModelPrices, customEditor];
+  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, updateModelPrices, customEditor];
 }
 
 function createFitEditorProvider(context, services) {

@@ -184,6 +184,65 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     Module._load = originalLoad;
   }
 }
+const { applyHeartRateProfileUpsert, planHeartRateProfileTidy, readHeartRateProfiles } = require('../heart-rate-profiles');
+
+function insertProfile(db, date, maxHr, thresholds) {
+  db.run(`INSERT INTO heart_rate_profiles (effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start)
+    VALUES (?, ?, ?, ?, ?, ?)`, [date, maxHr, ...thresholds]);
+}
+
+test('saving an identical heart-rate profile reuses the effective row instead of forking history', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    insertProfile(db, '2026-08-01', 171, [127, 138, 149, 160]);
+
+    const reused = applyHeartRateProfileUpsert(db, { effectiveDate: '2026-08-10', maxHeartRate: 171, thresholds: [127, 138, 149, 160] }, '2026-08-10T10:00:00Z');
+    assert.equal(reused.inserted, false, 'identical values do not create a new row');
+    assert.equal(readHeartRateProfiles(db).length, 1);
+
+    const changed = applyHeartRateProfileUpsert(db, { effectiveDate: '2026-08-10', maxHeartRate: 173, thresholds: [128, 139, 150, 161] }, '2026-08-10T10:00:00Z');
+    assert.equal(changed.inserted, true, 'different values do create a row');
+    assert.deepEqual(readHeartRateProfiles(db).map((row) => row.effective_date), ['2026-08-01', '2026-08-10']);
+
+    // Inserting a value identical to the directly following profile removes that redundant duplicate.
+    const collapse = applyHeartRateProfileUpsert(db, { effectiveDate: '2026-08-05', maxHeartRate: 173, thresholds: [128, 139, 150, 161] }, '2026-08-11T10:00:00Z');
+    assert.equal(collapse.inserted, true);
+    assert.deepEqual(readHeartRateProfiles(db).map((row) => row.effective_date), ['2026-08-01', '2026-08-05'], 'the later duplicate is removed');
+  } finally {
+    db.close();
+  }
+});
+
+test('a max-HR flip between neighbours is reported but still saved', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    insertProfile(db, '2026-08-05', 171, [127, 138, 149, 160]);
+    insertProfile(db, '2026-08-15', 173, [128, 139, 150, 161]);
+
+    const result = applyHeartRateProfileUpsert(db, { effectiveDate: '2026-08-10', maxHeartRate: 171, thresholds: [127, 138, 149, 160] }, '2026-08-10T10:00:00Z');
+    assert.equal(result.inserted, true);
+    assert.match(result.notice, /returns to a value used before and after this date/);
+  } finally {
+    db.close();
+  }
+});
+
+test('profile tidy-up collapses consecutive duplicates and lists max-HR flips', () => {
+  const rows = [
+    { effective_date: '2026-08-12', max_hr: 168, zone2_start: 126, zone3_start: 136, zone4_start: 147, zone5_start: 157 },
+    { effective_date: '2026-08-13', max_hr: 168, zone2_start: 126, zone3_start: 136, zone4_start: 147, zone5_start: 157 },
+    { effective_date: '2026-08-14', max_hr: 171, zone2_start: 127, zone3_start: 138, zone4_start: 149, zone5_start: 160 },
+    { effective_date: '2026-08-16', max_hr: 171, zone2_start: 127, zone3_start: 138, zone4_start: 149, zone5_start: 160 },
+  ];
+  const { redundant, flips } = planHeartRateProfileTidy(rows);
+  assert.deepEqual(redundant, ['2026-08-13', '2026-08-16']);
+  assert.deepEqual(flips, ['2026-08-14: max HR 168 -> 171']);
+});
+
 test('batch re-analysis includes stale and missing analyses together and respects confirmation', async () => {
   const currentVersion = Number(/const ANALYSIS_VERSION = (\d+)/.exec(fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8'))[1]);
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-batch-analysis-'));
@@ -2690,7 +2749,7 @@ test('analysis prompts use the VS Code language and leave unknown locales alone'
   assert.match(prompt, /Use peak sustained HR against prior bests where it adds information/);
   assert.match(prompt, /Translate technical terms from this prompt/);
   assert.match(comparison, /Respond in Russian\.[\s\S]*no new user question that can override/);
-  assert.match(chat, /Respond in 4-8 sentences\.\nRespond in German/);
+  assert.match(chat, /Answer concisely; length follows the question rather than a fixed sentence count\.\nRespond in German/);
   assert.match(chat, /Only the Latest user question may override this language/);
   assert.match(chat, /Latest user question:\nwhy\?/);
   for (const generated of [prompt, chat, comparison]) {
@@ -2862,11 +2921,19 @@ test('recent history keeps the latest analyses verbose and older ones compact', 
   assert.match(text, /2026-08-01: 20\.0 km, 01:00:00, measured-power TSS 100/);
   assert.doesNotMatch(text, /Full analysis 0/);
   assert.match(text, /Full analysis 5/);
-  assert.match(text, /User report, message date 2026-08-02, about activity 2026-08-01: Only easy rides after the operation/);
+  // User reports belong to the Dated User Context block only; the history block carries facts and past analyses.
+  assert.doesNotMatch(text, /User report, message date 2026-08-02, about activity 2026-08-01: Only easy rides after the operation/);
   assert.match(text, /Prior AI hypothesis \(not evidence\)/);
   assert.match(text, /relative dates refer to activity 2026-08-03, not the current activity/);
   assert.doesNotMatch(text, /TSS 105/);
   assert.equal(buildRecentHistoryContext([]), '');
+});
+
+test('recent history marks user-reported heart rate as a summary without a series', () => {
+  const text = buildRecentHistoryContext([
+    { startTime: '2026-07-19T08:22:00.000Z', distanceKm: 20.9, durationS: 3392, reportedAvgHr: 131, reportedMaxHr: 177, source: 'fit' },
+  ]);
+  assert.match(text, /user-reported avg\/max HR 131\/177 bpm \(summary only, no time series\)/);
 });
 
 test('prompt places data before rules and carries segment guidance', () => {
@@ -2956,6 +3023,68 @@ test('comparison prompt is directed and instructs against index-based segment al
   assert.match(prompt, /Do not assume segments correspond by their list position or index/);
   assert.match(prompt, /climb, avg grade 6%, vpower ~210 W/);
   assert.match(prompt, /flat, avg grade 0\.5%, avg HR 140/);
+});
+
+test('analysis prompt surfaces user-reported HR from another device with explicit limits', () => {
+  const prompt = generateAnalysisPrompt(
+    {
+      sessions: [{ total_distance_km: 20, _reportedAvgHr: 139, _reportedMaxHr: 147 }],
+      records: [],
+      segments: [],
+    },
+    { total_activities: 0 },
+    {},
+    null, [], [], 'en'
+  );
+  assert.match(prompt, /\*\*User-Reported Heart Rate \(summary from another device, not measured here\):\*\*/);
+  assert.match(prompt, /Reported Avg HR: 139 bpm/);
+  assert.match(prompt, /Reported Max HR: 147 bpm/);
+  assert.match(prompt, /zones, TRIMP, hrTSS, peaks and drift cannot be derived from them/);
+  assert.match(prompt, /never as zone time, peaks or load/);
+});
+
+test('prompts without reported HR stay clean of the reported-HR block', () => {
+  const prompt = generateAnalysisPrompt(
+    { sessions: [{ total_distance_km: 20 }], records: [], segments: [] },
+    { total_activities: 0 },
+    {},
+    null, [], [], 'en'
+  );
+  assert.doesNotMatch(prompt, /User-Reported Heart Rate/);
+});
+
+test('comparison prompt states each activity heart-rate profile and warns about differing thresholds', () => {
+  const fitData = {
+    sessions: [{ total_distance_km: 20, start_time: '2026-08-01T10:00:00.000Z' }],
+    records: [],
+    segments: [],
+    analysisHeartRateConfig: { effectiveDate: '2026-08-01', maxHeartRate: 171, thresholds: [127, 138, 149, 160] },
+  };
+  const comparedFitData = {
+    sessions: [{ total_distance_km: 22, start_time: '2026-07-20T10:00:00.000Z' }],
+    records: [],
+    segments: [],
+    analysisHeartRateConfig: { effectiveDate: '2026-07-19', maxHeartRate: 168, thresholds: [126, 136, 147, 157] },
+  };
+
+  const prompt = generateComparisonPrompt(fitData, comparedFitData);
+  const thisProfile = prompt.indexOf('Effective for This Comparison (2026-08-01):');
+  const comparedProfile = prompt.indexOf('Effective for This Comparison (2026-07-19):');
+  assert.ok(thisProfile >= 0 && comparedProfile >= 0, 'both profiles are supplied');
+  assert.ok(thisProfile < comparedProfile, 'this workout profile comes first');
+  assert.match(prompt, /an equal heart rate then does not mean an equal relative intensity/);
+});
+
+test('chat prompt includes the dated heart-rate profile block', () => {
+  const prompt = generateAnalysisChatPrompt(
+    { sessions: [{ total_distance_km: 20 }], records: [], segments: [] },
+    { trainingContext: null },
+    { effectiveDate: '2026-08-01', maxHeartRate: 171, thresholds: [127, 138, 149, 160] },
+    'base analysis', [], 'How hard was this?', 'en'
+  );
+  assert.match(prompt, /\*\*Heart Rate Profile Effective for This Workout:\*\*/);
+  assert.match(prompt, /Maximum HR: 171 bpm/);
+  assert.match(prompt, /length follows the question rather than a fixed sentence count/);
 });
 
 test('activity_comparisons stores directed pairs independently and upserts by pair', async () => {

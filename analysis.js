@@ -172,16 +172,15 @@ function buildRecentHistoryContext(entries, options = {}) {
       entry.durationS != null ? formatHms(Math.round(entry.durationS)) : null,
       entry.trainingStressScore != null && entry.powerSource === 'measured' ? `measured-power TSS ${Number(entry.trainingStressScore).toFixed(0)}` : null,
       entry.avgHr != null ? `FIT avg HR ${Number(entry.avgHr).toFixed(0)} bpm` : null,
+      entry.reportedAvgHr != null
+        ? `user-reported avg/max HR ${Number(entry.reportedAvgHr).toFixed(0)}/${Number.isFinite(Number(entry.reportedMaxHr)) ? Number(entry.reportedMaxHr).toFixed(0) : '?'} bpm (summary only, no time series)` : null,
       entry.elevationM != null ? `ascent ${Number(entry.elevationM).toFixed(0)} m` : null,
       entry.hrProfileDate ? `HR profile ${entry.hrProfileDate}` : null,
       entry.source ? `source ${entry.source}` : null,
     ]);
     const interpretation = index >= detailedFrom && String(entry.analysisText || '').trim()
       ? `\n  Prior AI hypothesis (not evidence), relative dates refer to activity ${date}, not the current activity: ${String(entry.analysisText).trim()}` : '';
-    const conversation = (Array.isArray(entry.conversation) ? entry.conversation : [])
-      .filter((turn) => turn?.role === 'user' && String(turn.content || '').trim())
-      .map((turn) => `\n  User report, message date ${turn.ts || 'unknown'}, about activity ${date}: ${String(turn.content).trim()}`).join('');
-    return `${date}: ${summary || 'no numeric summary'}${interpretation}${conversation}`;
+    return `${date}: ${summary || 'no numeric summary'}${interpretation}`;
   });
 
   return `**Recent Activity History (earlier workouts, oldest first):**\n${rendered.join('\n\n')}`;
@@ -524,14 +523,9 @@ function buildWorkoutFields(session, records) {
   return { text, powerSource };
 }
 
-function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previousAnalysis, followUpHistory, recentHistory, locale) {
-  const session = fitData.sessions?.[0] || {};
-  const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records);
-  const priorActivityCount = Number(progressSummary?.total_activities || 0);
-  const hasBaseline = priorActivityCount > 0;
-  const hasTrendEvidence = priorActivityCount >= 8;
+function buildHeartRateProfileContext(heartRateConfig) {
   const hasHeartRateProfile = Number.isFinite(heartRateConfig?.maxHeartRate);
-  const heartRateProfileContext = hasHeartRateProfile
+  return hasHeartRateProfile
     ? `**Heart Rate Profile Effective for This Workout:**\n${formatFieldsSkippingEmpty([
       ['Effective Date', heartRateConfig.effectiveDate || 'legacy setting'],
       ['Maximum HR', heartRateConfig.maxHeartRate, 'bpm'],
@@ -540,6 +534,27 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
         : 'derived at 60%, 70%, 80%, and 90% of max HR'],
     ])}`
     : '**Heart Rate Profile:** No personal maximum HR or zone thresholds are available.';
+}
+
+function buildReportedHeartRateContext(session) {
+  const avg = formatPositive(session?._reportedAvgHr, 0);
+  const max = formatPositive(session?._reportedMaxHr, 0);
+  if (!avg && !max) return '';
+  return `**User-Reported Heart Rate (summary from another device, not measured here):**\n${formatFieldsSkippingEmpty([
+    ['Reported Avg HR', avg, 'bpm'],
+    ['Reported Max HR', max, 'bpm'],
+  ])}\nThese values are single numbers reported by the athlete, not a recorded heart-rate series: zones, TRIMP, hrTSS, peaks and drift cannot be derived from them. They may still indicate the internal response of that session.`;
+}
+
+function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previousAnalysis, followUpHistory, recentHistory, locale) {
+  const session = fitData.sessions?.[0] || {};
+  const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records);
+  const priorActivityCount = Number(progressSummary?.total_activities || 0);
+  const hasBaseline = priorActivityCount > 0;
+  const hasTrendEvidence = priorActivityCount >= 8;
+  const heartRateProfileContext = buildHeartRateProfileContext(heartRateConfig);
+  const hasHeartRateProfile = Number.isFinite(heartRateConfig?.maxHeartRate);
+  const reportedHeartRateContext = buildReportedHeartRateContext(session);
   const baselineFields = formatFieldsSkippingEmpty([
     ['Eligible Prior Activities', priorActivityCount],
     ['Distance Range', progressSummary?.comparison_min_distance_km != null && progressSummary?.comparison_max_distance_km != null
@@ -600,6 +615,7 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
     zoneContext,
     buildPeakHeartRateContext(fitData.records, progressSummary?.trainingContext),
     buildDataQualityContext(fitData, heartRateConfig),
+    reportedHeartRateContext,
     historyContext,
     priorAnalysisContext,
     followUpContext,
@@ -620,16 +636,19 @@ function generateAnalysisPrompt(fitData, progressSummary, heartRateConfig, previ
       : progressSummary?.trainingContext ? 'Use the stated observation window and covered history for tentative pattern observations; sample count or heuristic noise thresholds do not prove fitness changes.'
       : 'There is not enough history to claim improvement, decline, stability, consistency, or a plateau.',
     'Do not infer recovery status, aerobic control, fatigue, overreaching, or heart-rate recovery from average and maximum HR alone.',
+    historyContext
+      ? 'Entries under Recent Activity History include facts and past analyses of other workouts, not measurements of this one; past analyses are revisable hypotheses. User messages about other workouts appear only under Dated User Context.'
+      : null,
     hasHeartRateProfile
       ? 'Use the supplied dated heart-rate profile and the supplied time-in-zone distribution for zone statements; do not substitute generic thresholds.'
       : 'Do not assign HR zones because no athlete-specific thresholds or maximum HR are supplied.',
+    reportedHeartRateContext
+      ? 'User-reported HR values are a summary from another device, not a measurement of this recording: treat them as an approximate indication of internal response and never as zone time, peaks or load.'
+      : null,
     'Do not prescribe bpm targets from an observed peak HR. Prefer effort/RPE guidance and label it as general guidance.',
     'hrTSS uses an estimated threshold HR (middle of the Threshold zone), not a directly tested LTHR value; treat it as approximate.',
     hasSegments
       ? 'Segments state which signal their effort is based on. Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.'
-      : null,
-    historyContext
-      ? 'Entries under Recent Activity History include facts, user reports and past analyses of other workouts, not measurements of this one; past analyses are revisable hypotheses.'
       : null,
     'State data limitations directly instead of filling gaps with plausible claims.',
     ...sportsEvidenceRules(),
@@ -660,9 +679,11 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
 
   const body = joinNonEmpty([
     `Workout facts for this activity:\n${workoutFields}`,
+    buildHeartRateProfileContext(heartRateConfig),
     buildZoneContext(fitData.records, heartRateConfig),
     buildPeakHeartRateContext(fitData.records, progressSummary?.trainingContext),
     buildDataQualityContext(fitData, heartRateConfig),
+    buildReportedHeartRateContext(session),
     buildLapContext(fitData),
     buildTrainingHistoryContext(progressSummary?.trainingContext),
     buildRecentHistoryContext(progressSummary?.trainingContext?.recentHistory),
@@ -684,12 +705,13 @@ ${String(userQuestion || '').trim()}
 Rules:
 - Use provided workout/history facts; do not invent personal circumstances or later activities.
 - hrTSS uses an estimated threshold HR (middle of the Threshold zone), not a directly tested LTHR value; treat it as approximate.
+- User-reported HR values, when present, are a summary from another device, not a measurement of this recording: treat them as an approximate indication and never as zone time, peaks or load.
 - If the user says the route was not flat, explicitly use elevation gain/loss context and explain what can and cannot be inferred without full grade distribution.${segmentContext ? '\n- Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.' : ''}
-- Be specific and concise.
+- Be specific and concise. Answer the question directly; go longer only when the question genuinely needs the detail.
 - If the data is insufficient for a claim, say so and ask one clarifying follow-up.
 ${sportsEvidenceRules().map((rule) => `- ${rule}`).join('\n')}
 
-Respond in 4-8 sentences.
+Answer concisely; length follows the question rather than a fixed sentence count.
 ${responseLanguageInstruction(locale, true)}`;
 }
 
@@ -707,23 +729,32 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
     ? `**Data Quality Note (${label}):** Whole-ride power is estimated from motion and is not supplied as a reliable training-load metric. Any vpower shown for climbs is only a rough terrain-specific estimate; do not treat it as measured power.`
     : null);
 
+  // Zone context under a profile name lets the model see that the two dates may use different thresholds.
+  const labelProfile = (config) => buildHeartRateProfileContext(config)
+    .replace('Effective for This Workout:', `Effective for This Comparison (${config?.effectiveDate || 'legacy setting'}):`);
+
   const body = joinNonEmpty([
     joinNonEmpty([`**This Workout:**\n${workoutFields}`, segmentContext], '\n\n'),
     dataQualityNote('This Workout', powerSource),
+    labelProfile(fitData.analysisHeartRateConfig),
     buildZoneContext(fitData.records, fitData.analysisHeartRateConfig),
     buildPeakHeartRateContext(fitData.records, null, 'This Workout'),
     buildDataQualityContext(fitData),
+    buildReportedHeartRateContext(session),
     buildLapContext(fitData),
     joinNonEmpty([`**Another Compared Activity:**\n${comparedWorkoutFields}`, comparedSegmentContext], '\n\n'),
     dataQualityNote('Compared Activity', comparedPowerSource),
+    labelProfile(comparedFitData.analysisHeartRateConfig),
     buildZoneContext(comparedFitData.records, comparedFitData.analysisHeartRateConfig),
     buildPeakHeartRateContext(comparedFitData.records, null, 'Compared Activity'),
     buildDataQualityContext(comparedFitData),
+    buildReportedHeartRateContext(comparedSession),
     buildLapContext(comparedFitData),
   ], '\n\n');
 
   const evidenceRules = [
     'This is a directed comparison: "This Workout" is the primary activity being reviewed; "Another Compared Activity" is only the reference it is compared against. Do not treat the two as interchangeable or the comparison as symmetric.',
+    'The two activities may have been analysed under different dated heart-rate profiles with different zone thresholds; an equal heart rate then does not mean an equal relative intensity. Check the supplied profile dates and thresholds before comparing zone time or HR values.',
     'Do not assume segments correspond by their list position or index. Segment boundaries can differ between the two activities (for example, a stop may split one activity\'s segment into two while the other has a single continuous one) — align them by sequence, cumulative distance/duration and effort profile instead.',
     'A segment noted as interrupted by a stop is already merged across that stop into one logical segment for this comparison; treat it as continuous, not as two.',
     hasSegments
@@ -770,7 +801,9 @@ function averageTemperature(records) {
 }
 
 module.exports = {
+  buildHeartRateProfileContext,
   buildRecentHistoryContext,
+  buildReportedHeartRateContext,
   buildSegmentContext,
   formatFieldsSkippingEmpty,
   generateAnalysisPrompt,
