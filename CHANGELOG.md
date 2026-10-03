@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 - 2026-10-03
 
 ### Upgrade Notes
 
-- Run **FIT: Rebuild Derived Features** once, then **FIT: Re-analyze Outdated Analyses** (analysis format 21). The rebuild now also assigns routes in chronological order.
+- Run **FIT: Rebuild Derived Features** once, then **FIT: Re-analyze Outdated Analyses** (analysis format 21). The rebuild now also assigns routes in chronological order and, unlike before, saves its result. Re-indexing is not required.
 
 ### Added
 

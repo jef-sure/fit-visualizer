@@ -8,6 +8,11 @@ Open a `.fit` file from your bike computer or sports watch right in VS Code and 
 
 ## Upgrading
 
+### To 0.17.0
+
+1. Run **FIT: Rebuild Derived Features** once: it assigns routes and refills the derived-feature cache (earlier versions did not save lazily computed features; they are persisted now).
+2. Run **FIT: Re-analyze Outdated Analyses** to refresh saved AI analyses (analysis format 21). Re-indexing is not required.
+
 ### To 0.16.0
 
 1. Run **FIT: Re-analyze Outdated Analyses** to refresh saved AI analyses (analysis format 20). Re-indexing is not required.
@@ -160,6 +165,7 @@ How to get `.fit` files off common devices:
 - FIT: Re-analyze Outdated Analyses — processes all activities with outdated or missing analyses in one chronological batch, after confirming the total number of Copilot requests; current analyses are left unchanged
 - FIT: Tidy Heart-Rate Profiles — previews consecutive duplicate dated zone profiles, removes them on confirmation, and lists max-HR flips worth reviewing
 - FIT: Rebuild Derived Features — recomputes and caches segments, zones, peaks, session classes and load metrics for every stored activity; used after changing segmentation or power settings
+- FIT: Evaluate Analysis Prompt — developer tool: regenerates a fixed set of analyses with the current prompt without touching stored ones and writes a report with automatic checks to `eval/` next to the database
 - FIT: Update Model Prices — downloads the official GitHub Copilot token-price table and saves it locally for subsequent analyses; no Copilot request is made
 
 Right-click a `.fit` file in the Explorer for two shortcuts to the commands above — **Visualize File** and **Index This File** — nothing else is added there; segmentation, analysis, and everything else still happens inside the visual editor once the file is open.
