@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.1 - 2026-10-03
+
+### Upgrade Notes
+
+- Run **FIT: Re-analyze Outdated Analyses** (analysis format 24). Re-indexing is not required; the route profile is computed from stored records on first use.
+
+### Added
+
+- **Derived route profile**: for a route with enough rides, the prompt now states what the data show about the route itself - its length and ascent, the climbs in the current riding direction (from the elevation consensus at 100 m resolution, so a short steep ramp is not averaged away), the typical moving speed per 2 km section in this direction versus the opposite one with the section grade, and near-flat stretches where one direction is clearly slower than the other. For the development loop this surfaces, without any manual note, that km 4-10 is ridden at about 27.5 km/h one way and 21-23 km/h the other, and the reverse for km 10-16: a direction effect consistent with prevailing wind or surface, not a fitness signal. Wind itself is never inferred or claimed.
+
 ## 0.18.0 - 2026-10-03
 
 ### Upgrade Notes

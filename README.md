@@ -8,6 +8,10 @@ Open a `.fit` file from your bike computer or sports watch right in VS Code and 
 
 ## Upgrading
 
+### To 0.18.1
+
+Run **FIT: Re-analyze Outdated Analyses** (analysis format 24). Re-indexing is not required.
+
 ### To 0.18.0
 
 Run **FIT: Re-analyze Outdated Analyses** (analysis format 23). Optional: run **FIT: Edit Route Note** first to describe repeated routes; the note is included in every analysis of that route.
