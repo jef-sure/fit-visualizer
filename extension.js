@@ -35,6 +35,7 @@ const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
 const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteCard, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
+const { readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
 const { describeRouteFeatures } = require('./route-features');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling } = require('./altitude-quality');
 const { buildRouteSignature } = require('./route-match');
@@ -266,6 +267,17 @@ async function getRouteCard(dbPath, activityId) {
       lengthKm: card.features?.lengthKm ?? null, ascentM: card.features?.ascentM ?? null, descentM: card.features?.descentM ?? null,
       climbs: described?.climbs ?? [],
     };
+  } finally {
+    db.close();
+  }
+}
+
+async function updateActivityNotes(dbPath, activityId, input) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  try {
+    saveActivityNotes(db, activityId, input);
+    await persistDatabase(db, dbPath);
   } finally {
     db.close();
   }
@@ -897,7 +909,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     };
     const hasCompId = msg.compId != null && msg.compId !== '';
     if (['selectActivity', 'analyzeActivity', 'analysisChatTurn', 'updateActivityHeartRate',
-      'updateHeartRateProfile', 'updateRoute', 'autoCalculateHeartRateProfile', 'compareActivitiesAI', 'removeComparison']
+      'updateHeartRateProfile', 'updateRoute', 'updateActivityNotes', 'autoCalculateHeartRateProfile', 'compareActivitiesAI', 'removeComparison']
       .includes(msg.type)) {
       if (!asActivityId(msg.id)) {
         panel.webview.postMessage({ type: 'analysisError', id: Number(msg.id), error: 'Invalid activity id.' });
@@ -1018,6 +1030,15 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         panel.webview.postMessage({ type: 'manualDataError', error: errorMsg });
+      }
+    } else if (msg.type === 'updateActivityNotes') {
+      try {
+        await updateActivityNotes(dbPath, Number(msg.id), msg);
+        await render(Number(msg.id), msg.compId ? Number(msg.compId) : null);
+        vscode.window.showInformationMessage('Session notes saved. Re-analyze to apply them to the AI analysis.');
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        panel.webview.postMessage({ type: 'notesError', error: errorMsg });
       }
     } else if (msg.type === 'updateRoute') {
       try {
@@ -1163,6 +1184,7 @@ async function loadFitDataFromDb(dbPath, activityId) {
           || activity.manual_max_hr != null,
       }],
       laps: parseStoredLaps(activity.laps_json),
+      sessionNotes: readActivityNotes(db, activityId),
       _activityId: Number(activity.id),
       _fileName: activity.file_name,
       _source: activity.source || 'fit',
@@ -2738,6 +2760,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       elapsedCoveragePct: payload.elapsedCoveragePct, hrConfig, powerSource: detail.powerSource };
   };
   const routeAssignments = readRouteAssignments(db);
+  const sessionNotes = readAllActivityNotes(db);
   const activities = rows.map((row) => {
     const count = detailedPerSport.get(row.sport) || 0;
     detailedPerSport.set(row.sport, count + 1);
@@ -2761,6 +2784,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       trimp: asNumber(detail?.trimp) > 0 ? asNumber(detail.trimp) : asNumber(row.trimp),
       hrTss: asNumber(detail?.hrTss) > 0 ? asNumber(detail.hrTss) : asNumber(row.hr_tss),
       sessionClass: detail?.sessionClass || null,
+      notes: sessionNotes.get(row.id) || null,
       routeId: detail?.routeInfo?.routeId ?? routeAssignments.get(row.id)?.routeId ?? null,
       routeRelation: detail?.routeInfo?.relation ?? routeAssignments.get(row.id)?.relation ?? null,
       checkpoints: detail?.checkpoints || [],

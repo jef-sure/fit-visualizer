@@ -176,6 +176,18 @@ function ensureDatabaseSchema(db) {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS activity_notes (
+      activity_id     INTEGER PRIMARY KEY REFERENCES activities(id) ON DELETE CASCADE,
+      rpe             INTEGER,
+      purpose         TEXT,
+      feeling         TEXT,
+      conditions_json TEXT,
+      note            TEXT,
+      updated_at      TEXT
+    );
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS activity_routes (
       activity_id INTEGER PRIMARY KEY REFERENCES activities(id) ON DELETE CASCADE,
       route_id    INTEGER NOT NULL REFERENCES routes(id),

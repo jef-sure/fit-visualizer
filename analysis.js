@@ -3,6 +3,7 @@ const { calculatePeakHeartRates, computeHeartRateZones } = require('./heart-rate
 const { localClock, localDate } = require('./activity-time');
 const { rankModelsByCost } = require('./model-pricing');
 const { SUMMARY_TAIL_INSTRUCTION, describeAnalysisForHistory } = require('./analysis-summary');
+const { buildSessionNotesBlock, describeNotesShort } = require('./activity-notes');
 
 function formatPositive(value, digits) {
   const num = Number(value);
@@ -191,6 +192,7 @@ function buildRecentHistoryContext(entries, options = {}) {
       entry.peak20 != null ? `peak20 ${entry.peak20} bpm` : null,
       entry.trimp != null ? `TRIMP ${Number(entry.trimp).toFixed(0)}` : null,
       classText,
+      describeNotesShort(entry.notes),
       entry.elevationM != null ? `ascent ${Number(entry.elevationM).toFixed(0)} m` : null,
       entry.hrProfileDate && entry.hrProfileDate !== list[index - 1]?.hrProfileDate ? `HR profile ${entry.hrProfileDate}` : null,
       entry.source && entry.source !== 'fit' ? `source ${entry.source}` : null,
@@ -779,7 +781,7 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
 
   // Data first, interpretation rules last: without a system role, closeness to the question is the only lever.
   const body = joinNonEmpty([
-    joinNonEmpty([`**This Workout:**\n${workoutFields}`, segmentContext], '\n\n'),
+    joinNonEmpty([`**This Workout:**\n${workoutFields}`, buildSessionNotesBlock(fitData.sessionNotes), segmentContext], '\n\n'),
     buildLapContext(fitData),
     powerSource === 'estimated from motion data'
       ? '**Data Quality Note:** Whole-ride power is estimated from motion and is not supplied as a reliable training-load metric. Any vpower shown for climbs is only a rough terrain-specific estimate; do not treat it as measured power.'
@@ -818,6 +820,9 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
     progressSummary?.trainingContext?.routeContext
       ? 'A pattern shared by nearly every ride of this route, or stated in the user\'s route note or shown in the Route Profile (a climb, a stretch that is slow in one direction and fast in the other), is a property of the route, not a finding of the day and not an open question; use only how this ride differs from it.'
       : null,
+    fitData.sessionNotes
+      ? null
+      : 'No session notes (RPE, purpose, conditions) are recorded for this ride. They are entered in the Session Notes section of the activity page. Suggest recording them only when that is the most useful next step, and then as a data suggestion, not as pacing advice.',
     hasSegments
       ? 'Segments state which signal their effort is based on. Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.'
       : null,
@@ -860,6 +865,7 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
 
   const body = joinNonEmpty([
     `Workout facts for this activity:\n${workoutFields}`,
+    buildSessionNotesBlock(fitData.sessionNotes),
     buildHeartRateProfileContext(heartRateConfig),
     buildZoneContext(fitData.records, heartRateConfig),
     buildPeakHeartRateContext(fitData.records, progressSummary?.trainingContext),

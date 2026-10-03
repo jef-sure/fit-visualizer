@@ -2,6 +2,7 @@ const vscode = require('vscode');
 const { buildSegmentContext } = require('./analysis');
 const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
+const { CONDITIONS, FEELINGS, PURPOSES } = require('./activity-notes');
 const { buildSummary } = require('./activity-summary');
 const { buildGpsRoute: buildGpsRouteFromModule, buildLineChart: buildLineChartFromModule } = require('./chart-model');
 const { extractGpsPoints, mapSegmentsToDistanceRanges } = require('./chart-data');
@@ -335,6 +336,40 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
+const PURPOSE_UI = { commute: 'purposeCommute', endurance: 'purposeEndurance', tempo: 'purposeTempo', intervals: 'purposeIntervals', recovery: 'purposeRecovery', race: 'purposeRace', social: 'purposeSocial', other: 'purposeOther' };
+const FEELING_UI = { fresh: 'feelingFresh', normal: 'feelingNormal', tired: 'feelingTired', ill: 'feelingIll' };
+const CONDITION_UI = { headwind: 'condHeadwind', tailwind: 'condTailwind', rain: 'condRain', heat: 'condHeat', cold: 'condCold', group: 'condGroup', traffic: 'condTraffic', night: 'condNight', new_route: 'condNewRoute' };
+
+function renderSessionNotesCard(notes, ui, mapId) {
+  const options = (values, uiKeys, selected) => `<option value=""${selected ? '' : ' selected'}>${escapeHtml(ui.select)}</option>`
+    + values.map((value) => `<option value="${value}"${selected === value ? ' selected' : ''}>${escapeHtml(ui[uiKeys[value]])}</option>`).join('');
+  const rpeOptions = `<option value=""${notes?.rpe ? '' : ' selected'}>${escapeHtml(ui.select)}</option>`
+    + Array.from({ length: 10 }, (_, index) => `<option value="${index + 1}"${notes?.rpe === index + 1 ? ' selected' : ''}>${index + 1}</option>`).join('');
+  const conditions = CONDITIONS.map((value) => `<label style="display:flex;gap:4px;align-items:center;">
+            <input type="checkbox" name="${mapId}Condition" value="${value}" style="width:auto;"${notes?.conditions?.includes(value) ? ' checked' : ''}>
+            <span>${escapeHtml(ui[CONDITION_UI[value]])}</span>
+          </label>`).join('');
+  return `<section class="chart manualData">
+      <h2>${escapeHtml(ui.sessionNotesSection)}</h2>
+      <form id="${mapId}NotesForm" class="manualDataForm">
+        <label><span>${escapeHtml(ui.rpeLabel)}</span><select id="${mapId}NotesRpe">${rpeOptions}</select></label>
+        <label><span>${escapeHtml(ui.purposeLabel)}</span><select id="${mapId}NotesPurpose">${options(PURPOSES, PURPOSE_UI, notes?.purpose)}</select></label>
+        <label><span>${escapeHtml(ui.feelingLabel)}</span><select id="${mapId}NotesFeeling">${options(FEELINGS, FEELING_UI, notes?.feeling)}</select></label>
+        <fieldset style="flex:1 1 100%;border:0;padding:0;margin:0;">
+          <legend style="color:var(--muted);font-size:0.82rem;padding:0 0 4px 0;">${escapeHtml(ui.conditionsLabel)}</legend>
+          <div style="display:flex;gap:6px 14px;flex-wrap:wrap;color:var(--muted);font-size:0.82rem;">${conditions}</div>
+        </fieldset>
+        <label style="flex:1 1 100%;">
+          <span>${escapeHtml(ui.sessionNoteLabel)}</span>
+          <textarea id="${mapId}NotesText" rows="2" maxlength="1000" style="width:100%;box-sizing:border-box;">${escapeHtml(notes?.note || '')}</textarea>
+        </label>
+        <button type="submit">${escapeHtml(ui.saveNotes)}</button>
+        <span id="${mapId}NotesStatus" class="manualDataStatus"></span>
+      </form>
+      <div class="mapHint">${escapeHtml(ui.sessionNotesHint)}</div>
+    </section>`;
+}
+
 function renderRouteCard(route, ui, mapId) {
   const direction = route.relation === 'reversed' ? ui.routeDirectionReversed
     : route.relation === 'partial' ? ui.routeDirectionPartial : ui.routeDirectionSame;
@@ -490,6 +525,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       </div>` : '';
 
   const routeCardHtml = routeCard && !isComparison ? renderRouteCard(routeCard, ui, mapId) : '';
+  const notesCardHtml = isComparison ? '' : renderSessionNotesCard(fitData.sessionNotes, ui, mapId);
 
   return `<main class="wrap">
     <section class="hero">
@@ -526,6 +562,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     ${primaryPower.source === 'estimated' ? `<section style="padding:12px;margin-bottom:16px;background:rgba(255,193,7,0.1);border-left:4px solid #ffc107;color:var(--ink);font-size:0.95rem;line-height:1.5;">
       <strong>${escapeHtml(ui.dataQualityNoteTitle)}</strong> ${escapeHtml(ui.dataQualityNote)}
     </section>` : ''}
+    ${notesCardHtml}
     ${routeCardHtml}
     <section class="chart manualData">
       <h2>${escapeHtml(ui.manualActivityData)}</h2>
@@ -699,6 +736,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       const translationStatus = document.getElementById('translationStatus');
       const manualDataForm = document.getElementById('${mapId}ManualDataForm');
       const manualDataStatus = document.getElementById('${mapId}ManualDataStatus');
+      const notesForm = document.getElementById('${mapId}NotesForm');
+      const notesStatus = document.getElementById('${mapId}NotesStatus');
       const routeForm = document.getElementById('${mapId}RouteForm');
       const routeStatus = document.getElementById('${mapId}RouteStatus');
       const hrProfileForm = document.getElementById('${mapId}HrProfileForm');
@@ -870,6 +909,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         } else if (msg.type === 'manualDataError') {
           manualDataStatus.textContent = msg.error;
           manualDataStatus.classList.add('error');
+        } else if (msg.type === 'notesError') {
+          if (notesStatus) {
+            notesStatus.textContent = msg.error;
+            notesStatus.classList.add('error');
+          }
         } else if (msg.type === 'routeError') {
           if (routeStatus) {
             routeStatus.textContent = msg.error;
@@ -946,6 +990,22 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           compId: document.getElementById('compSel')?.value || null,
           avgHr: document.getElementById('${mapId}ManualAvgHr').value,
           maxHr: document.getElementById('${mapId}ManualMaxHr').value,
+        });
+      });
+
+      notesForm?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        notesStatus.textContent = ui.saving;
+        notesStatus.classList.remove('error');
+        vscode.postMessage({
+          type: 'updateActivityNotes',
+          id: window.currentActivityId,
+          compId: document.getElementById('compSel')?.value || null,
+          rpe: document.getElementById('${mapId}NotesRpe').value,
+          purpose: document.getElementById('${mapId}NotesPurpose').value,
+          feeling: document.getElementById('${mapId}NotesFeeling').value,
+          conditions: Array.from(document.querySelectorAll('input[name="${mapId}Condition"]:checked')).map((input) => input.value),
+          note: document.getElementById('${mapId}NotesText').value,
         });
       });
 

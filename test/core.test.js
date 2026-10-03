@@ -2208,7 +2208,7 @@ test('database schema creates only extension-owned tables', async () => {
     const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")[0]
       .values
       .flat();
-    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'activity_comparisons', 'activity_features', 'activity_routes', 'athlete_profile', 'heart_rate_profiles', 'records', 'routes', 'sqlite_sequence', 'wheel_calibration_samples']);
+    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'activity_comparisons', 'activity_features', 'activity_notes', 'activity_routes', 'athlete_profile', 'heart_rate_profiles', 'records', 'routes', 'sqlite_sequence', 'wheel_calibration_samples']);
   } finally {
     db.close();
   }
@@ -4025,4 +4025,77 @@ test('activity page shows an editable route card only for a repeated route and w
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /'updateHeartRateProfile', 'updateRoute',/, 'activity id is validated for route saves');
   assert.match(source, /msg\.type === 'routeError'|type: 'routeError'/);
+});
+
+test('session notes are normalized from untrusted input, stored per activity and deleted when emptied', async () => {
+  const { buildSessionNotesBlock, describeNotesShort, normalizeNotes, readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('../activity-notes');
+  assert.equal(normalizeNotes({}), null);
+  assert.equal(normalizeNotes({ rpe: '', purpose: 'nonsense', conditions: ['bogus'], note: '   ' }), null);
+  assert.deepEqual(normalizeNotes({ rpe: '7', purpose: 'Endurance', feeling: 'tired', conditions: ['headwind', 'heat', 'headwind', 'x'], note: ' legs heavy ' }),
+    { rpe: 7, purpose: 'endurance', feeling: 'tired', conditions: ['headwind', 'heat'], note: 'legs heavy' });
+  assert.equal(normalizeNotes({ rpe: 11, purpose: 'race' }).rpe, null, 'RPE outside 1-10 is dropped');
+  assert.equal(normalizeNotes({ rpe: 6.5, purpose: 'race' }).rpe, null);
+  assert.equal(normalizeNotes({ note: 'x'.repeat(5000) }).note.length, 1000);
+
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    db.run("INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (1, 'a', 'a', '2026-08-01T10:00:00Z', 'fit')");
+    assert.equal(readActivityNotes(db, 1), null);
+    saveActivityNotes(db, 1, { rpe: 7, purpose: 'endurance', conditions: ['headwind'] });
+    saveActivityNotes(db, 1, { rpe: 8, purpose: 'endurance', conditions: ['headwind', 'rain'], note: 'second save' });
+    assert.deepEqual(readActivityNotes(db, 1), { rpe: 8, purpose: 'endurance', feeling: null, conditions: ['headwind', 'rain'], note: 'second save' });
+    assert.equal(readAllActivityNotes(db).size, 1);
+    saveActivityNotes(db, 1, {});
+    assert.equal(readActivityNotes(db, 1), null);
+  } finally {
+    db.close();
+  }
+
+  const notes = { rpe: 7, purpose: 'new_route', feeling: 'tired', conditions: ['headwind', 'new_route'], note: 'first time here' };
+  assert.equal(describeNotesShort(notes), 'RPE 7, new_route, tired');
+  assert.equal(describeNotesShort({ rpe: null, purpose: null, feeling: 'normal', conditions: [], note: null }), null);
+  const block = buildSessionNotesBlock(notes);
+  assert.match(block, /Session Notes \(user-declared for this ride\)/);
+  assert.match(block, /RPE 7\/10; purpose: new route; conditions: headwind, new route; feeling: tired\./);
+  assert.match(block, /Note: first time here/);
+  assert.match(block, /declared purpose replaces any inferred training direction/);
+  assert.equal(buildSessionNotesBlock(null), '');
+});
+
+test('session notes reach the analysis and chat prompts and the history rows', () => {
+  const notes = { rpe: 7, purpose: 'endurance', feeling: null, conditions: ['heat'], note: null };
+  const withNotes = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], sessionNotes: notes }, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.match(withNotes, /RPE 7\/10; purpose: endurance; conditions: heat\./);
+  assert.doesNotMatch(withNotes, /No session notes \(RPE, purpose, conditions\)/);
+  const without = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [] }, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.match(without, /No session notes \(RPE, purpose, conditions\) are recorded for this ride/);
+  assert.doesNotMatch(without, /Athlete's Session Notes/);
+  const chat = generateAnalysisChatPrompt({ sessions: [{ sport: 'cycling' }], sessionNotes: notes }, {}, {}, '', [], 'why?');
+  assert.match(chat, /RPE 7\/10/);
+
+  const history = buildRecentHistoryContext([{ startTime: '2026-08-01T10:00:00.000Z', distanceKm: 20, notes }]);
+  assert.match(history, /20\.0 km, RPE 7, endurance/);
+});
+
+test('activity page renders session notes with the saved values and escapes the note', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const base = { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] };
+  const render = (sessionNotes) => renderActivityContentHtml({}, {}, { ...base, sessionNotes }, null, 'n', false, null, {}, null, [], null,
+    UI_STRINGS, GLOSSARY, false, 'en', [], null, [], null, false, 'osm', null);
+  const html = render({ rpe: 7, purpose: 'race', feeling: 'ill', conditions: ['rain'], note: '<i>cold</i>' });
+  assert.match(html, />Session Notes<\/h2>/);
+  assert.match(html, /<option value="7" selected>7<\/option>/);
+  assert.match(html, /<option value="race" selected>Race<\/option>/);
+  assert.match(html, /<option value="ill" selected>Unwell<\/option>/);
+  assert.match(html, /value="rain" style="width:auto;" checked>/);
+  assert.match(html, /&lt;i&gt;cold&lt;\/i&gt;<\/textarea>/);
+  assert.match(html, /type: 'updateActivityNotes'/);
+  const empty = render(null);
+  assert.match(empty, /<form id="fitMapNotesForm"/);
+  assert.doesNotMatch(empty, /selected>7</);
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /'updateRoute', 'updateActivityNotes',/, 'activity id is validated for note saves');
 });
