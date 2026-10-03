@@ -168,6 +168,14 @@ function buildRecentHistoryContext(entries, options = {}) {
   const detailedFrom = Math.max(0, list.length - detailedCount);
   const rendered = list.map((entry, index) => {
     const date = localDate(entry.startTime, entry.utcOffsetS);
+    const intensity = Array.isArray(entry.zoneSeconds) && entry.zoneSeconds.some((value) => Number(value) > 0)
+      ? (() => {
+        const total = entry.zoneSeconds.reduce((sum, value) => sum + Number(value || 0), 0);
+        const pct = (value) => Math.round(100 * value / total);
+        return `L/M/H ${pct(Number(entry.zoneSeconds[0]) + Number(entry.zoneSeconds[1]))}/${pct(entry.zoneSeconds[2])}/${pct(Number(entry.zoneSeconds[3]) + Number(entry.zoneSeconds[4]))}%`;
+      })()
+      : null;
+    const classText = entry.sessionClass?.label ? `class ${entry.sessionClass.label}${entry.sessionClass.confidence === 'low' ? ' (low confidence)' : ''}` : null;
     const summary = joinNonEmpty([
       entry.distanceKm != null ? `${Number(entry.distanceKm).toFixed(1)} km` : null,
       entry.durationS != null ? formatHms(Math.round(entry.durationS)) : null,
@@ -175,6 +183,10 @@ function buildRecentHistoryContext(entries, options = {}) {
       entry.avgHr != null ? `FIT avg HR ${Number(entry.avgHr).toFixed(0)} bpm` : null,
       entry.reportedAvgHr != null
         ? `user-reported avg/max HR ${Number(entry.reportedAvgHr).toFixed(0)}/${Number.isFinite(Number(entry.reportedMaxHr)) ? Number(entry.reportedMaxHr).toFixed(0) : '?'} bpm (summary only, no time series)` : null,
+      intensity,
+      entry.peak20 != null ? `peak20 ${entry.peak20} bpm` : null,
+      entry.trimp != null ? `TRIMP ${Number(entry.trimp).toFixed(0)}` : null,
+      classText,
       entry.elevationM != null ? `ascent ${Number(entry.elevationM).toFixed(0)} m` : null,
       entry.hrProfileDate ? `HR profile ${entry.hrProfileDate}` : null,
       entry.source ? `source ${entry.source}` : null,
@@ -201,6 +213,9 @@ function buildTrainingHistoryContext(context) {
       `${row.sport || 'unspecified sport'}: ${row.activities} imported activities`,
       `${formatHms(Math.round(row.durationS))} recorded timer time (${row.durationKnownActivities}/${row.activities} durations known)`,
       `${row.distanceKm.toFixed(1)} km`, `${row.activeDays} recorded active days`,
+      row.trimpActivities ? `TRIMP sum ${Math.round(row.trimpSum)} (${row.trimpActivities}/${row.activities} activities with HR-based load)` : null,
+      row.classMix && Object.keys(row.classMix).length
+        ? `session classes: ${Object.entries(row.classMix).map(([label, count]) => `${label} ${count}`).join(', ')}` : null,
       row.zonedActivities ? `${row.zonedActivities}/${row.activities} activities with covered HR zones; covered time ${formatHms(Math.round(row.coveredHrSeconds))}; zone 1-5 seconds ${row.zoneSeconds.map(Math.round).join(', ')}; ${intensityDistribution(row.zoneSeconds)}`
         : 'HR-zone distribution unavailable, not zero intensity',
     ])).join('\n');
@@ -224,11 +239,14 @@ function buildTrainingHistoryContext(context) {
   }).join('\n\n');
   const interruptions = context.interruptions.map((gap) =>
     `No imported same-sport activity between ${String(gap.before).slice(0, 10)} and ${String(gap.after).slice(0, 10)} (~${gap.gapDays.toFixed(0)} days); possible change of phase or missing records, cause unknown.`).join('\n');
+  const monotony = context.monotony
+    ? `Week monotony (Foster, TRIMP-based, imported days only): mean daily ${context.monotony.meanDailyTrimp.toFixed(0)} over ${context.monotony.activeDays} active days, monotony ${context.monotony.monotony.toFixed(2)}, strain ${Math.round(context.monotony.strain)}; descriptive, not a validated readiness measure.`
+    : null;
   const reports = (context.userReports || []).map((report) =>
     `Activity ${String(report.startTime).slice(0, 10)}, message ${report.ts || 'date unknown'}, user report: ${report.content}`).join('\n');
   return joinNonEmpty([
     `**Training Volume and Covered Intensity:**\nHistorical baseline anchored at ${context.windowEnd}: all periods end at or before the current activity start; the current activity is excluded from every historical total. These are rolling windows, not calendar weeks.\n${volume}\n${context.intensityNote}\n${context.coverageNote}`,
-    `**Adaptive Observation Window:**\n${context.windowDays} days: ${context.windowStart.slice(0, 10)} to ${context.windowEnd.slice(0, 10)}; ${context.activities} same-sport activities. Window selection is not evidence of fitness.\n${describeTrend('Duration pattern', context.durationTrend)}\n${describeTrend('Distance pattern', context.distanceTrend)}\n${interruptions}`,
+    `**Adaptive Observation Window:**\n${context.windowDays} days: ${context.windowStart.slice(0, 10)} to ${context.windowEnd.slice(0, 10)}; ${context.activities} same-sport activities. Window selection is not evidence of fitness.\n${describeTrend('Duration pattern', context.durationTrend)}\n${describeTrend('Distance pattern', context.distanceTrend)}\n${joinNonEmpty([interruptions, monotony], '\n')}`,
     context.offsetChangeNote ? `**Device Timezone Consistency:**\n${context.offsetChangeNote}` : null,
     matches ? `**Candidate Segment Comparisons:**\n${matches}\nMatching uses ordered terrain, duration and distance, not equal HR/power. Similar structure does not establish identical route, intent, weather or training stimulus; consider intensity separately.` : '**Candidate Segment Comparisons:** No eligible matches; training-volume context remains available.',
     reports ? `**Dated User Context Across Activities:**\n${reports}\nMessage date and activity date are different. Reports may describe another effective period; do not apply later circumstances retrospectively without support.` : null,
@@ -873,6 +891,7 @@ module.exports = {
   buildReportedHeartRateContext,
   buildSegmentContext,
   buildSessionClassContext,
+  buildTrainingHistoryContext,
   formatFieldsSkippingEmpty,
   generateAnalysisPrompt,
   generateAnalysisChatPrompt,

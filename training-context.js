@@ -73,6 +73,9 @@ function buildTrainingContext(activities, referenceTime, currentSport, currentSe
           durationKnownActivities: rows.filter((activity) => asNumber(activity.durationS) > 0).length,
           distanceKm: rows.reduce((sum, activity) => sum + (asNumber(activity.distanceKm) > 0 ? Number(activity.distanceKm) : 0), 0),
           activeDays: new Set(rows.map((activity) => localDate(activity.startTime, activity.utcOffsetS))).size,
+          trimpSum: rows.reduce((sum, activity) => sum + (asNumber(activity.trimp) > 0 ? Number(activity.trimp) : 0), 0),
+          trimpActivities: rows.filter((activity) => asNumber(activity.trimp) > 0).length,
+          classMix: countSessionClasses(rows),
           zonedActivities, coveredHrSeconds, zoneSeconds };
       }) };
   };
@@ -101,14 +104,66 @@ function buildTrainingContext(activities, referenceTime, currentSport, currentSe
     .reduce((best, peak) => (!best || peak.bpm > best.bpm ? peak : best), null);
   const peakHeartRates = PEAK_HEART_RATE_WINDOWS.map((seconds) => ({ seconds, best28: peakBest(seconds, 28), best90: peakBest(seconds, 90) }))
     .filter((row) => row.best28 || row.best90);
+  // Foster monotony/strain over the same-sport week before the activity: descriptive, imported days only.
+  const week = aggregate(7);
+  const weekLoads = week.sports.find((row) => row.sport === currentSport);
+  const monotony = computeMonotony((weekLoads ? selectedActivitiesFor(week) : []).map((activity) => ({
+    date: localDate(activity.startTime, activity.utcOffsetS), trimp: asNumber(activity.trimp),
+  })));
   return { windowDays, windowStart: new Date(reference - windowDays * 86400000).toISOString(),
     windowEnd: new Date(reference).toISOString(), activities: currentWindow.length,
     volume: [aggregate(7), aggregate(7, true), aggregate(28), aggregate(28, true)],
     durationTrend: trend('durationS'), distanceTrend: trend('distanceKm'),
+    monotony,
     comparisons: candidates, interruptions, peakHeartRates,
-    recentHistory: recent.map((activity) => ({ ...activity, records: undefined, segments: undefined, zones: undefined, peakHr: undefined })),
+    recentHistory: recent.map((activity) => ({
+      ...activity,
+      zoneSeconds: activity.zones?.enabled ? activity.zones.zones.map((zone) => zone.seconds) : undefined,
+      peak20: activity.peakHr?.find((peak) => peak.seconds === 1200)?.bpm ?? undefined,
+      records: undefined, segments: undefined, zones: undefined, peakHr: undefined,
+    })),
     intensityNote: 'HR zones use each activity\'s dated profile. Profile changes affect comparability; zone names do not establish physiological thresholds. Only covered time at/above the zone floor is included.',
     coverageNote: 'Only imported activities are known. Missing activities are not rest days. Different sports and load scales are not added together. Historical signal detail is limited to the latest 40 activities per sport within 90 days; uncovered intensity remains unknown.' };
+
+  function selectedActivitiesFor(period) {
+    const start = new Date(period.start).getTime();
+    const end = new Date(period.end).getTime();
+    return dated.filter((activity) => {
+      const time = new Date(activity.startTime).getTime();
+      return activity.sport === currentSport && time >= start && time < end;
+    });
+  }
+}
+
+function countSessionClasses(rows) {
+  const counts = {};
+  for (const row of rows) {
+    const label = row.sessionClass?.label;
+    if (label) counts[label] = (counts[label] || 0) + 1;
+  }
+  return counts;
+}
+
+// Foster-style weekly monotony: mean daily load / SD of daily load across all calendar days of the
+// period, with non-imported days counted as zero load only when the period contains any activity.
+// Returns null when the period has fewer than two active days: one load spike is not monotony.
+function computeMonotony(entries) {
+  const days = new Map();
+  let anyLoad = false;
+  for (const entry of entries) {
+    const trimp = Number(entry.trimp);
+    if (Number.isFinite(trimp) && trimp > 0) {
+      anyLoad = true;
+      days.set(entry.date, (days.get(entry.date) || 0) + trimp);
+    }
+  }
+  if (!anyLoad || days.size < 2) return null;
+  const loads = [...days.values()];
+  const mean = loads.reduce((sum, value) => sum + value, 0) / loads.length;
+  const variance = loads.reduce((sum, value) => sum + (value - mean) ** 2, 0) / loads.length;
+  const sd = Math.sqrt(variance);
+  if (!(sd > 0)) return null;
+  return { activeDays: loads.length, meanDailyTrimp: mean, monotony: mean / sd, strain: mean / sd * loads.reduce((sum, value) => sum + value, 0) };
 }
 
 function attachActivityZones(activity, records, heartRateConfig) {

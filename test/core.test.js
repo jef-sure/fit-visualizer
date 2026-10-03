@@ -3179,6 +3179,45 @@ test('derived features are stored once and reused while the key is unchanged', a
   }
 });
 
+test('recent history carries per-session intensity, peak, load and class', () => {
+  const text = buildRecentHistoryContext([
+    {
+      startTime: '2026-08-19T17:06:00.000Z', utcOffsetS: 7200, distanceKm: 20.1, durationS: 2911,
+      avgHr: 147, zoneSeconds: [300, 1200, 900, 800, 400], peak20: 158, trimp: 113,
+      sessionClass: { label: 'threshold', confidence: 'high' }, source: 'fit',
+    },
+  ]);
+  assert.match(text, /2026-08-19: 20\.1 km, 00:48:31, FIT avg HR 147 bpm, L\/M\/H 42\/25\/33%, peak20 158 bpm, TRIMP 113, class threshold/);
+});
+
+test('period volume includes TRIMP sum, session class mix and week monotony', () => {
+  const activities = [];
+  for (let day = 1; day <= 8; day += 1) {
+    activities.push({
+      activityId: day, startTime: `2026-08-${String(day).padStart(2, '0')}T10:00:00.000Z`, sport: 'cycling',
+      utcOffsetS: 0, durationS: 3000, distanceKm: 20, trimp: 80 + day, sessionClass: { label: 'endurance', confidence: 'high' },
+      zones: null, peakHr: [], segments: [],
+    });
+  }
+  const context = buildTrainingContext(activities, '2026-08-09T10:00:00.000Z', 'cycling');
+  const week = context.volume[0];
+  assert.equal(week.sports[0].trimpActivities, 7);
+  assert.equal(week.sports[0].classMix.endurance, 7);
+  assert.ok(context.monotony, 'monotony computes from a week with varying loads');
+  assert.ok(context.monotony.monotony > 1);
+
+  const rendered = require('../analysis') && null; // rendered through the prompt below
+  const { buildTrainingHistoryContext } = require('../analysis');
+  const text = buildTrainingHistoryContext(context);
+  assert.match(text, /TRIMP sum \d+ \(7\/7 activities with HR-based load\)/);
+  assert.match(text, /session classes: endurance 7/);
+  assert.match(text, /Week monotony \(Foster, TRIMP-based, imported days only\)/);
+
+  // A single active day is not monotony.
+  const lonely = buildTrainingContext([activities[0]], '2026-08-03T10:00:00.000Z', 'cycling');
+  assert.equal(lonely.monotony, null);
+});
+
 test('pinned analysis model id overrides the cheapest-model selection', async () => {
   const models = [
     { id: 'gpt-6-luna', name: 'Luna', family: 'luna' },
