@@ -140,6 +140,7 @@ function computeConsensusProfile(rides, { binM = ELEVATION_BIN_M } = {}) {
   };
 }
 
+
 // Settling diagnostics for one ride against the consensus: the ride's constant offset comes from
 // its settled second half; the start is flagged when the first minutes deviate from that offset
 // and converge afterwards.
@@ -176,6 +177,26 @@ function detectAltitudeSettling(ride, profile) {
     settleSeconds: settleS,
     detail: `recorded altitude starts ${Math.abs(delta)} m ${delta < 0 ? 'below' : 'above'} the route consensus level${settleS >= 1200 ? ' and keeps deviating through the first 20 min' : settleS > 0 ? ` and converges after about ${Math.max(1, Math.round(settleS / 60))} min` : ''}; early ascent/descent and the first segment's grade are unreliable`,
   };
+}
+
+// A reversed ride mirrored onto the route's canonical axis for consensus building: distances flip
+// (d' = L - d). Point order and elapsed stay as recorded; only the distance axis is flipped, and
+// the result is re-sorted by distance so binning works.
+function mirrorAltitudeRide(ride) {
+  if (!ride?.altitudes?.length) return null;
+  const first = ride.altitudes[0].distance;
+  const total = ride.distanceKm;
+  const altitudes = ride.altitudes
+    .map((point) => ({ ...point, distance: first + (total - (point.distance - first)) }))
+    .sort((a, b) => a.distance - b.distance);
+  return { ...ride, altitudes };
+}
+
+// Mirrors a canonical-axis elevation consensus onto the reversed direction: bin i becomes
+// bin n-1-i, so a reversed ride can be compared directly in its own distance order.
+function mirrorConsensusProfile(profile) {
+  if (!profile?.consensus?.length) return null;
+  return { ...profile, consensus: [...profile.consensus].reverse() };
 }
 
 // Whole-ride altitude flags from the recorded series alone (no consensus needed).
@@ -228,4 +249,6 @@ module.exports = {
   computeAltitudeFlags,
   computeConsensusProfile,
   detectAltitudeSettling,
+  mirrorAltitudeRide,
+  mirrorConsensusProfile,
 };

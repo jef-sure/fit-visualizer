@@ -4146,3 +4146,113 @@ test('prompt evaluator measures open questions, notes usage, direction facts and
   assert.equal(agg.usesDirectionPctOfRoute, 50);
   assert.equal(agg.altitudeBlockPctOfReversed, 100);
 });
+
+test('a device that wrote no ascent figure is not shown as a disagreeing source', () => {
+  const base = { sport: 'cycling', start_time: '2026-08-19T17:06:08Z', total_ascent_m: 64, total_descent_m: 163 };
+  const blank = generateAnalysisPrompt({ sessions: [{ ...base, device_ascent_m: 0, device_descent_m: 0 }], records: [] }, { total_activities: 0 });
+  assert.doesNotMatch(blank, /device reports 0\/0/);
+  const wrote = generateAnalysisPrompt({ sessions: [{ ...base, device_ascent_m: 128, device_descent_m: 128 }], records: [] }, { total_activities: 0 });
+  assert.match(wrote, /device reports 128\/128 m; sources disagree/);
+});
+
+test('reversed rides join the elevation consensus mirrored onto the canonical axis', async () => {
+  const { buildAltitudeRide, computeConsensusProfile, detectAltitudeSettling, mirrorConsensusProfile } = require('../altitude-quality');
+  // A hill in the middle of the route: high at 50 % of the distance on the canonical axis.
+  const shape = (position) => 100 + 60 * Math.sin(Math.PI * position);
+  const rideOnAxis = (offsetM, driftM = 0) => buildAltitudeRide(Array.from({ length: 1200 }, (_, i) => {
+    const position = i / 1200;
+    const distance = position * 20;
+    const drift = driftM ? driftM * Math.max(0, 1 - i / 180) : 0;
+    return { elapsed_time: i, distance, altitude: (shape(position) + offsetM + drift) / 1000,
+      position_lat: 52 + 0.01 * Math.sin(2 * Math.PI * position), position_long: 13 + 0.01 * (1 - Math.cos(2 * Math.PI * position)) };
+  }));
+  const rides = [0, 20, -20, 40, -40, 10].map((offset) => rideOnAxis(offset));
+  const profile = computeConsensusProfile(rides);
+  assert.ok(Math.abs(profile.ascentM - 60) <= 6);
+
+  // The same loop ridden backwards: distances flip, so the un-mirrored ride would disagree with
+  // the consensus while the mirrored one follows it exactly (up to its constant offset).
+  const reversedRide = (() => {
+    const points = Array.from({ length: 1200 }, (_, i) => {
+      const position = i / 1200;
+      return { elapsed_time: i, distance: position * 20, altitude: shape(1 - position) / 1000,
+        position_lat: 52 + 0.01 * Math.sin(2 * Math.PI * (1 - position)), position_long: 13 + 0.01 * (1 - Math.cos(2 * Math.PI * (1 - position))) };
+    });
+    return buildAltitudeRide(points);
+  })();
+  // For a reversed ride the consensus itself is mirrored, so the ride's first minutes stay first.
+  const mirroredProfile = mirrorConsensusProfile(profile);
+  assert.equal(detectAltitudeSettling(reversedRide, mirroredProfile), null, 'a clean reversed ride is not flagged');
+  const driftingReversed = buildAltitudeRide(Array.from({ length: 1200 }, (_, i) => {
+    const position = i / 1200;
+    const drift = -90 * Math.max(0, 1 - i / 150);
+    return { elapsed_time: i, distance: position * 20, altitude: (shape(1 - position) + 30 + drift) / 1000,
+      position_lat: 52 + 0.01 * Math.sin(2 * Math.PI * (1 - position)), position_long: 13 + 0.01 * (1 - Math.cos(2 * Math.PI * (1 - position))) };
+  }));
+  const caught = detectAltitudeSettling(driftingReversed, mirroredProfile);
+  assert.ok(caught, 'reversed drift is detected');
+  assert.ok(caught.startDeltaM < -50);
+
+  // The store layer feeds both relations into the consensus.
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { assignRoute, ensureRouteElevationProfile } = require('../route-store');
+    const { buildRouteSignature } = require('../route-match');
+    let routeId = null;
+    for (let id = 1; id <= 6; id += 1) {
+      const forward = id <= 3;
+      const points = Array.from({ length: 1200 }, (_, i) => {
+        const position = i / 1200;
+        const canonical = forward ? position : 1 - position;
+        return { elapsed_time: i, distance: position * 20, altitude: (shape(canonical) + id * 10) / 1000,
+          position_lat: 52 + 0.01 * Math.sin(2 * Math.PI * canonical), position_long: 13 + 0.01 * (1 - Math.cos(2 * Math.PI * canonical)) };
+      });
+      db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)', [id, `f${id}`, `f${id}`, `2026-08-0${id}T10:00:00Z`, 'fit']);
+      points.forEach((point, index) => {
+        db.run('INSERT INTO records (activity_id, record_index, elapsed_s, distance_km, altitude_m, latitude, longitude) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [id, index, point.elapsed_time, point.distance, point.altitude * 1000, point.position_lat, point.position_long]);
+      });
+      const signature = buildRouteSignature(forward ? points : points.map((p, i, all) => ({ ...p, position_lat: all[all.length - 1 - i].position_lat, position_long: all[all.length - 1 - i].position_long })));
+      const result = assignRoute(db, { activityId: id, signature, createdAt: `2026-08-0${id}T10:00:00Z` });
+      routeId = result.routeId;
+    }
+    const merged = ensureRouteElevationProfile(db, routeId);
+    assert.equal(merged.rides, 6, 'both directions contribute');
+    assert.ok(Math.abs(merged.ascentM - 60) <= 6, `ascent ${merged.ascentM} survives mixing directions`);
+  } finally {
+    db.close();
+  }
+});
+
+test('parser kilometre ascent/descent is stored in metres', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /const toDeviceMetres = \(value\) => \{/);
+  assert.match(source, /return number < 5 \? number \* 1000 : number;/);
+});
+
+test('checkpoint summaries carry prior median HR and best, and the verdict states effort vs time', () => {
+  const { describeCheckpointVerdict, summarizeCheckpoints } = require('../route-store');
+  const mark = (km, elapsedS, avgHr) => ({ km, elapsedS, avgHr });
+  const prior = [{ checkpoints: [mark(20, 2900, 148), mark(18, 2500, 145)] }, { checkpoints: [mark(20, 3000, 150), mark(18, 2550, 147)] },
+    { checkpoints: [mark(20, 2950, 149), mark(18, 2520, 146)] }];
+  const summary = summarizeCheckpoints([mark(20, 3150, 140)], prior);
+  assert.equal(summary[0].priorMedianS, 2950);
+  assert.equal(summary[0].priorBestS, 2900);
+  assert.equal(summary[0].priorMedianHr, 149);
+  const slowerLower = describeCheckpointVerdict(summary);
+  assert.match(slowerLower, /at km 20: 3 min 20s slower than the prior median at HR 140 vs prior median 149 — slower at lower HR \(less effort\)\./);
+
+  const fasterHigher = describeCheckpointVerdict(summarizeCheckpoints([mark(20, 2800, 158)], prior));
+  assert.match(fasterHigher, /faster at higher HR \(more effort, not evidence of efficiency\)/);
+  const fasterSimilar = describeCheckpointVerdict(summarizeCheckpoints([mark(20, 2750, 150)], prior));
+  assert.match(fasterSimilar, /faster at similar HR/);
+  const fasterLower = describeCheckpointVerdict(summarizeCheckpoints([mark(20, 2750, 140)], prior));
+  assert.match(fasterLower, /faster at lower HR \(the kind of change that, repeated, would indicate improved efficiency\)/);
+  const noPriors = describeCheckpointVerdict(summarizeCheckpoints([mark(20, 2900, 140)], []));
+  assert.equal(noPriors, null);
+  const withoutPriorHr = describeCheckpointVerdict(summarizeCheckpoints([mark(20, 2800, 158)], [{ checkpoints: [mark(20, 2950, null)] }]));
+  assert.match(withoutPriorHr, /heart rate of prior rides is unknown/);
+  assert.doesNotMatch(describeCheckpointVerdict(summarizeCheckpoints([mark(20, 2940, 149)], prior)), /faster at|slower at/, 'a 0.3 % time delta with similar HR is no difference');
+});

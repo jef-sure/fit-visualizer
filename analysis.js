@@ -229,6 +229,7 @@ function buildRouteContextBlock(routeContext) {
     routeContext.routeNote ? `User note about this route (user-declared, applies to every ride on it): ${routeContext.routeNote}` : null,
     lines ? `Checkpoint splits (this ride vs median of up to 5 prior same-route rides):\n${lines}` : null,
     routeContext.patternLine,
+    routeContext.verdictLine,
     routeContext.climbLine,
     routeContext.note,
   ], '\n');
@@ -617,7 +618,10 @@ function buildWorkoutFields(session, records) {
   const deviceDescentM = Number(session.device_descent_m);
   const ascentText = formatPositive(ascentM, 0);
   const descentText = formatPositive(descentM, 0);
-  const ascentDiverges = [ascentM, descentM, deviceAscentM, deviceDescentM].every(Number.isFinite)
+  // A stored 0/0 means the device wrote no ascent figure, not a flat ride: it is not a
+  // disagreeing source. (Same rule as the altitude-quality block.)
+  const deviceWroteAscent = deviceAscentM > 0 || deviceDescentM > 0;
+  const ascentDiverges = deviceWroteAscent && [ascentM, descentM, deviceAscentM, deviceDescentM].every(Number.isFinite)
     && Math.abs(deviceAscentM - ascentM) > Math.max(15, 0.15 * Math.abs(ascentM || deviceAscentM));
   const elevationNote = ascentDiverges
     ? `device reports ${deviceAscentM.toFixed(0)}/${deviceDescentM.toFixed(0)} m; sources disagree, treat ascent/descent and first-segment grade with caution`

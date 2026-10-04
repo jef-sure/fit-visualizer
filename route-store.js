@@ -5,7 +5,7 @@
 // all others (a medoid, recomputed lazily).
 
 const { buildRouteSignature, matchRoutes } = require('./route-match');
-const { buildAltitudeRide, computeConsensusProfile } = require('./altitude-quality');
+const { buildAltitudeRide, computeConsensusProfile, mirrorAltitudeRide } = require('./altitude-quality');
 const { computeRouteFeatures, sectionCount, sectionSpeeds } = require('./route-features');
 
 const CHECKPOINT_SPACING_KM = 2;
@@ -141,25 +141,69 @@ function computeCheckpoints(records, { spacingKm = CHECKPOINT_SPACING_KM } = {})
 // Median statistics of past same-route rides per checkpoint mark.
 function summarizeCheckpoints(current, priorRides) {
   return current.map((mark) => {
-    const priors = priorRides
+    const matching = priorRides
       .flatMap((ride) => ride.checkpoints || [])
       .filter((row) => Math.abs(row.km - mark.km) < 0.05)
-      .map((row) => row.elapsedS)
-      .sort((a, b) => a - b);
+      .filter((row) => Number.isFinite(row.elapsedS));
+    const priors = matching.map((row) => row.elapsedS).sort((a, b) => a - b);
     const median = priors.length ? priors[Math.floor(priors.length / 2)] : null;
-    return { ...mark, priorMedianS: median, priorRides: priors.length };
+    const heartRates = matching.map((row) => row.avgHr).filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
+    return {
+      ...mark,
+      priorMedianS: median,
+      priorRides: priors.length,
+      priorBestS: priors.length ? priors[0] : null,
+      priorMedianHr: heartRates.length >= 3 ? heartRates[Math.floor(heartRates.length / 2)] : null,
+    };
   });
+}
+
+// One computed sentence about the final checkpoint: whether this ride was faster or slower and
+// whether that came with higher, similar or lower heart rate than the prior median.
+function describeCheckpointVerdict(summary) {
+  const mark = [...summary].reverse().find((row) => row.priorMedianS && row.elapsedS);
+  if (!mark) return null;
+  const timeDeltaPct = 100 * (mark.elapsedS / mark.priorMedianS - 1);
+  const significantTime = Math.abs(timeDeltaPct) >= 2;
+  const hrDelta = Number.isFinite(mark.avgHr) && Number.isFinite(mark.priorMedianHr) ? mark.avgHr - mark.priorMedianHr : null;
+  const hrKnown = hrDelta != null && Math.abs(hrDelta) >= 4;
+  const speedWord = !significantTime ? 'similar time' : timeDeltaPct < 0 ? `${formatCheckDelta(mark.priorMedianS - mark.elapsedS)} faster` : `${formatCheckDelta(mark.elapsedS - mark.priorMedianS)} slower`;
+  const hrWord = hrDelta == null ? null : hrKnown ? (hrDelta > 0 ? 'higher' : 'lower') : 'similar';
+  const timeText = `at km ${mark.km}: ${speedWord} than the prior median`;
+  const hrText = hrWord ? ` at HR ${mark.avgHr} vs prior median ${mark.priorMedianHr}` : '';
+  const verdict = !significantTime && (hrDelta == null || !hrKnown)
+    ? 'no notable difference from prior rides'
+    : hrWord === null
+      ? (significantTime ? `a ${timeDeltaPct < 0 ? 'faster' : 'slower'} ride; heart rate of prior rides is unknown, so effort cannot be judged` : 'similar time')
+      : hrWord === 'higher'
+        ? (significantTime && timeDeltaPct < 0 ? 'faster at higher HR (more effort, not evidence of efficiency)'
+          : significantTime ? 'slower at higher HR (conditions, fatigue or heat; not a fitness statement)'
+          : 'similar time at higher HR (more internal load at the same speed)')
+        : hrWord === 'lower'
+          ? (significantTime && timeDeltaPct < 0 ? 'faster at lower HR (the kind of change that, repeated, would indicate improved efficiency)'
+            : significantTime ? 'slower at lower HR (less effort)'
+            : 'similar time at lower HR (less internal load at the same speed)')
+          : significantTime ? (timeDeltaPct < 0 ? 'faster at similar HR' : 'slower at similar HR') : 'similar time and HR';
+  return `${timeText}${hrText} — ${verdict}.`;
+}
+
+function formatCheckDelta(seconds) {
+  const total = Math.abs(Math.round(seconds));
+  return `${total >= 60 ? `${Math.floor(total / 60)} min ` : ''}${total % 60}s`;
 }
 
 // Consensus elevation profile of a route, cached in routes.elevation_profile_json and refreshed
 // when enough new same-route rides have joined since it was computed.
 function ensureRouteElevationProfile(db, routeId) {
   if (!routeId) return null;
-  const memberIds = [];
-  const members = db.prepare("SELECT activity_id FROM activity_routes WHERE route_id = ? AND relation LIKE 'same%' ORDER BY activity_id");
+  const memberRows = [];
+  const members = db.prepare("SELECT activity_id, relation FROM activity_routes WHERE route_id = ? AND (relation LIKE 'same%' OR relation LIKE 'reversed%') ORDER BY activity_id");
   try {
     members.bind([routeId]);
-    while (members.step()) memberIds.push(members.getAsObject().activity_id);
+    while (members.step()) {
+      const row = members.getAsObject();
+      memberRows.push({ id: row.activity_id, reversed: String(row.relation).startsWith('reversed') });
+    }
   } finally {
     members.free();
   }
@@ -172,10 +216,10 @@ function ensureRouteElevationProfile(db, routeId) {
     stored.free();
   }
   const storedMembers = Number(cached?.members);
-  if (cached && Number.isFinite(storedMembers) && memberIds.length - storedMembers < (storedMembers < 10 ? 1 : 3)) {
+  if (cached && Number.isFinite(storedMembers) && memberRows.length - storedMembers < (storedMembers < 10 ? 1 : 3)) {
     return cached.profile || null;
   }
-  const rides = memberIds.map((id) => {
+  const rides = memberRows.map(({ id, reversed }) => {
     const stmt = db.prepare('SELECT elapsed_s, distance_km, altitude_m, latitude, longitude FROM records WHERE activity_id = ? ORDER BY record_index');
     try {
       stmt.bind([id]);
@@ -186,14 +230,16 @@ function ensureRouteElevationProfile(db, routeId) {
           altitude: row.altitude_m == null ? null : row.altitude_m / 1000,
           position_lat: row.latitude, position_long: row.longitude });
       }
-      return buildAltitudeRide(records);
+      const ride = buildAltitudeRide(records);
+      // Reversed rides are mirrored onto the canonical axis so all rides align by distance.
+      return reversed && ride ? mirrorAltitudeRide(ride) : ride;
     } finally {
       stmt.free();
     }
   }).filter(Boolean);
   const profile = computeConsensusProfile(rides);
   db.run('UPDATE routes SET elevation_profile_json = ?, elevation_updated_at = ? WHERE id = ?',
-    [JSON.stringify({ members: memberIds.length, profile }), new Date().toISOString(), routeId]);
+    [JSON.stringify({ members: memberRows.length, profile }), new Date().toISOString(), routeId]);
   return profile;
 }
 
@@ -338,6 +384,7 @@ module.exports = {
   readRoutes,
   setRouteName,
   setRouteNote,
+  describeCheckpointVerdict,
   summarizeCheckpoints,
   summarizeRoutePattern,
 };

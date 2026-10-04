@@ -33,11 +33,11 @@ const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, loc
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
-const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteCard, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
+const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
 const { describeRouteFeatures } = require('./route-features');
-const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling } = require('./altitude-quality');
+const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling, mirrorConsensusProfile } = require('./altitude-quality');
 const { buildRouteSignature } = require('./route-match');
 
 function safeParseJson(text, fallback) {
@@ -1312,8 +1312,15 @@ function upsertActivity(db, filePath, fitData) {
     recordSpanS,
     gapSeconds: Number.isFinite(gapSeconds) ? gapSeconds : 0,
   });
-  const deviceAscentM = asNumber(session.total_ascent);
-  const deviceDescentM = asNumber(session.total_descent);
+  // fit-file-parser converts session ascent/descent to the configured length unit (km); metres are
+  // what everything else expects, so a value in the km range is scaled back.
+  const toDeviceMetres = (value) => {
+    const number = asNumber(value);
+    if (!Number.isFinite(number) || number === 0) return number === 0 ? 0 : NaN;
+    return number < 5 ? number * 1000 : number;
+  };
+  const deviceAscentM = toDeviceMetres(session.total_ascent);
+  const deviceDescentM = toDeviceMetres(session.total_descent);
   const nowIso = new Date().toISOString();
   const upsertValues = [
     filePath, path.basename(filePath), nowIso,
@@ -2873,9 +2880,13 @@ function buildAltitudeQuality({ db, records, routeInfo, activity }) {
   if (!ride) return null;
   let flags = computeAltitudeFlags(ride);
   let routeLine = null;
-  const profile = routeInfo?.routeId && routeInfo.relation === 'same' ? ensureRouteElevationProfile(db, routeInfo.routeId) : null;
+  const reversed = routeInfo?.relation === 'reversed';
+  const profile = routeInfo?.routeId && ['same', 'reversed'].includes(routeInfo.relation)
+    ? ensureRouteElevationProfile(db, routeInfo.routeId) : null;
   if (profile) {
-    const settling = detectAltitudeSettling(ride, profile);
+    // The consensus is stored on the canonical axis; for a reversed ride it is mirrored instead,
+    // so the ride's own first minutes stay first for settling detection.
+    const settling = detectAltitudeSettling(ride, reversed ? mirrorConsensusProfile(profile) : profile);
     if (settling) {
       flags = flags.filter((flag) => flag.code !== 'ALT_SETTLING');
       flags.push({ code: 'ALT_SETTLING', detail: settling.detail });
@@ -2884,7 +2895,7 @@ function buildAltitudeQuality({ db, records, routeInfo, activity }) {
     const device = [asNumber(activity.device_ascent_m), asNumber(activity.device_descent_m)];
     // A stored 0/0 means the device wrote no figure, not a flat ride.
     if (!(device[0] > 0 || device[1] > 0)) device.fill(NaN);
-    routeLine = `Route elevation (offset-aligned consensus of ${profile.rides} same-route rides): ascent ~${profile.ascentM} m, descent ~${profile.descentM} m`
+    routeLine = `Route elevation (offset-aligned consensus of ${profile.rides} rides of this route, both directions): ascent ~${profile.ascentM} m, descent ~${profile.descentM} m`
       + `${computed.every(Number.isFinite) ? `; this ride computed ${Math.round(computed[0])}/${Math.round(computed[1])} m` : ''}`
       + `${device.every(Number.isFinite) ? `, device ${Math.round(device[0])}/${Math.round(device[1])} m` : ''}.`;
   }
@@ -2909,7 +2920,9 @@ function buildRouteContext(currentData, activities, selected, routeNote = null) 
   const lines = marks.map((mark) => {
     const diff = mark.priorMedianS ? Math.round(mark.elapsedS - mark.priorMedianS) : null;
     const delta = diff == null ? '' : `${diff < 0 ? '-' : '+'}${Math.floor(Math.abs(diff) / 60)}:${String(Math.abs(diff) % 60).padStart(2, '0')}`;
-    return `- km ${mark.km}: ${formatHms(mark.elapsedS)}${diff != null ? ` (median ${formatHms(mark.priorMedianS)}, ${delta})` : ''}${mark.avgHr ? `, HR ${mark.avgHr}` : ''}`;
+    const priorHr = mark.priorMedianHr != null && mark.avgHr ? ` (prior median ${mark.priorMedianHr})` : '';
+    const best = mark.priorBestS != null ? `, best ${formatHms(mark.priorBestS)}` : '';
+    return `- km ${mark.km}: ${formatHms(mark.elapsedS)}${diff != null ? ` (median ${formatHms(mark.priorMedianS)}${best}, ${delta})` : ''}${mark.avgHr ? `, HR ${mark.avgHr}${priorHr}` : ''}`;
   });
   const climbs = (currentData.segments || []).filter((segment) => segment.type === 'climb' && segment.elevGainM >= 25);
   const finalClimb = climbs.at(-1);
@@ -2933,10 +2946,12 @@ function buildRouteContext(currentData, activities, selected, routeNote = null) 
   const patternLine = pattern
     ? `Route-typical pattern (${pattern.priorCount} earlier rides): after km ${pattern.splitKm} the average speed is at least 3% below the first part in ${pattern.slowerCount} of ${pattern.priorCount} rides (median ${pattern.medianChangePct >= 0 ? '+' : ''}${pattern.medianChangePct}%). This ride: ${pattern.currentChangePct >= 0 ? '+' : ''}${pattern.currentChangePct}% (a bigger drop than in ${pattern.currentDropsMoreThanCount} of ${pattern.priorCount} earlier rides).${regular ? ' A pattern this regular belongs to the route, not to the day: discuss only how this ride differs from it.' : ''}`
     : null;
+  const verdictLine = describeCheckpointVerdict(summary);
   return {
     routeName: routeInfo.routeName,
     relation: routeInfo.relation,
     patternLine,
+    verdictLine,
     routeNote: routeNote ? String(routeNote).trim() : null,
     rideCount: routeInfo.rideCount,
     priorRideCount: priorSameRoute.length,
