@@ -6,7 +6,7 @@ const { rankModelsByCost } = require('./model-pricing');
 const { describeStretches } = require('./route-features');
 const { buildDataQualityFlagBlock } = require('./data-quality');
 const { buildRouteSignature, matchRoutes, haversineM } = require('./route-match');
-const { computeCheckpoints } = require('./route-store');
+const { computeCheckpoints, priorKmOnAxis } = require('./route-store');
 const { describeSpeed, normalizeSport, profileFor, sportPromptAdditions } = require('./sport-profiles');
 const { SUMMARY_TAIL_INSTRUCTION, describeAnalysisForHistory } = require('./analysis-summary');
 const { buildInferredNotesBlock, buildSessionNotesBlock, describeNotesShort } = require('./activity-notes');
@@ -1000,15 +1000,21 @@ function describeRouteRelation(relation) {
 // A checkpoint comparison table, only for rides on the same route: marks are aligned by rounded
 // distance so a slightly different total (wheel sensor) still matches. Returns '' when the marks
 // cannot be aligned (different routes) or there is nothing to compare.
-function buildCheckpointComparisonTable(aCheckpoints, bCheckpoints) {
+function buildCheckpointComparisonTable(aCheckpoints, bCheckpoints, relation = { type: 'same' }) {
   const listA = Array.isArray(aCheckpoints) ? aCheckpoints : [];
   const listB = Array.isArray(bCheckpoints) ? bCheckpoints : [];
   if (!listA.length || !listB.length) return '';
   // Marks sit at each ride's own segment boundaries, so they are paired by place on the road
-  // (GPS within 150 m, km as a fallback), never by ordinal position.
+  // (GPS within 150 m and about the same position along the route, direction reflected), never by
+  // ordinal position: a loop runs close to itself, and place alone would pair different legs.
+  const lengthA = listA.reduce((max, row) => (Number.isFinite(row.km) && row.km > max ? row.km : max), 0);
+  const lengthB = listB.reduce((max, row) => (Number.isFinite(row.km) && row.km > max ? row.km : max), 0);
+  const reversed = relation.type === 'reversed';
   const distanceM = (a, b) => {
+    const axisKm = priorKmOnAxis(b, lengthB, lengthA, reversed);
+    if (axisKm != null && Number.isFinite(a.km) && Math.abs(axisKm - a.km) > 1) return Infinity;
     if ([a.lat, a.lon, b.lat, b.lon].every(Number.isFinite)) return haversineM(a.lat, a.lon, b.lat, b.lon);
-    return Number.isFinite(a.km) && Number.isFinite(b.km) ? Math.abs(a.km - b.km) * 1000 : Infinity;
+    return axisKm != null && Number.isFinite(a.km) ? Math.abs(axisKm - a.km) * 1000 : Infinity;
   };
   const rows = listA.map((checkpoint) => {
     const other = listB.reduce((best, candidate) => {
@@ -1096,7 +1102,7 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
   const sameRoute = relation.type === 'same' || relation.type === 'reversed';
   const routeRelationLine = describeRouteRelation(relation);
   const checkpointTable = sameRoute
-    ? buildCheckpointComparisonTable(computeCheckpoints(fitData.records, fitData.segments), computeCheckpoints(comparedFitData.records, comparedFitData.segments))
+    ? buildCheckpointComparisonTable(computeCheckpoints(fitData.records, fitData.segments), computeCheckpoints(comparedFitData.records, comparedFitData.segments), relation)
     : '';
 
   const dataQualityNote = (label, source) => (source === 'estimated from motion data'

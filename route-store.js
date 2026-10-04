@@ -176,20 +176,41 @@ function computeCheckpoints(records, segments = [], { spacingKm = CHECKPOINT_SPA
   return result;
 }
 
+// Position along the route of a prior mark on this ride's axis. Same direction: km scales with
+// the small length difference. Reversed: a place at fraction f of the route sits at km f·L in one
+// direction and (1-f)·L in the other.
+function priorKmOnAxis(row, priorLengthKm, thisLengthKm, reversed) {
+  if (!Number.isFinite(row?.km) || !(priorLengthKm > 0) || !(thisLengthKm > 0)) return null;
+  const fraction = reversed ? 1 - row.km / priorLengthKm : row.km / priorLengthKm;
+  return fraction * thisLengthKm;
+}
+
 // Prior rides are matched to a mark by place on the road: GPS distance when both have it, km as a
-// fallback (wind trainer, GPS-less rides). 150 m is generous for a point crossed at speed.
-function priorRowsNear(priorRides, mark, radiusM = CHECKPOINT_MATCH_RADIUS_M) {
+// fallback (wind trainer, GPS-less rides). 150 m is generous for a point crossed at speed. A loop
+// often runs close to itself, so place alone is not enough: the matched mark must also sit at
+// about the same position along the route (within 1 km, after reflecting for direction).
+function priorRowsNear(priorRides, mark, { radiusM = CHECKPOINT_MATCH_RADIUS_M, reversed = false, lengthKm = null } = {}) {
   const withGps = Number.isFinite(mark?.lat) && Number.isFinite(mark?.lon);
+  const thisLengthKm = Number.isFinite(Number(lengthKm)) ? Number(lengthKm) : null;
   const matches = [];
   for (const ride of priorRides || []) {
+    const rows = Array.isArray(ride?.checkpoints) ? ride.checkpoints : [];
+    const priorLengthKm = rows.reduce((max, row) => (Number.isFinite(row?.km) && row.km > max ? row.km : max), 0);
     let best = null;
-    for (const row of Array.isArray(ride?.checkpoints) ? ride.checkpoints : []) {
+    for (const row of rows) {
       if (!Number.isFinite(row?.elapsedS)) continue;
+      const axisKm = priorKmOnAxis(row, priorLengthKm, thisLengthKm, reversed);
+      // A loop runs close to itself; place alone could pair different legs of it.
+      const axisGap = axisKm != null && Number.isFinite(mark?.km) ? Math.abs(axisKm - mark.km) : Infinity;
+      if (axisGap > 1) continue;
+      // Without GPS on either side the axis distance is the place metric.
       const d = withGps && Number.isFinite(row.lat) && Number.isFinite(row.lon)
         ? haversineM(mark.lat, mark.lon, row.lat, row.lon)
-        : Number.isFinite(mark?.km) && Number.isFinite(row.km)
-          ? Math.abs(row.km - mark.km) * 1000 : Infinity;
-      if (best == null || d < best.d) best = { row, d };
+        : axisGap < Infinity ? axisGap * 1000 : Infinity;
+      // Place-nearest wins; the axis distance breaks ties and is the metric without GPS.
+      const better = best == null || axisGap < best.axisGap
+        || (axisGap === best.axisGap && d < best.d);
+      if (better) best = { row, d, axisGap };
     }
     if (best != null && best.d <= radiusM) matches.push(best.row);
   }
@@ -197,8 +218,10 @@ function priorRowsNear(priorRides, mark, radiusM = CHECKPOINT_MATCH_RADIUS_M) {
 }
 
 function summarizeCheckpoints(current, priorRides) {
+  // The route length is the last mark's km; a mark's own km would misplace the axis near the start.
+  const lengthKm = current.reduce((max, row) => (Number.isFinite(row?.km) && row.km > max ? row.km : max), 0) || null;
   return current.map((mark) => {
-    const matching = priorRowsNear(priorRides, mark);
+    const matching = priorRowsNear(priorRides, mark, { lengthKm });
     const priors = matching.map((row) => row.elapsedS).sort((a, b) => a - b);
     const median = priors.length ? priors[Math.floor(priors.length / 2)] : null;
     const heartRates = matching.map((row) => row.avgHr).filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
@@ -440,6 +463,7 @@ module.exports = {
   setRouteNote,
   describeCheckpointVerdict,
   summarizeCheckpoints,
+  priorKmOnAxis,
   priorRowsNear,
   summarizeRoutePattern,
 };

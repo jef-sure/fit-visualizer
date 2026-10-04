@@ -3361,15 +3361,19 @@ test('checkpoints sit at segment boundaries, densify long segments and match pri
   const summary = summarizeCheckpoints(marks, [{ checkpoints: priorMarks }]);
   // The nearest prior mark to the 5 km mark (0.009° ≈ 1 km) is the one at 6 km, ~1 km away:
   // same road, but beyond the 150 m radius, so it does not match — the radius is doing its job.
-  assert.equal(summary[0].priorRides, 0);
+  assert.equal(summary[1].priorRides, 0, 'a mark 1 km away does not pair');
   const near = summarizeCheckpoints([marks[1]], [{ checkpoints: [{ km: 5.02, lat: lat0 + 5.02 * 0.009, lon: lon0, elapsedS: 960, avgHr: 140 }] }]);
   assert.equal(near[0].priorRides, 1, 'a prior mark within 150 m of the same place matches');
   assert.equal(near[0].priorMedianS, 960);
 
-  // Without GPS on either side the fallback is km within 150 m.
-  const kmSummary = summarizeCheckpoints([{ km: 10, elapsedS: 1800 }], [{ checkpoints: [{ km: 10.1, elapsedS: 1860 }] }]);
+  // Without GPS on either side the fallback is the scaled position along the route (lengths from
+  // the marks themselves; a full prior is required, a lone far mark proves nothing).
+  const kmSummary = summarizeCheckpoints([{ km: 10, elapsedS: 1800 }, { km: 20, elapsedS: 3600 }],
+    [{ checkpoints: [{ km: 10.05, elapsedS: 1860 }, { km: 10.1, elapsedS: 1880 }, { km: 20, elapsedS: 3660 }] }]);
   assert.equal(kmSummary[0].priorRides, 1);
-  assert.equal(summarizeCheckpoints([{ km: 10, elapsedS: 1800 }], [{ checkpoints: [{ km: 14, elapsedS: 2520 }] }])[0].priorRides, 0);
+  assert.equal(kmSummary[0].priorMedianS, 1860, 'the closest mark on the axis wins');
+  assert.equal(summarizeCheckpoints([{ km: 10, elapsedS: 1800 }, { km: 20, elapsedS: 3600 }],
+    [{ checkpoints: [{ km: 14, elapsedS: 2520 }, { km: 20, elapsedS: 3660 }] }])[0].priorRides, 0);
 
   // A ride with no segments: marks every 2 km plus the end (the densify pass over one long stretch).
   const plain = computeCheckpoints(records);
