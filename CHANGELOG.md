@@ -1,5 +1,102 @@
 # Changelog
 
+## 0.28.8 - 2026-10-04
+
+### Added
+
+- **Analysis progress indicator.** Clicking **Analyze Activity** or **Re-analyze** now puts a spinner inside the button and shows a progress line under the AI Analysis header ("Analyzing this ride… this can take a couple of minutes. You can keep browsing other activities."). Before, the only feedback was the button label changing to "Analyzing..." while disabled, which was easy to miss during a multi-minute run. The indicator clears on success, error, or "no analysis".
+
+## 0.28.7 - 2026-10-04
+
+### Fixed
+
+- RU translation regression from 0.26.3: the route-card elevation tile read **"Сброс"** (a reset/dump) instead of **"Спуск"** (a downhill). Restored in both the tile label and the "ascent, descent and climbs appear after N more rides" sentence.
+
+## 0.28.6 - 2026-10-04
+
+### Added
+
+- **Per-ride history strips under each trend indicator.** Every indicator card on the route section now shows a small bar strip of the last six rides (oldest left, current highlighted), so switching between activities shows how the value moved instead of a single snapshot. The weekly-load verdict also changed from "As usual" to **"Within your normal range"**, and its detail line states the normal band (80–130% of a usual week), so a value like 85% no longer contradicts its own label.
+
+## 0.28.5 - 2026-10-04
+
+### Changed
+
+- Route-card trend details are full sentences in plain language: "76% of a usual week — heart-rate load for the 7 days before this ride against your 28-day average", instead of abbreviation-heavy fragments. Jargon (TRIMP, monotony) stays out of the visible card.
+
+## 0.28.4 - 2026-10-04
+
+### Changed
+
+- Route-card trends are verdict-first: a short title, a prominent plain-language verdict ("Less effort than usual"), and one detail line with the number and what it is compared against. Removed the redundant block heading, the multi-sentence "how to read" paragraphs and the arrows.
+
+## 0.28.2 - 0.28.3 - 2026-10-04
+
+### Changed
+
+- Route-card layout compaction and wording: metric tiles no longer stretch across wide panels; the trend block got its own heading; load rhythm was displayed as a share of a usual week; the direction badge reads "same direction as the first ride"; the first ride on a route gets a minimal header ("The first ride on this route") instead of "1 rides" plus a direction badge.
+
+## 0.28.1 - 2026-10-04
+
+### Fixed
+
+- **Switching activities was noticeably slow.** The route-card indicators called the full training-context build (recomputing records, segments and zones for every ride of the 90-day history, ~2 s per selection) to obtain three numbers. The card path now reads the cached checkpoints, segments and loads, recomputing a single ride only when its cache row is stale. The trend pair and the load rhythm were extracted into shared helpers (`computeRouteTrends`, `computeLoadRhythm`), so the card and the prompt keep reporting identical values.
+
+## 0.28.0 - 2026-10-04
+
+### Upgrade Notes
+
+- Run **FIT: Re-analyze Outdated Analyses** (analysis format 35; features version 7 rebuilds in the background).
+
+### Added
+
+- **Three computed trend indicators** (plan part I), each with a code-issued verdict; the model explains what moved but never computes or names the indicators as health or fitness:
+  - **Route efficiency** — elapsed × heart rate at the last checkpoint shared with the median of the 5 prior same-route rides.
+  - **Load rhythm** — acute (7-day TRIMP) to chronic (28-day weekly average) ratio plus Foster monotony; "two weeks low" needs the previous week too.
+  - **Post-climb HR recovery** — bpm drop in the 60 s after the final climb, against the median of the 5 prior same-route rides.
+  - Indicators appear only where comparable data exists (same route and direction, ≥ 5 prior rides for 1 and 3); otherwise they are not shown and never reach the prompt — no "n/a".
+  - The route card on the activity page shows the three values with localized verdict phrases; the prompt gains a "Trends on this route (computed)" block with a no-rederivation rule; the machine-readable summary tail gains a trend field.
+
+## 0.27.6 - 2026-10-04
+
+### Fixed
+
+- The AI comparison table's header row was visually misaligned with its data rows: `th` centers by default while `td` left-aligns, and a column sized to a long file name made the gap look structural. Both now left-align.
+
+### Changed
+
+- The remaining 22 UI labels that were still English in the Russian interface are translated (route card, trends, comparison, notes).
+
+## 0.27.5 - 2026-10-04
+
+### Changed
+
+- **The route card exists from the first ride on a route.** Before, the section silently appeared only after the route had a consensus profile (5 rides), which read as a glitch when it popped in later. Now the first ride already shows the card with the name/note form and the length from the GPS signature, and the facts grow in as rides accumulate.
+
+## 0.27.4 - 2026-10-04
+
+### Fixed
+
+- The initial selection honours the persisted route filter: opening the activity browser with a route filter remembered from last time could start on the newest ride overall, so the filter said one route while the content showed another.
+
+## 0.27.3 - 2026-10-04
+
+### Fixed
+
+- **Young-route card fills in what is known.** A freshly formed route (for example after the longer-partial rule change in 0.27.2) had no cached profile yet; the card now computes it on the fly instead of showing an empty card until something else does, states the length from the GPS signature, and says how many more rides the ascent/descent/climbs need.
+
+## 0.27.2 - 2026-10-04
+
+### Changed
+
+- **Longer partial rides form their own route.** A ride that only partly follows a shorter route used to be joined to it whenever the track matched, forever presenting the short route's facts as if the longer ride had ridden them — and the longer route could never form. Now a partial match only joins when this ride is the shorter one; a longer ride becomes its own route.
+
+## 0.27.0 - 0.27.1 - 2026-10-04
+
+### Changed
+
+- **The partial-ride route card names the relationship explicitly**: "This ride: 33.7 km — a different and longer route of its own; 69% of it follows this 20.9 km route. The facts below describe the 20.9 km route, not this ride." A partial ride is its own route (longer, with its own climbs and roads through towns); the percentage is how much of its track coincides with the known route.
+
 ## 0.26.9 - 2026-10-04
 
 ### Fixed
