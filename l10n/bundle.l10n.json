@@ -254,6 +254,5 @@
   "Data quality": "Data quality",
   "Fields marked below are the AI’s inference from this ride’s data — edit and save to correct them; a saved note becomes your own.": "Fields marked below are the AI’s inference from this ride’s data — edit and save to correct them; a saved note becomes your own.",
   "Analyzed by {0} · format {1} · {2}": "Analyzed by {0} · format {1} · {2}",
-  "Model": "Model",
-  "Default (cheapest/first)": "Default (cheapest/first)"
+  "Model": "Model"
 }

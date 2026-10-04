@@ -1,7 +1,7 @@
 const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { buildSegmentContext, generateAnalysisPromptParts, generateAnalysisChatPrompt, generateComparisonPrompt, requestCopilotAnalysis, summarizePromptBlocks } = require('./analysis');
+const { buildSegmentContext, generateAnalysisPromptParts, generateAnalysisChatPrompt, generateComparisonPrompt, requestCopilotAnalysis, selectPreferredModel, summarizePromptBlocks } = require('./analysis');
 const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
 const { buildCartesianGeometry, buildDistanceMarkers, buildTicks, formatTick, padRange, padYAxisRange } = require('./chart-geometry');
@@ -459,15 +459,34 @@ async function updateModelPriceTable() {
 // Lets the athlete pick which model answers one-off analyses: the QuickPick lists the models the
 // current vendor actually offers, plus a "default/cheapest" entry that clears the pinned id. The
 // pin overrides the cheapest-model heuristic, so prompt experiments stay reproducible.
-// The models the current vendor actually offers, for the analysis-model picker on the page.
-async function listAvailableModels() {
+// Data for the analysis-model dropdown: the models the vendor offers and the name of the one an
+// analysis would use when nothing is chosen (the pinned model, else the cheapest/first), so the
+// "Default" entry names a real model instead of a rule.
+async function getModelPickerData() {
   const vendor = getLanguageModelVendor();
+  let models = [];
   try {
-    const models = await vscode.lm.selectChatModels({ vendor });
-    return models.map((model) => ({ id: model.id, name: model.name || model.id }));
+    models = await vscode.lm.selectChatModels({ vendor });
   } catch {
-    return [];
+    models = [];
   }
+  let defaultName = null;
+  if (models.length) {
+    try {
+      const resolved = await selectPreferredModel(vscode, vendor, models, {
+        modelId: getAnalysisModelId(),
+        preferCheapModel: getPreferCheapAnalysisModel(),
+        cheapModelMarkers: getCheapModelMarkers(),
+      });
+      defaultName = resolved?.name || resolved?.id || null;
+    } catch {
+      defaultName = null;
+    }
+  }
+  return {
+    models: models.map((model) => ({ id: model.id, name: model.name || model.id })),
+    defaultName: defaultName || (getPreferCheapAnalysisModel() ? vscode.l10n.t('cheapest model') : vscode.l10n.t('first listed model')),
+  };
 }
 
 async function selectAnalysisModel() {
@@ -1039,7 +1058,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const segments = buildDisplaySegments(data, athleteProfile, hrConfig);
     const chips = buildDisplayChips(data, athleteProfile, hrConfig, segments, asNumber(wheelCalibration?.ratio) || null);
     if (data) data.sessionClass = chips.sessionClass;
-    const modelPicker = { models: await listAvailableModels(), current: getAnalysisModelId() || null };
+    const modelPicker = await getModelPickerData();
     const bundledTranslations = await loadBundledTranslationBundle(
       context.extensionUri.fsPath, vscode.env.language
     );
@@ -1068,7 +1087,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       return Number.isInteger(id) && id > 0 ? id : null;
     };
     const hasCompId = msg.compId != null && msg.compId !== '';
-    if (['selectActivity', 'analyzeActivity', 'setAnalysisModel', 'analysisChatTurn', 'updateActivityHeartRate',
+    if (['selectActivity', 'analyzeActivity', 'analysisChatTurn', 'updateActivityHeartRate',
       'updateHeartRateProfile', 'updateRoute', 'updateActivityNotes', 'autoCalculateHeartRateProfile', 'compareActivitiesAI', 'removeComparison']
       .includes(msg.type)) {
       if (!asActivityId(msg.id)) {
@@ -1153,23 +1172,10 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     } else if (msg.type === 'analyzeActivity') {
       try {
         const requestedActivityId = Number(msg.id);
-        const { text: analysis, warnings, modelId, analyzedAt } = await generateActivityAnalysis(dbPath, requestedActivityId, msg.force);
+        // The dropdown choice is a one-off override for this run; the pinned setting is untouched.
+        const chosenModel = typeof msg.modelId === 'string' && msg.modelId.trim() ? msg.modelId.trim() : null;
+        const { text: analysis, warnings, modelId, analyzedAt } = await generateActivityAnalysis(dbPath, requestedActivityId, msg.force, chosenModel);
         panel.webview.postMessage({ type: 'analysisResult', id: requestedActivityId, analysis, warnings, modelId, analyzedAt });
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        panel.webview.postMessage({ type: 'analysisError', id: Number(msg.id), error: errorMsg });
-      }
-    } else if (msg.type === 'setAnalysisModel') {
-      // Pick the model from the page dropdown, persist it and re-analyze this activity with it,
-      // so the athlete can compare how different models phrase the same ride.
-      try {
-        const requestedActivityId = Number(msg.id);
-        const modelId = typeof msg.modelId === 'string' && msg.modelId.trim() ? msg.modelId.trim() : null;
-        await vscode.workspace.getConfiguration('fitVisualizer').update(
-          'analysisModelId', modelId, vscode.ConfigurationTarget.Global
-        );
-        const { text: analysis, warnings, modelId: usedModelId, analyzedAt } = await generateActivityAnalysis(dbPath, requestedActivityId, true);
-        panel.webview.postMessage({ type: 'analysisResult', id: requestedActivityId, analysis, warnings, modelId: usedModelId, analyzedAt, selectedModelId: modelId });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         panel.webview.postMessage({ type: 'analysisError', id: Number(msg.id), error: errorMsg });
@@ -1936,8 +1942,8 @@ async function getWheelCalibrationRecommendation(dbPath) {
   }
 }
 
-async function generateActivityAnalysis(dbPath, activityId, force = false) {
-  return enqueueLlmTask(() => runActivityAnalysis(dbPath, activityId, force));
+async function generateActivityAnalysis(dbPath, activityId, force = false, modelOverride = null) {
+  return enqueueLlmTask(() => runActivityAnalysis(dbPath, activityId, force, modelOverride));
 }
 
 // Builds the analysis prompt exactly as a real run would (also used by the prompt evaluation command).
@@ -1964,7 +1970,7 @@ async function buildAnalysisPromptForActivity(dbPath, numId) {
   return { prompt: [instructions, data], analysisData };
 }
 
-async function runActivityAnalysis(dbPath, activityId, force) {
+async function runActivityAnalysis(dbPath, activityId, force, modelOverride = null) {
   const numId = Number(activityId);
   if (!Number.isFinite(numId) || numId <= 0) {
     throw new Error(`Invalid activity ID: ${activityId}`);
@@ -1982,7 +1988,7 @@ async function runActivityAnalysis(dbPath, activityId, force) {
   const rawAnalysis = await requestCopilotAnalysis(vscode, prompt, {
     vendor: getLanguageModelVendor(),
     preferCheapModel: getPreferCheapAnalysisModel(),
-    modelId: getAnalysisModelId(),
+    modelId: modelOverride || getAnalysisModelId(),
     cheapModelMarkers: getCheapModelMarkers(),
     onCompleted: (result) => {
       usedModelId = result.modelId;

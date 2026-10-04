@@ -622,16 +622,14 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const routeCardHtml = routeCard && !isComparison ? renderRouteCard(routeCard, ui, mapId, routeUi) : '';
   const notesCardHtml = isComparison ? '' : renderSessionNotesCard(fitData.sessionNotes, ui, mapId, fitData.inferredNotes);
 
-  // The analysis-model picker: the current pin (or the default entry) first, then the models the
-  // vendor offers. Changing it re-analyzes the ride with that model so wording can be compared.
+  // The analysis-model picker. It shows the model that produced the analysis on screen (when it
+  // is still offered) and otherwise the default, named by the model it actually resolves to. It
+  // only prepares a choice: the analysis runs when the athlete presses the Analyze button.
   const modelPickerModels = Array.isArray(modelPicker?.models) ? modelPicker.models : [];
-  const modelPickerCurrent = modelPicker?.current || null;
+  const usedModelId = analysis?.modelId && modelPickerModels.some((model) => model.id === analysis.modelId) ? analysis.modelId : '';
   const modelOptions = [
-    `<option value=""${modelPickerCurrent ? '' : ' selected'}>${escapeHtml(ui.analysisModelDefault)}</option>`,
-    ...modelPickerModels.map((model) => {
-      const sel = modelPickerCurrent === model.id ? ' selected' : '';
-      return `<option value="${escapeHtml(model.id)}"${sel}>${escapeHtml(model.name)}</option>`;
-    }),
+    `<option value=""${usedModelId ? '' : ' selected'}>${escapeHtml(formatUi(ui.defaultModel, modelPicker?.defaultName || ui.cheapestModel))}</option>`,
+    ...modelPickerModels.map((model) => `<option value="${escapeHtml(model.id)}"${model.id === usedModelId ? ' selected' : ''}>${escapeHtml(model.name)}</option>`),
   ].join('');
 
   return `<main class="wrap">
@@ -830,7 +828,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       const ui = ${safeJson(ui)};
       function formatMessage(template) {
         const values = Array.prototype.slice.call(arguments, 1);
-        return String(template || '').replace(/\{(\d+)\}/g, (_, index) => String(values[Number(index)] ?? ''));
+        // The page script sits inside a template literal: every backslash here must be doubled.
+        return String(template || '').replace(/\\{(\\d+)\\}/g, (_, index) => String(values[Number(index)] ?? ''));
       }
       // Helper to escape HTML
       function escapeHtml(text) {
@@ -984,7 +983,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           analyzeBtn.disabled = false;
           analyzeBtn.textContent = analyzeButtonLabel();
           const modelSel = document.getElementById('modelSel');
-          if (modelSel) modelSel.disabled = false;
+          if (modelSel && msg.modelId && Array.from(modelSel.options).some((option) => option.value === msg.modelId)) {
+            modelSel.value = msg.modelId;
+          }
           setSegmentBudgetWarning(Array.isArray(msg.warnings) ? msg.warnings : []);
         } else if (msg.type === 'noAnalysis') {
           hasAnalysis = false;
@@ -996,8 +997,6 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           analysisContent.innerHTML = '<div style="color:#ff6b6b;">' + escapeHtml(formatMessage(ui.error, msg.error)) + '</div>';
           analyzeBtn.disabled = false;
           analyzeBtn.textContent = analyzeButtonLabel();
-          const modelSel = document.getElementById('modelSel');
-          if (modelSel) modelSel.disabled = false;
         } else if (msg.type === 'analysisChatState') {
           chatMessages = Array.isArray(msg.messages) ? msg.messages : [];
           renderChatMessages();
@@ -1229,16 +1228,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           }
           analyzeBtn.disabled = true;
           analyzeBtn.textContent = ui.analyzing;
-          vscode.postMessage({ type: 'analyzeActivity', id: window.currentActivityId, force: hasAnalysis });
-        });
-
-        const modelSel = document.getElementById('modelSel');
-        modelSel?.addEventListener('change', () => {
-          if (!window.currentActivityId || window.currentActivityId === 'null') return;
-          modelSel.disabled = true;
-          analyzeBtn.disabled = true;
-          analyzeBtn.textContent = ui.analyzing;
-          vscode.postMessage({ type: 'setAnalysisModel', id: window.currentActivityId, modelId: modelSel.value });
+          const modelSel = document.getElementById('modelSel');
+          vscode.postMessage({ type: 'analyzeActivity', id: window.currentActivityId, force: hasAnalysis, modelId: modelSel ? modelSel.value : '' });
         });
       }
 

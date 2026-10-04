@@ -1015,7 +1015,7 @@ test('bulk re-analysis runs one Copilot request at a time', () => {
   assert.match(loop, /await generateActivityAnalysis\(dbPath, target\.id, true\);/);
   assert.doesNotMatch(loop, /Promise\.(all|allSettled|race)/);
   // Analyses started from the webview must not interleave with a bulk run: sql.js rewrites the whole file.
-  assert.match(source, /return enqueueLlmTask\(\(\) => runActivityAnalysis\(dbPath, activityId, force\)\)/);
+  assert.match(source, /return enqueueLlmTask\(\(\) => runActivityAnalysis\(dbPath, activityId, force, modelOverride\)\)/);
   assert.match(source, /async function appendActivityChatTurn[\s\S]*?return enqueueLlmTask\(async \(\) => \{/);
 });
 
@@ -4932,20 +4932,61 @@ test('prompts carry the Voice block and the evaluator measures hedging, English 
   assert.ok(aggregate.meanEnglishTerms > 0);
 });
 
-test('analysis card has a model dropdown and re-analysis selects the model (B5 UI)', () => {
+test('analysis card dropdown shows the model that answered and only prepares the next run (B5 UI)', () => {
   const { renderActivityContentHtml } = loadActivityWebviewForTest();
   const base = { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] };
-  const modelPicker = { models: [{ id: 'gpt-6-luna', name: 'gpt-6-luna' }, { id: 'claude-opus-5', name: 'claude-opus-5' }], current: 'gpt-6-luna' };
-  const html = renderActivityContentHtml({}, {}, { ...base }, null, 'n', false, null, {},
-    { text: 'Analysis body', version: 30, modelId: 'gpt-6-luna', analyzedAt: '2026-10-04T09:00:00.000Z' },
+  const modelPicker = { models: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna' }, { id: 'claude-fable-5.1', name: 'Claude Fable 5.1' }], defaultName: 'GPT-6 Luna' };
+  const render = (analysis) => renderActivityContentHtml({}, {}, { ...base }, null, 'n', false, null, {}, analysis,
     [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm', null, [], null, modelPicker);
-  assert.match(html, /id="modelSel"/);
-  assert.match(html, /<option value="gpt-6-luna" selected>gpt-6-luna<\/option>/);
-  assert.match(html, /<option value="claude-opus-5">claude-opus-5<\/option>/);
-  assert.match(html, /Default \(cheapest\/first\)/);
-  assert.match(html, /type: 'setAnalysisModel'/);
-  // Without a pin, the default entry is selected.
-  const noPin = renderActivityContentHtml({}, {}, { ...base }, null, 'n', false, null, {},
-    { text: 'x', version: 30 }, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm', null, [], null, { models: [{ id: 'gpt-6-luna', name: 'gpt-6-luna' }], current: null });
-  assert.match(noPin, /<option value="" selected>Default \(cheapest\/first\)<\/option>/);
+
+  // The model that produced the displayed analysis is preselected, and the default entry names the real default model.
+  const used = render({ text: 'Body', version: 30, modelId: 'claude-fable-5.1', analyzedAt: '2026-10-04T09:00:00.000Z' });
+  assert.match(used, /<option value="">Default \(GPT-6 Luna\)<\/option>/);
+  assert.match(used, /<option value="claude-fable-5.1" selected>Claude Fable 5\.1<\/option>/);
+  assert.doesNotMatch(used, /cheapest\/first/);
+  // No recorded model (an older analysis) or one that is no longer offered: the default entry is selected.
+  assert.match(render({ text: 'Body', version: 30 }), /<option value="" selected>Default \(GPT-6 Luna\)<\/option>/);
+  assert.match(render({ text: 'Body', version: 30, modelId: 'retired-model' }), /<option value="" selected>/);
+
+  // Changing the dropdown must not start an analysis: the only message that carries the model is the
+  // Analyze button's, as a one-off choice.
+  assert.doesNotMatch(used, /setAnalysisModel/);
+  assert.doesNotMatch(used, /modelSel\??\.addEventListener\('change'/);
+  assert.match(used, /type: 'analyzeActivity', id: window\.currentActivityId, force: hasAnalysis, modelId: modelSel \? modelSel\.value : ''/);
+});
+
+test('the page formatMessage really substitutes placeholders (it sits inside a template literal)', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const html = renderActivityContentHtml({}, {}, { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] }, null, 'n', false, null, {},
+    { text: 'x', version: 30, modelId: 'm' }, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm', null, [], null, null);
+  // Take the function exactly as the browser receives it and run it.
+  const source = /function formatMessage\(template\) \{[\s\S]*?\n      \}/.exec(html)?.[0];
+  assert.ok(source, 'formatMessage is present in the page script');
+  const formatMessage = new Function(`${source}; return formatMessage;`)();
+  assert.equal(formatMessage('Analyzed by {0} · format {1} · {2}', 'GPT-6 Luna', 30, '04.10.2026'), 'Analyzed by GPT-6 Luna · format 30 · 04.10.2026');
+  assert.equal(formatMessage('Error: {0}', 'boom'), 'Error: boom');
+  assert.equal(formatMessage('{1}{0}{1}', 'a', 'b'), 'bab');
+});
+
+test('a one-off model from the page overrides the pinned model without changing the setting', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /async function runActivityAnalysis\(dbPath, activityId, force, modelOverride = null\)/);
+  assert.match(source, /modelId: modelOverride \|\| getAnalysisModelId\(\),/);
+  // The analyze handler passes the dropdown choice through and never writes the configuration.
+  const handler = source.slice(source.indexOf("msg.type === 'analyzeActivity'"), source.indexOf("msg.type === 'analysisChatTurn'"));
+  assert.match(handler, /generateActivityAnalysis\(dbPath, requestedActivityId, msg\.force, chosenModel\)/);
+  assert.doesNotMatch(handler, /\.update\(/);
+  // Batch re-analysis keeps using the default (no override).
+  assert.match(source, /await generateActivityAnalysis\(dbPath, target\.id, true\);/);
+});
+
+test('every script block of the generated activity page parses', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const html = renderActivityContentHtml({}, {}, { records: straightGpsRecords(30, 20), sessions: [{ sport: 'cycling' }], laps: [] }, null, 'n', false, null, {},
+    { text: 'x', version: 30, modelId: 'm' }, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm',
+    { routeId: 1, name: 'Loop', note: '', rideCount: 3, relation: 'same' }, [], null, { models: [{ id: 'm', name: 'M' }], defaultName: 'M' });
+  const blocks = [...html.matchAll(/<script nonce="n">([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  assert.ok(blocks.length >= 1);
+  // A syntax error inside the template literal is invisible to `node --check`; compile each block.
+  for (const block of blocks) assert.doesNotThrow(() => new Function(block));
 });
