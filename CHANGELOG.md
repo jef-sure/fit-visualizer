@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.5 - 2026-10-04
+
+### Fixed
+
+- Selecting another activity sometimes did not change the page: the render waits for the model list, and `selectChatModels()` without a vendor filter waits for every provider — one slow BYOK endpoint froze it indefinitely. The call is now bounded by a 3 s timeout in both the activity page and FIT: Select Analysis Model; on timeout the picker falls back to an empty list rather than blocking the page.
+
 ## 0.26.4 - 2026-10-04
 
 ### Changed

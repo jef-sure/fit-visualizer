@@ -468,7 +468,9 @@ async function getModelPickerData() {
   try {
     // BYOK and other providers register under their own vendor ids; the picker lists every model
     // the editor offers, not only the configured vendor's, and the analysis resolves the full id.
-    raw = await vscode.lm.selectChatModels();
+    // The call waits for every provider, and one unresponsive endpoint must never freeze the
+    // page render that happens to need the picker, so it is bounded by a timeout.
+    raw = await withTimeout(vscode.lm.selectChatModels(), 3000, 'model list timed out');
   } catch {
     raw = [];
   }
@@ -498,7 +500,7 @@ async function getModelPickerData() {
 async function selectAnalysisModel() {
   let models = [];
   try {
-    models = await vscode.lm.selectChatModels();
+    models = await withTimeout(vscode.lm.selectChatModels(), 3000, 'model list timed out');
   } catch {
     models = [];
   }
