@@ -197,3 +197,113 @@ module.exports = {
   findClimbs,
   sectionSpeeds,
 };
+
+// Route-stretch breakdown of one long flat segment: the segment is cut at direction-effect
+// boundaries and profile sections, so each stretch's speed can be compared with what is typical
+// there in this riding direction. Pure function over already-summarized segment records.
+const STRETCH = Object.freeze({ minSegmentKm: 4, minSegmentS: 600, minStretchKm: 1.5 });
+
+function medianSpeedAtKm(described, km, limitKm) {
+  const row = described.rows?.find((entry) => km >= entry.fromKm - 0.001 && km < entry.toKm + 0.001);
+  if (row?.ownKmh == null) return null;
+  // A typical speed from a clearly climbing or descending section does not describe a flat
+  // segment's stretch, and a section that runs past the segment's end covers terrain the stretch
+  // does not (the pre-climb slowdown drags its median down).
+  const within = limitKm == null || row.toKm <= limitKm + 0.05;
+  return Math.abs(row.gradePct ?? 0) <= 2.5 && within ? row.ownKmh : null;
+}
+
+// boundaries: km values (route axis) where the typical speed changes. Built from section edges
+// plus asymmetric stretches; neighbouring sections with the same deviation sign already merged
+// in described.asymmetric.
+function stretchBoundaries(described, fromKm, toKm) {
+  const points = new Set([fromKm, toKm]);
+  for (const row of described.rows || []) {
+    if (row.ownKmh == null) continue;
+    if (row.fromKm > fromKm + 0.05 && row.fromKm < toKm - 0.05) points.add(row.fromKm);
+  }
+  for (const stretch of described.asymmetric || []) {
+    for (const edge of [stretch.fromKm, stretch.toKm]) {
+      if (edge > fromKm + 0.05 && edge < toKm - 0.05) points.add(edge);
+    }
+  }
+  return [...points].sort((a, b) => a - b);
+}
+
+// records: the ride's records (distance km, speed km/h, heart_rate); segmentStartKm/segmentEndKm
+// locate the segment on the same distance axis as the route profile.
+function computeSegmentStretches(records, described, segmentStartKm, segmentEndKm) {
+  if (!described?.rows?.length) return null;
+  // Stretches overlapping a listed climb are part of that climb, not of the flat comparison.
+  const climbs = described.climbs || [];
+  const lengthKm = segmentEndKm - segmentStartKm;
+  if (lengthKm < STRETCH.minSegmentKm) return null;
+  const list = (Array.isArray(records) ? records : [])
+    .filter((record) => Number.isFinite(Number(record?.distance)) && Number.isFinite(Number(record?.elapsed_time)));
+  if (list.length < 60) return null;
+  const boundaries = stretchBoundaries(described, segmentStartKm, segmentEndKm);
+  const stretches = [];
+  for (let index = 0; index + 1 < boundaries.length; index += 1) {
+    const fromKm = boundaries[index];
+    const toKm = boundaries[index + 1];
+    if (toKm - fromKm < STRETCH.minStretchKm) continue;
+    let distanceM = 0;
+    let seconds = 0;
+    let hrWeighted = 0;
+    let hrSeconds = 0;
+    for (let i = 1; i < list.length; i += 1) {
+      const dt = Number(list[i].elapsed_time) - Number(list[i - 1].elapsed_time);
+      const dd = Number(list[i].distance) - Number(list[i - 1].distance);
+      const mid = (Number(list[i].distance) + Number(list[i - 1].distance)) / 2;
+      if (!(dt > 0 && dt <= 10) || !(dd >= 0)) continue;
+      if (mid < fromKm || mid >= toKm) continue;
+      distanceM += dd * 1000;
+      seconds += dt;
+      const hr = Number(list[i].heart_rate);
+      if (Number.isFinite(hr) && hr > 0) {
+        hrWeighted += hr * dt;
+        hrSeconds += dt;
+      }
+    }
+    if (seconds < 60 || distanceM < 100) continue;
+    if (climbs.some((climb) => fromKm < climb.toKm - 0.05 && toKm > climb.fromKm + 0.05)) continue;
+    const kmh = distanceM / (seconds / 3600) / 1000;
+    const typical = medianSpeedAtKm(described, (fromKm + toKm) / 2, segmentEndKm);
+    stretches.push({
+      fromKm: Math.round(fromKm * 10) / 10,
+      toKm: Math.round(toKm * 10) / 10,
+      kmh: Math.round(kmh * 10) / 10,
+      typicalKmh: typical != null ? Math.round(typical * 10) / 10 : null,
+      deltaPct: typical > 0 ? Math.round(((kmh / typical) - 1) * 1000) / 10 : null,
+      hr: hrSeconds > 0.8 * seconds ? Math.round(hrWeighted / hrSeconds) : null,
+    });
+  }
+  return stretches.length >= 2 ? stretches : null;
+}
+
+// One computed sentence about the stretch set: does the ride follow the route's typical speeds,
+// and what does heart rate do while it does.
+function describeStretches(stretches) {
+  if (!stretches?.length) return null;
+  const withTypical = stretches.filter((stretch) => stretch.typicalKmh != null && stretch.deltaPct != null);
+  if (withTypical.length < 2) return null;
+  const follows = withTypical.every((stretch) => Math.abs(stretch.deltaPct) <= 5);
+  const deviating = withTypical.filter((stretch) => Math.abs(stretch.deltaPct) > 5)
+    .sort((a, b) => Math.abs(b.deltaPct) - Math.abs(a.deltaPct))[0];
+  const hrs = stretches.filter((stretch) => stretch.hr != null);
+  const hrRise = hrs.length >= 2 ? hrs[hrs.length - 1].hr - hrs[0].hr : null;
+  const hrSteady = hrRise == null || Math.abs(hrRise) < 5;
+  if (follows) {
+    return hrSteady
+      ? 'Speed follows the route; HR steady across stretches.'
+      : `Speed follows the route; HR rises ${Math.abs(hrRise)} bpm at route-typical speed (heat, drift or effort; the route does not explain the HR change).`;
+  }
+  const direction = deviating.deltaPct < 0 ? 'Slower' : 'Faster';
+  return hrSteady
+    ? `${direction} than route-typical on km ${deviating.fromKm}-${deviating.toKm} by ${Math.abs(deviating.deltaPct)}%; HR steady.`
+    : `${direction} than route-typical on km ${deviating.fromKm}-${deviating.toKm} by ${Math.abs(deviating.deltaPct)}%; HR ${hrRise > 0 ? 'higher' : 'lower'} along the way.`;
+}
+
+module.exports.STRETCH = STRETCH;
+module.exports.computeSegmentStretches = computeSegmentStretches;
+module.exports.describeStretches = describeStretches;

@@ -4256,3 +4256,52 @@ test('checkpoint summaries carry prior median HR and best, and the verdict state
   assert.match(withoutPriorHr, /heart rate of prior rides is unknown/);
   assert.doesNotMatch(describeCheckpointVerdict(summarizeCheckpoints([mark(20, 2940, 149)], prior)), /faster at|slower at/, 'a 0.3 % time delta with similar HR is no difference');
 });
+
+test('flat segments get a route-stretch breakdown with typical speeds and a computed verdict', () => {
+  const { computeSegmentStretches, describeStretches } = require('../route-features');
+  const described = {
+    rows: [
+      { fromKm: 4, toKm: 6, gradePct: -0.5, ownKmh: 27.5 }, { fromKm: 6, toKm: 8, gradePct: -0.5, ownKmh: 27.5 },
+      { fromKm: 8, toKm: 10, gradePct: -0.2, ownKmh: 28.6 }, { fromKm: 10, toKm: 12, gradePct: 0.5, ownKmh: 23.4 },
+      { fromKm: 12, toKm: 14, gradePct: 0.4, ownKmh: 23.9 }, { fromKm: 14, toKm: 16, gradePct: 0.8, ownKmh: 22.2 },
+      { fromKm: 16, toKm: 18, gradePct: 0.2, ownKmh: 22.8 }, { fromKm: 18, toKm: 20, gradePct: 1.9, ownKmh: 14.9 },
+    ],
+    asymmetric: [{ fromKm: 10, toKm: 16, ownKmh: 23, otherKmh: 27.5 }],
+    climbs: [{ fromKm: 19.8, toKm: 20.4, gainM: 35, avgGradePct: 5.6 }],
+  };
+  // A ride following the typical speeds with rising HR: 20 km at the section speeds.
+  const records = [];
+  let elapsed = 0;
+  const speedAt = (km) => (km < 10 ? 27.5 : km < 16 ? 23 : 22.5);
+  for (let km = 0; km <= 19.6; km += 0.02) {
+    const hr = km < 10 ? 140 : 140 + Math.round((km - 10) / 9.6 * 15);
+    records.push({ elapsed_time: elapsed, distance: km, heart_rate: hr });
+    elapsed += (0.02 / speedAt(km)) * 3600;
+  }
+  const stretches = computeSegmentStretches(records, described, 4, 19.6);
+  assert.ok(stretches?.length >= 3);
+  assert.ok(stretches.every((stretch) => stretch.typicalKmh == null || Math.abs(stretch.deltaPct) <= 6), JSON.stringify(stretches));
+  assert.match(describeStretches(stretches), /Speed follows the route; HR rises \d+ bpm at route-typical speed/);
+  assert.equal(stretches.find((stretch) => stretch.fromKm === 18).typicalKmh, null, 'no typical for the pre-climb section');
+
+  // Slower on the km 10-16 stretch at the same HR.
+  const slower = [];
+  elapsed = 0;
+  for (let km = 0; km <= 19.6; km += 0.02) {
+    const speed = km < 10 ? 27.5 : km < 16 ? 20.5 : 22.5;
+    slower.push({ elapsed_time: elapsed, distance: km, heart_rate: 140 });
+    elapsed += (0.02 / speed) * 3600;
+  }
+  const slowerStretches = computeSegmentStretches(slower, described, 4, 19.6);
+  assert.match(describeStretches(slowerStretches), /Slower than route-typical on km 1[024]-1[46] by \d+(\.\d+)?%; HR steady\./);
+
+  // Guard rails.
+  assert.equal(computeSegmentStretches(records, described, 10, 13), null, 'short segment');
+  assert.equal(describeStretches([{ fromKm: 4, toKm: 6, kmh: 27, typicalKmh: null, deltaPct: null, hr: 140 }]), null);
+  const prompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], segments: [
+    { index: 0, type: 'flat', effortBasis: 'hr', startElapsed: 0, endElapsed: 2400, durationS: 2400, distanceKm: 15, routeStretches: stretches },
+  ] }, { total_activities: 0 });
+  assert.match(prompt, /by route stretch \(this ride \/ typical for this direction\)/);
+  assert.match(prompt, /speed change between stretches belongs to the route/);
+  assert.doesNotMatch(prompt, /temporal halves/);
+});

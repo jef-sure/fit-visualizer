@@ -36,7 +36,7 @@ const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRo
 const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
-const { describeRouteFeatures } = require('./route-features');
+const { computeSegmentStretches, describeRouteFeatures } = require('./route-features');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling, mirrorConsensusProfile } = require('./altitude-quality');
 const { buildRouteSignature } = require('./route-match');
 
@@ -2828,8 +2828,16 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   context.routeContext = currentRouteInfo
     ? buildRouteContext({ routeInfo: currentRouteInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected, readRouteNote(db, currentRouteInfo.routeId))
     : null;
-  context.routeProfile = ['same', 'reversed'].includes(currentRouteInfo?.relation)
+  const routeProfileForStretches = ['same', 'reversed'].includes(currentRouteInfo?.relation)
     ? buildRouteProfile(db, currentRouteInfo) : null;
+  context.routeProfile = routeProfileForStretches;
+  // C7: long flat segments get a route-stretch breakdown instead of temporal halves, so a
+  // route-typical speed change is not presented as this ride's dynamics.
+  annotateSegmentsWithRouteStretches({
+    segments: currentData?.segments || currentDetail?.segments || [],
+    records: currentRecords,
+    described: routeProfileForStretches?.described || null,
+  });
   context.altitudeQuality = buildAltitudeQuality({
     db, records: currentRecords, routeInfo: currentRouteInfo, activity: selected,
   });
@@ -2871,6 +2879,23 @@ function buildRouteProfile(db, routeInfo) {
   }
   return { direction: routeInfo.relation, described, rideCounts: counts, lengthKm: features.lengthKm,
     ascentM: features.ascentM, descentM: features.descentM };
+}
+
+
+function annotateSegmentsWithRouteStretches({ segments, records, described }) {
+  if (!described?.rows?.length || !Array.isArray(segments) || !records) return;
+  for (const segment of segments) {
+    if (segment.type !== 'flat' || !(segment.durationS >= 600) || !(segment.distanceKm >= 4)) continue;
+    const start = segment.routeStartDistanceKm ?? segmentStartKmOnRideAxis(records, segment);
+    if (start == null) continue;
+    const stretches = computeSegmentStretches(records, described, start, start + segment.distanceKm);
+    if (stretches) segment.routeStretches = stretches;
+  }
+}
+
+function segmentStartKmOnRideAxis(records, segment) {
+  const record = (Array.isArray(records) ? records : []).find((entry) => Number(entry?.elapsed_time) >= (segment.startElapsed ?? -1));
+  return record ? Number(record.distance) : null;
 }
 
 // Altitude-quality flags for the current ride, sharpened by the route's consensus profile when

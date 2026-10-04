@@ -2,6 +2,7 @@ const { formatHms, groupSimilarSegments, segmentLineBudget, collapseShortStops }
 const { calculatePeakHeartRates, computeHeartRateZones } = require('./heart-rate');
 const { localClock, localDate } = require('./activity-time');
 const { rankModelsByCost } = require('./model-pricing');
+const { describeStretches } = require('./route-features');
 const { SUMMARY_TAIL_INSTRUCTION, describeAnalysisForHistory } = require('./analysis-summary');
 const { buildSessionNotesBlock, describeNotesShort } = require('./activity-notes');
 
@@ -72,14 +73,19 @@ function describeSegment(segment) {
     segment.effortBasis !== 'vpower' && segment.gradeCoveragePct != null && segment.gradeCoveragePct < 80 ? `grade coverage ${segment.gradeCoveragePct}%` : null,
     segment.effortBasis === 'vpower' && segment.vpowerUse && segment.vpowerUse !== 'not assessed' ? `vpower use: ${segment.vpowerUse}; power coverage ${segment.powerCoveragePct}%` : null,
     segment.effortBasis === 'vpower' && segment.gradeSensitivityWPerPct != null ? `local uncapped sensitivity ~${segment.gradeSensitivityWPerPct} W per grade percentage point, ~${segment.massSensitivityWPerKg} W/kg mass (not error bounds)` : null,
-    segment.dynamics ? joinNonEmpty([
-      segment.dynamics.firstHalfSpeed != null && segment.dynamics.secondHalfSpeed != null
-        ? `speed ${segment.dynamics.firstHalfSpeed}->${segment.dynamics.secondHalfSpeed} km/h` : null,
-      segment.dynamics.firstHalfHr != null && segment.dynamics.secondHalfHr != null
-        ? `HR ${segment.dynamics.firstHalfHr}->${segment.dynamics.secondHalfHr} bpm` : null,
-      segment.effortBasis === 'power' && segment.dynamics.firstHalfPower != null && segment.dynamics.secondHalfPower != null
-        ? `measured power ${segment.dynamics.firstHalfPower}->${segment.dynamics.secondHalfPower} W` : null,
-    ], '; ') + ' (temporal halves; descriptive, not a fitness/recovery test)' : null,
+    segment.routeStretches
+      ? joinNonEmpty([
+        `by route stretch (this ride / typical for this direction): ${segment.routeStretches.map((stretch) => `km ${stretch.fromKm}-${stretch.toKm} ${stretch.kmh}${stretch.typicalKmh != null ? ` / ${stretch.typicalKmh}` : ''} km/h${stretch.hr != null ? `, HR ${stretch.hr}` : ''}`).join('; ')}`,
+        describeStretches(segment.routeStretches),
+      ], '. ')
+      : segment.dynamics ? joinNonEmpty([
+        segment.dynamics.firstHalfSpeed != null && segment.dynamics.secondHalfSpeed != null
+          ? `speed ${segment.dynamics.firstHalfSpeed}->${segment.dynamics.secondHalfSpeed} km/h` : null,
+        segment.dynamics.firstHalfHr != null && segment.dynamics.secondHalfHr != null
+          ? `HR ${segment.dynamics.firstHalfHr}->${segment.dynamics.secondHalfHr} bpm` : null,
+        segment.effortBasis === 'power' && segment.dynamics.firstHalfPower != null && segment.dynamics.secondHalfPower != null
+          ? `measured power ${segment.dynamics.firstHalfPower}->${segment.dynamics.secondHalfPower} W` : null,
+      ], '; ') + ' (temporal halves; descriptive, not a fitness/recovery test)' : null,
   ]);
 }
 
@@ -782,6 +788,7 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
   const segmentContext = buildSegmentContext(fitData.segments).text;
   const historyContext = buildRecentHistoryContext(recentHistory);
   const hasSegments = Boolean(segmentContext);
+  const hasRouteStretches = Boolean(fitData.segments?.some((segment) => segment.routeStretches?.length));
 
   // Data first, interpretation rules last: without a system role, closeness to the question is the only lever.
   const body = joinNonEmpty([
@@ -827,6 +834,9 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
     fitData.sessionNotes
       ? null
       : 'No session notes (RPE, purpose, conditions) are recorded for this ride. They are entered in the Session Notes section of the activity page. Suggest recording them only when that is the most useful next step, and then as a data suggestion, not as pacing advice.',
+    hasRouteStretches
+      ? 'Where a flat segment is broken down by route stretch, the speed change between stretches belongs to the route; treat only the deviation from typical speed and the HR change as this ride\'s facts. Do not list the cause of a route-typical speed change as an open question.'
+      : null,
     hasSegments
       ? 'Segments state which signal their effort is based on. Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.'
       : null,
