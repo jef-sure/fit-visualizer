@@ -8,9 +8,17 @@ const DEFENSIVE_PHRASES = Object.freeze([
   'does not prove', 'does not establish', 'cannot be concluded', 'route identity not established', 'not evidence of',
 ]);
 
+// Flags present in the prompt (one line each, from the Altitude Quality / Data Quality Flags
+// blocks) and the words that count as the answer using them. Patterns anchor on the flag line so
+// that the general principle text ("Device temperature ... may be the device's") never counts as
+// a flag. Altitude words include the integrated wording the model prefers ("early altitude
+// unreliable") rather than only the flag code.
 const FLAG_KEYWORDS = Object.freeze([
-  { pattern: /^- ALT_(SETTLING|MISSING_START|GAP):/m, words: /altitude|elevation|barometer|высот|барометр/i },
-  { pattern: /TEMP_DEVICE_HOT|Device temperature/i, words: /temperature|heat|warm|температур|жар|тепл/i },
+  { pattern: /^- ALT_(SETTLING|MISSING_START|GAP):/m, words: /altitude|elevation|barometer|высот|барометр|unreliable|ненадёжн/i },
+  { pattern: /^- TEMP_DEVICE_HOT:/m, words: /temperature|heat|warm|sun|температур|жар|тепл|солнц/i },
+  { pattern: /^- HR_(DROPOUT|LATE_START|CONTACT_LOSS):/m, words: /heart.?rate|HR|strap|contact|dropout|coverage|пульс|ремн|контакт|покрыти|пропуск/i },
+  { pattern: /^- ELAPSED_MISMATCH:/m, words: /elapsed|left running|stopp|session time|общее время|не остановл|остановк/i },
+  { pattern: /^- OFFSET_CHANGED:/m, words: /time ?zone|UTC|offset|local time|часово|пояс|смещени|локальн/i },
 ]);
 
 const numbersIn = (text) => (String(text).match(/\d+(?:[.,]\d+)?/g) || []).map((raw) => Number(raw.replace(',', '.'))).filter(Number.isFinite);

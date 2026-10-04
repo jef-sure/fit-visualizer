@@ -10,12 +10,14 @@ Open a `.fit` file from your bike computer or sports watch right in VS Code and 
 
 ## Upgrading
 
-Already using FIT Visualizer? After an update, refresh your saved AI analyses so they follow the new logic:
+New users can skip this section. If you already have rides in your local history, an update can leave two kinds of stored results behind the current code. They are refreshed by two different commands, both in the Command Palette (`Ctrl+Shift+P`):
 
-1. Open the Command Palette (`Ctrl+Shift+P`).
-2. Run **FIT: Re-analyze Outdated Analyses** and confirm.
+| Stored result | Refresh with | When it is needed |
+|---|---|---|
+| **Saved AI analyses** — the text the model wrote for each ride | **FIT: Re-analyze Outdated Analyses** | After almost every update: the analysis prompt changes often, and the activity page marks older analyses as *analyzed with an older version*. One Copilot request per outdated ride; current analyses are left alone. |
+| **Indexed activity data** — the figures read from the FIT files into the local database | **FIT: Index All Files** | Only when a release changes *what is read from the file*. The changelog says so explicitly under *Upgrade Notes*. Last time: 0.20.0 (device ascent/descent was stored 1000× too small). If you indexed with 0.20.0 or later, you never need this. |
 
-That's the only step you need for most updates. One exception: if your files were last indexed by a version **older than 0.20.0**, run **FIT: Index All Files** once too — those versions stored the device's ascent/descent figure scaled down 1000×, and re-indexing restores it. New users can skip all of this: it only matters once you have saved data.
+Derived data (segments, zones, route profiles, checkpoints) is rebuilt automatically in the background when its format changes — no command needed.
 
 Re-indexing is local and does not change the original FIT files. Re-analysis is optional, requires GitHub Copilot, sends activity and discussion context to the model, and may consume your Copilot allowance.
 

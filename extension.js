@@ -446,7 +446,7 @@ async function selectAnalysisModel() {
     return;
   }
   const current = getAnalysisModelId();
-  const defaultLabel = vscode.l10n.t('Default ({0})', getPreferCheapAnalysisModel() ? 'cheapest' : 'first');
+  const defaultLabel = vscode.l10n.t('Default ({0})', getPreferCheapAnalysisModel() ? vscode.l10n.t('cheapest model') : vscode.l10n.t('first listed model'));
   const items = [
     { label: defaultLabel, description: vscode.l10n.t('clear the pinned model'), modelId: null },
     ...models.map((model) => ({
@@ -996,6 +996,8 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       ? await getHeartRateConfigForActivity(dbPath, data.sessions?.[0]?.start_time)
       : getHeartRateConfig();
     const segments = buildDisplaySegments(data, athleteProfile, hrConfig);
+    const chips = buildDisplayChips(data, athleteProfile, hrConfig, segments, asNumber(wheelCalibration?.ratio) || null);
+    if (data) data.sessionClass = chips.sessionClass;
     const bundledTranslations = await loadBundledTranslationBundle(
       context.extensionUri.fsPath, vscode.env.language
     );
@@ -1004,7 +1006,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     );
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard, [], context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null, routeUi
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard, chips.qualityFlags, context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null, routeUi
     );
     translationJustGenerated = false;
     if (selId) {
@@ -1036,10 +1038,18 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     if (msg.type === 'selectActivity') {
       await render(msg.id ? Number(msg.id) : null, msg.compId ? Number(msg.compId) : null);
     } else if (msg.type === 'setRouteFilter') {
-      // The route filter is a pure client-side view preference; persist it so the next panel opens
-      // with the same filter. No re-render is needed — the webview already applied the change.
+      // One message persists the filter and re-renders, so the render cannot read the old value.
+      // If the selected ride is not on the chosen route, the newest ride on that route is shown.
       const filter = typeof msg.routeName === 'string' && msg.routeName.trim() ? msg.routeName.trim() : null;
       await context.workspaceState.update(ROUTE_FILTER_STATE_KEY, filter);
+      const current = asActivityId(msg.id);
+      const onRoute = (activity) => !filter || String(activity.route_name || '') === filter;
+      const selected = current && activities.some((activity) => Number(activity.id) === current && onRoute(activity))
+        ? current
+        : Number(activities.find(onRoute)?.id) || null;
+      const compId = asActivityId(msg.compId);
+      const comp = compId && compId !== selected && activities.some((activity) => Number(activity.id) === compId && onRoute(activity)) ? compId : null;
+      await render(selected, comp);
     } else if (msg.type === 'generateTranslations') {
       const locale = String(vscode.env.language || '').replace(/_/g, '-');
       const language = displayLanguage(locale);
@@ -1211,6 +1221,25 @@ function buildDisplaySegments(fitData, athleteProfile, heartRateConfig) {
       maxHeartRate: asNumber(heartRateConfig?.maxHeartRate),
     },
   });
+}
+
+// Session class and data-quality flags for the chips on the activity page (D1), computed from the
+// same normalized records the display segments use.
+function buildDisplayChips(fitData, athleteProfile, heartRateConfig, segments, wheelRatio) {
+  if (!fitData || !Array.isArray(fitData.records) || fitData.records.length < 2) {
+    return { sessionClass: null, qualityFlags: [] };
+  }
+  const records = normalizeRecordSpeeds(fitData.records);
+  const powerData = addEstimatedPowerWhenMissing(records, {
+    riderMassKg: athleteProfile?.riderMassKg,
+    bikeMassKg: athleteProfile?.bikeMassKg,
+    ...getPowerModelOptions(),
+  });
+  const session = fitData.sessions?.[0] || {};
+  return {
+    sessionClass: buildSessionClassForActivity(powerData.records, session, heartRateConfig, athleteProfile, segments),
+    qualityFlags: computeDataQualityFlags({ records: powerData.records, session, wheelRatio }),
+  };
 }
 
 
@@ -2995,12 +3024,15 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     current: { startTime: selected.start_time, utcOffsetS: selected.utc_offset_s },
     others: activities.map((activity) => ({ startTime: activity.startTime, utcOffsetS: activity.utcOffsetS })),
   });
-  if (offsetChange) {
-    context.qualityFlags = [...(context.qualityFlags || []), {
-      code: 'OFFSET_CHANGED', severity: 'warn',
-      text: `device UTC offset (${formatOffsetLabel(offsetChange.utcOffsetS)}) differs from the median of ${offsetChange.neighbours} nearby same-file activities (${formatOffsetLabel(offsetChange.medianOffsetS)}); the device timezone setting probably changed, so local clock times and local dates around these rides are less reliable`,
-    }];
-  }
+  // OFFSET_CHANGED needs the neighbouring activities, so it is computed here and appended to the
+  // current ride's flags — the prompt body prints that list, the context only mirrors it.
+  const offsetFlag = offsetChange ? {
+    code: 'OFFSET_CHANGED', severity: 'warn',
+    text: `device UTC offset (${formatOffsetLabel(offsetChange.utcOffsetS)}) differs from the median of ${offsetChange.neighbours} nearby same-file activities (${formatOffsetLabel(offsetChange.medianOffsetS)}); the device timezone setting probably changed, so local clock times and local dates around these rides are less reliable`,
+  } : null;
+  const qualityFlags = [...(currentData?.qualityFlags || []), ...(offsetFlag ? [offsetFlag] : [])];
+  if (currentData) currentData.qualityFlags = qualityFlags;
+  context.qualityFlags = qualityFlags;
   context.routeContext = currentRouteInfo
     ? buildRouteContext({ routeInfo: currentRouteInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected, readRouteNote(db, currentRouteInfo.routeId))
     : null;
@@ -3014,7 +3046,6 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     records: currentRecords,
     described: routeProfileForStretches?.described || null,
   });
-  context.qualityFlags = currentData?.qualityFlags || [];
   context.altitudeQuality = buildAltitudeQuality({
     db, records: currentRecords, routeInfo: currentRouteInfo, activity: selected,
   });
@@ -3183,20 +3214,24 @@ async function getRouteUiData(dbPath, activityId) {
     const currentCheckpoints = currentRow ? safeParseJson(currentRow[0], []) : [];
     const currentSegments = currentRow ? safeParseJson(currentRow[1], []) : [];
 
+    // Prior rides are those before this one, in the same direction, oldest first — the same set
+    // the prompt compares against. Checkpoints use the latest five of them (as the UI says);
+    // the climb chart shows all of them.
     const priorValues = db.exec(`
       SELECT af.checkpoints_json, af.segments_json, a.start_time
       FROM activity_routes ar
       JOIN activity_features af ON af.activity_id = ar.activity_id
       JOIN activities a ON a.id = ar.activity_id
       WHERE ar.route_id = ? AND ar.relation LIKE ? AND ar.activity_id != ?
-      ORDER BY a.start_time ASC`, [routeId, `${relation}%`, activityId])[0]?.values || [];
+        AND datetime(a.start_time) < (SELECT datetime(start_time) FROM activities WHERE id = ?)
+      ORDER BY datetime(a.start_time) ASC`, [routeId, `${relation}%`, activityId, activityId])[0]?.values || [];
     const prior = priorValues.map((row) => ({
       checkpoints: safeParseJson(row[0], []),
       segments: safeParseJson(row[1], []),
       startTime: row[2],
     }));
 
-    const summary = summarizeCheckpoints(currentCheckpoints, prior);
+    const summary = summarizeCheckpoints(currentCheckpoints, prior.slice(-5));
     const checkpoints = summary.filter((mark) => mark.priorRides > 0).slice(0, 10).map((mark) => ({
       km: mark.km, elapsedS: mark.elapsedS, priorMedianS: mark.priorMedianS,
       priorBestS: mark.priorBestS, priorRides: mark.priorRides,

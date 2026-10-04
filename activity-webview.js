@@ -94,31 +94,17 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
           compId: document.getElementById('compSel').value || null,
         });
       }
-      // The route filter narrows both selectors client-side; the selected value is persisted so
-      // the next panel opens with the same filter.
-      function applyRouteFilter(name) {
-        const keep = (option) => option.dataset.route === (name || '');
-        const actSel = document.getElementById('actSel');
-        const compSel = document.getElementById('compSel');
-        let keepSelectedAct = false;
-        let keepSelectedComp = false;
-        for (const option of Array.from(actSel.options)) {
-          option.hidden = !keep(option);
-          if (option.selected && option.hidden) option.hidden = false;
-          if (option.selected && !option.hidden) keepSelectedAct = true;
-        }
-        for (const option of Array.from(compSel.options)) {
-          if (!option.value) { option.hidden = false; continue; }
-          option.hidden = !keep(option);
-          if (option.selected && option.hidden) option.hidden = false;
-          if (option.selected && !option.hidden) keepSelectedComp = true;
-        }
-        api.postMessage({ type: 'setRouteFilter', routeName: name || null });
-      }
+      // The route filter is applied server-side in one round trip: the extension persists it and
+      // re-renders with the selectors narrowed, picking the newest ride on that route when the
+      // current one is not on it.
       const routeSel = document.getElementById('routeSel');
       routeSel.addEventListener('change', () => {
-        applyRouteFilter(routeSel.value || '');
-        send();
+        api.postMessage({
+          type: 'setRouteFilter',
+          routeName: routeSel.value || null,
+          id: document.getElementById('actSel').value || null,
+          compId: document.getElementById('compSel').value || null,
+        });
       });
       document.getElementById('actSel').addEventListener('change', send);
       document.getElementById('compSel').addEventListener('change', send);
@@ -443,7 +429,7 @@ function renderRouteSections(sections, ui) {
   if (!Array.isArray(sections) || !sections.length) return '';
   const rows = sections.map((row) => `<tr><td>${escapeHtml(formatUi(ui.routeSectionKm, row.fromKm, row.toKm))}</td><td>${row.gradePct != null ? escapeHtml(formatUi(ui.routeSectionGrade, Number(row.gradePct).toFixed(1))) : '—'}</td><td>${row.speedKmh != null ? `${Number(row.speedKmh).toFixed(1)} km/h` : '—'}</td></tr>`).join('');
   return `<h3 style="margin:14px 0 6px 0;font-size:0.95rem;color:var(--muted);">${escapeHtml(ui.routeSections)}</h3>
-    <table class="cmpTable"><thead><tr><th>${escapeHtml(ui.routeSectionKm).replace('{0}', '').replace('{1}', '')}km</th><th>grade</th><th>typical</th></tr></thead><tbody>${rows}</tbody></table>`;
+    <table class="cmpTable"><thead><tr><th>${escapeHtml(ui.routeCheckpointColKm)}</th><th>${escapeHtml(ui.routeSectionGradeHeader)}</th><th>${escapeHtml(ui.routeSectionSpeedHeader)}</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 // A compact line chart of the final climb's time across prior same-direction rides (and this one).

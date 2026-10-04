@@ -1555,7 +1555,7 @@ test('power model coefficients are configurable and reach every estimation call 
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /function getPowerModelOptions\(\)/);
   const callSites = source.match(/addEstimatedPowerWhenMissing\([\s\S]*?\}\);/g) || [];
-  assert.equal(callSites.length, 4);
+  assert.equal(callSites.length, 5);
   for (const callSite of callSites) {
     assert.match(callSite, /\.\.\.(getPowerModelOptions\(\)|powerModelOptions)/);
   }
@@ -4422,9 +4422,18 @@ test('data-quality flags detect HR dropout, late start, contact loss, hot device
   assert.match(block, /Use each as the explanation where it changes a conclusion, once/);
   assert.equal(buildDataQualityFlagBlock([]), '');
 
-  const prompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], qualityFlags: [{ code: 'HR_DROPOUT', severity: 'warn', text: '110 s without HR' }] },
+  const flags = [{ code: 'HR_DROPOUT', severity: 'warn', text: '110 s without HR' }];
+  const prompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], qualityFlags: flags },
     { total_activities: 0, trainingContext: { ...buildTrainingContext([], '2026-08-25', 'cycling') } }, {}, null, [], [], 'en');
   assert.match(prompt, /- HR_DROPOUT: 110 s without HR/);
+  // The flags block appears exactly once even when the training-history context also carries the
+  // same flags (it used to be printed from both the body and the history block).
+  const withContextFlags = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], qualityFlags: flags },
+    { total_activities: 0, trainingContext: { ...buildTrainingContext([], '2026-08-25', 'cycling'), qualityFlags: flags } }, {}, null, [], [], 'en');
+  assert.equal(withContextFlags.split('**Data Quality Flags').length - 1, 1);
+  const chat = generateAnalysisChatPrompt({ sessions: [{ sport: 'cycling' }], records: [], qualityFlags: flags },
+    { trainingContext: { ...buildTrainingContext([], '2026-08-25', 'cycling'), qualityFlags: flags } }, {}, '', [], 'why?', 'en');
+  assert.equal(chat.split('**Data Quality Flags').length - 1, 1);
 });
 
 test('settling window lands in the workout fields with the recomputed settled part', () => {
@@ -4771,6 +4780,8 @@ test('sport profiles map FIT sports and format pace per profile (C6)', () => {
   assert.equal(normalizeSport('running'), 'running');
   assert.equal(normalizeSport('trail_running'), 'running');
   assert.equal(normalizeSport('hiking'), 'hiking');
+  assert.equal(normalizeSport('hiking', 'trail'), 'hiking'); // a trail sub-sport does not turn a hike into a run
+  assert.equal(normalizeSport('running', 'trail'), 'running');
   assert.equal(normalizeSport('mountaineering'), 'hiking');
   assert.equal(normalizeSport('walking'), 'walking');
   assert.equal(normalizeSport('swimming'), 'swimming');
@@ -4815,4 +4826,46 @@ test('running workout fields use pace and spm, and drop power and elevation for 
   assert.match(cycle, /Avg Cadence: 90 rpm/);
   assert.match(cycle, /Average Power: 200 W/);
   assert.doesNotMatch(cycle, /This is a (running|swimming|hiking)/);
+});
+
+test('OFFSET_CHANGED reaches the analysis data flags and the prompt body once', async () => {
+  const SQL = await initSqlJs({ locateFile: (file) => path.join(__dirname, '..', 'vendor', 'sql-wasm', file) });
+  const db = new SQL.Database();
+  const internals = loadExtensionInternalsForTest();
+  try {
+    ensureDatabaseSchema(db);
+    // Two neighbours at UTC+02:30, the current ride at UTC+02:00: the device timezone changed.
+    db.run(`INSERT INTO activities (id, file_path, start_time, sport, total_timer_s, total_distance_km, utc_offset_s) VALUES
+      (1, 'current.fit', '2026-07-19T10:00:00Z', 'cycling', 600, 10, 7200),
+      (2, 'a.fit', '2026-07-18T10:00:00Z', 'cycling', 600, 10, 9000),
+      (3, 'b.fit', '2026-07-17T10:00:00Z', 'cycling', 600, 10, 9000)`);
+    const analysisData = { segments: [], qualityFlags: [{ code: 'HR_DROPOUT', severity: 'warn', text: '110 s without HR' }] };
+    const context = internals.getTrainingContextFromDb(db, 1, analysisData);
+    assert.deepEqual(context.qualityFlags.map((flag) => flag.code), ['HR_DROPOUT', 'OFFSET_CHANGED']);
+    assert.deepEqual(analysisData.qualityFlags.map((flag) => flag.code), ['HR_DROPOUT', 'OFFSET_CHANGED'], 'the current ride carries the flag the prompt body prints');
+    const prompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], ...analysisData }, { total_activities: 0, trainingContext: context }, {}, null, [], [], 'en');
+    assert.match(prompt, /- OFFSET_CHANGED: device UTC offset \(UTC\+02:00\)/);
+    assert.equal(prompt.split('**Data Quality Flags').length - 1, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('prompt evaluator counts only real flag lines and accepts integrated wording (B1 check.js)', () => {
+  const { checkAnalysisResponse } = require('../prompt-eval');
+  const tail = '\n---\nSUMMARY\ntype: tempo\nfinding: f\nadvice_category: pacing\nadvice: a\nopen: none\nrevised: none';
+  // The principle text mentions "Device temperature" in every prompt; without a TEMP flag line it must not count.
+  const principleOnly = 'Device temperature, absent fields and partial coverage can change a conclusion.';
+  assert.equal(checkAnalysisResponse({ response: `Ровная поездка.${tail}`, prompt: principleOnly }).flagsMissed, 0);
+  // A real TEMP flag line unmentioned is a miss; mentioning the sun on the device counts.
+  const tempPrompt = `${principleOnly}\n**Data Quality Flags:**\n- TEMP_DEVICE_HOT: device temperature peaks at 40 C`;
+  assert.equal(checkAnalysisResponse({ response: `Ровная поездка.${tail}`, prompt: tempPrompt }).flagsMissed, 1);
+  assert.equal(checkAnalysisResponse({ response: `Датчик грелся на солнце.${tail}`, prompt: tempPrompt }).flagsMissed, 0);
+  // Integrated altitude wording ("early altitude unreliable") counts as using the ALT flag.
+  const altPrompt = '**Altitude Quality:**\n- ALT_SETTLING: start 80 m below';
+  assert.equal(checkAnalysisResponse({ response: `Ранний профиль высоты ненадёжен.${tail}`, prompt: altPrompt }).flagsMissed, 0);
+  // HR flags are recognised and matched on strap/contact wording.
+  const hrPrompt = '**Data Quality Flags:**\n- HR_CONTACT_LOSS: 5 sharp heart-rate jumps';
+  assert.equal(checkAnalysisResponse({ response: `Скачки связаны с потерей контакта ремня.${tail}`, prompt: hrPrompt }).flagsMissed, 0);
+  assert.equal(checkAnalysisResponse({ response: `Хорошая поездка.${tail}`, prompt: hrPrompt }).flagsMissed, 1);
 });

@@ -15,14 +15,15 @@ const PROFILES = Object.freeze({
   other: { speedUnit: 'kmh', cadenceUnit: 'rpm', usesPower: false, movingLabel: 'speed', terrain: true },
 });
 
-// FIT `sport` values (case-insensitive substrings) to a profile key. Order matters: more specific
-// first (mountaineering before walking). Sub-sport is only a hint; the sport string dominates.
+// FIT `sport` values (case-insensitive substrings) to a profile key. Order matters: hiking before
+// running so a hike with a "trail" sub-sport stays a hike, walking last because "hike" also
+// appears in its pattern. Sub-sport is only a hint; the sport string dominates.
 const SPORT_KEYWORDS = Object.freeze([
   ['cycling', /cycl|bik|mtb|mountain.?bike/i],
   ['swimming', /swim|pool|open.?water/i],
-  ['running', /run|jog|track|trail/i],
   ['hiking', /hik|mountaineer|trek|backpack/i],
-  ['walking', /walk|stroll|hike/i],
+  ['running', /run|jog|track|trail/i],
+  ['walking', /walk|stroll/i],
 ]);
 
 function normalizeSport(sport, subSport = '') {

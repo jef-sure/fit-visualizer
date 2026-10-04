@@ -376,7 +376,9 @@ function buildTrainingHistoryContext(context) {
       : matches ? `**Candidate Segment Comparisons:**\n${matches}\nMatching uses ordered terrain, duration and distance, not equal HR/power. Similar structure does not establish identical route, intent, weather or training stimulus; consider intensity separately.` : '**Candidate Segment Comparisons:** No eligible matches; training-volume context remains available.',
     context.routeContext ? buildRouteContextBlock(context.routeContext) : null,
     context.routeProfile ? buildRouteProfileBlock(context.routeProfile) : null,
-    buildAltitudeQualityBlock(context.altitudeQuality, context.qualityFlags),
+    // Altitude consensus only: the data-quality flags are printed once, in the workout body, so
+    // they are present even without history and never duplicated.
+    buildAltitudeQualityBlock(context.altitudeQuality, []),
     reports ? `**Dated User Context Across Activities:**\n${reports}\nMessage date and activity date are different. Reports may describe another effective period; do not apply later circumstances retrospectively without support.` : null,
   ], '\n\n');
 }
@@ -720,7 +722,6 @@ function buildWorkoutFields(session, records, altitudeSettlingWindow = null) {
     ? formatPositive(session.max_speed_kmh, 2)
     : describeSpeed(session.max_speed_kmh, profile);
   const speedUnitSuffix = profile.speedUnit === 'kmh' ? 'km/h' : null;
-  const cadenceLabel = profile.cadenceUnit === 'rpm' ? 'Avg Cadence' : 'Avg Cadence';
   const showElevation = profile.terrain;
   const text = formatFieldsSkippingEmpty([
     ['Sport', session.sport], ['Sub-sport', session.sub_sport],
@@ -732,7 +733,7 @@ function buildWorkoutFields(session, records, altitudeSettlingWindow = null) {
     ['Elapsed Time (incl. stops)', elapsedText ? `${elapsedText}${elapsedNote ? ` (${elapsedNote})` : ''}` : null],
     [`Avg ${speedLabel}`, avgSpeedText, speedUnitSuffix],
     [`Max ${speedLabel}`, maxSpeedText, speedUnitSuffix],
-    [cadenceLabel, formatPositive(session.avg_cadence, 0), profile.cadenceUnit],
+    ['Avg Cadence', formatPositive(session.avg_cadence, 0), profile.cadenceUnit],
     ['Calories', formatPositive(session.total_calories, 0), 'kcal'],
     ['Average Power', showPower && !wholeRidePowerIsEstimated ? formatPositive(session.avg_power, 0) : null, 'W'],
     ['Max Power', showPower && !wholeRidePowerIsEstimated ? formatPositive(session.max_power, 0) : null, 'W'],
@@ -1009,15 +1010,14 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
   const safeHistory = formatConversation(history);
   const segmentContext = buildSegmentContext(fitData.segments, { records: fitData.records, sport: session.sport }).text;
 
-  const routeContext = progressSummary?.trainingContext?.routeContext;
-  const routeProfile = progressSummary?.trainingContext?.routeProfile;
+  // Route context and profile arrive through buildTrainingHistoryContext; they are not repeated here.
   const hasRouteStretches = Boolean(fitData.segments?.some((segment) => segment.routeStretches?.length));
 
   const body = joinNonEmpty([
     `Workout facts for this activity:\n${workoutFields}`,
     buildSessionNotesBlock(fitData.sessionNotes),
     buildInferredNotesBlock(fitData.inferredNotes, fitData.sessionNotes),
-    buildAltitudeQualityBlock(progressSummary?.trainingContext?.altitudeQuality, fitData.qualityFlags),
+    buildDataQualityFlagBlock(fitData.qualityFlags),
     buildHeartRateProfileContext(heartRateConfig),
     buildZoneContext(fitData.records, heartRateConfig),
     buildPeakHeartRateContext(fitData.records, progressSummary?.trainingContext),
@@ -1026,8 +1026,6 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
     buildLapContext(fitData),
     buildTrainingHistoryContext(progressSummary?.trainingContext),
     buildRecentHistoryContext(progressSummary?.trainingContext?.recentHistory),
-    routeContext ? buildRouteContextBlock(routeContext) : null,
-    routeProfile ? buildRouteProfileBlock(routeProfile) : null,
     powerSource === 'estimated from motion data'
       ? '**Data Quality Note:** Whole-ride power is estimated from motion and is not supplied as a reliable training-load metric. Any vpower shown for climbs is only a rough terrain-specific estimate; do not treat it as measured power.'
       : null,
@@ -1126,7 +1124,7 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
     ...sportsEvidenceRules(),
   ].filter(Boolean).map((rule) => `- ${rule}`).join('\n');
 
-  return `Compare "This Workout" against "Another Compared Activity" segment by segment, focusing on differences in pacing, effort and terrain handling.${routeRelationLine ? ` When the two rides are on the same route, prefer the checkpoint table over raw speed for the route-level verdict.` : ' The two rides are not on the same route, so compare segment structure and intensity without a checkpoint table.'}
+  return `Compare "This Workout" against "Another Compared Activity" segment by segment, focusing on differences in pacing, effort and terrain handling.${checkpointTable ? ' The two rides are on the same route: prefer the checkpoint table over raw speed for the route-level verdict.' : routeRelationLine ? ' The two rides overlap only partly, so checkpoints are not compared; align segments by sequence and distance.' : ' The two rides are not on the same route, so compare segment structure and intensity without a checkpoint table.'}
 
 ${body}
 
