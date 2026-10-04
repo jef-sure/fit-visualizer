@@ -452,9 +452,9 @@ async function indexFitFolder(onlyNew) {
     dbPath,
     `Indexing ${fitUris.length} ${onlyNew ? 'new ' : ''}FIT file(s)...`
   );
-  // Indexing is the user's maintenance ritual: it also refreshes the derived-feature cache and
-  // routes, so no separate command is needed. Manual command removed; the background
-  // version-triggered rebuild still covers format changes after updates.
+  // Indexing is required whenever the stored schema changes anyway, so it refreshes the
+  // derived-feature cache and routes in the same run: one action covers both. The background
+  // version-triggered rebuild still covers format changes after extension updates.
   await rebuildDerivedFeatures({ silent: false, skipStaleCheck: true, reason: 'indexing' });
   vscode.window.showInformationMessage(vscode.l10n.t('FIT DB index complete: {0} indexed, {1} failed.', result.saved, result.failed));
 }
