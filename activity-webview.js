@@ -34,6 +34,66 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
   getHrZoneIndex: getHeartRateZoneIndex,
 });
 
+// A small, safe markdown renderer for the AI text (analysis, chat, comparisons). It escapes HTML
+// first, then applies only headings, bold, italic, inline code, unordered lists and paragraphs —
+// enough for what the model writes, and nothing that could interpret raw HTML. The same source is
+// injected into the page script via toString(), so the server and the browser render identically.
+const renderMarkdown = (text) => {
+  const src = String(text ?? '').replace(/\r\n?/g, '\n');
+  const lines = src.split('\n');
+  const blocks = [];
+  let para = [];
+  let list = [];
+
+  const inline = (s) => {
+    let out = escapeHtml(s);
+    out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
+    out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    out = out.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+    return out;
+  };
+  const flushPara = () => {
+    if (para.length) { blocks.push({ t: 'p', html: para.map(inline).join('<br>') }); para = []; }
+  };
+  const flushList = () => {
+    if (list.length) { blocks.push({ t: 'ul', html: list.map((item) => `<li>${inline(item)}</li>`).join('') }); list = []; }
+  };
+
+  for (const line of lines) {
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      flushPara(); flushList();
+      blocks.push({ t: 'h', level: heading[1].length, html: inline(heading[2]) });
+      continue;
+    }
+    const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (bullet) {
+      flushPara();
+      list.push(bullet[1]);
+      continue;
+    }
+    if (/^\s*([-*_]\s*){3,}$/.test(line)) {
+      flushPara(); flushList();
+      continue;
+    }
+    if (line.trim() === '') {
+      flushPara(); flushList();
+      continue;
+    }
+    flushList();
+    para.push(line);
+  }
+  flushPara(); flushList();
+
+  const headingSize = { 1: '1.25em', 2: '1.15em', 3: '1.05em', 4: '1em', 5: '0.95em', 6: '0.9em' };
+  return blocks.map((block) => {
+    if (block.t === 'p') return `<p style="margin:0 0 0.6em 0;">${block.html}</p>`;
+    if (block.t === 'ul') return `<ul style="margin:0 0 0.6em 0;padding-left:1.4em;">${block.html}</ul>`;
+    const level = Math.min(Math.max(block.level, 1), 6);
+    return `<h${level} style="margin:0.85em 0 0.35em 0;font-size:${headingSize[level]};font-weight:600;">${block.html}</h${level}>`;
+  }).join('');
+};
+
 function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null, qualityFlags = [], routeFilter = null, routeUi = null, modelPicker = null) {
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
   const ui = localizeUi(translate);
@@ -599,7 +659,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           <strong style="font-size:0.9rem;">${escapeHtml(entry.label)}</strong>
           <button class="removeComparisonBtn" data-compared-id="${entry.comparedActivityId}" style="padding:4px 10px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.8rem;">${escapeHtml(ui.removeComparison)}</button>
         </div>
-        <div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">${escapeHtml(entry.comparisonText)}</div>
+        <div style="color:var(--ink);font-size:1.08rem;line-height:1.6;word-break:break-word;">${renderMarkdown(entry.comparisonText)}</div>
       </div>`).join('');
 
   // The trigger targets whichever activity is picked in "Compare with" right now; the label
@@ -841,6 +901,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           .replaceAll("'", '&#39;');
       }
 
+      // Same markdown renderer the server uses for the initial comparison list.
+      const renderMarkdown = ${renderMarkdown.toString()};
+
       const analysisContent = document.getElementById('analysisContent');
       const analysisMetaEl = document.getElementById('analysisMeta');
       const analyzeBtn = document.getElementById('analyzeBtn');
@@ -881,7 +944,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         const note = analysisOutdated
           ? '<div style="margin:0 0 10px 0;padding:8px 10px;border-left:4px solid #ffc107;background:rgba(255,193,7,0.1);font-size:0.92rem;">' + escapeHtml(ui.olderAnalysis) + '</div>'
           : '';
-        analysisContent.innerHTML = note + '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(text) + '</div>';
+        analysisContent.innerHTML = note + '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;word-break:break-word;">' + renderMarkdown(text) + '</div>';
       }
 
       function showAnalysisMeta() {
@@ -913,7 +976,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           + '<strong style="font-size:0.9rem;">' + escapeHtml(entry.label) + '</strong>'
           + '<button class="removeComparisonBtn" data-compared-id="' + entry.comparedActivityId + '" style="padding:4px 10px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.8rem;">' + escapeHtml(ui.removeComparison) + '</button>'
           + '</div>'
-          + '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(entry.comparisonText) + '</div>'
+          + '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;word-break:break-word;">' + renderMarkdown(entry.comparisonText) + '</div>'
           + '</div>';
       }
 
@@ -942,7 +1005,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           const bg = entry.role === 'assistant' ? 'var(--vscode-editorWidget-background)' : 'var(--vscode-inputOption-activeBackground)';
           return '<div style="margin:0 0 8px 0;padding:8px;border:1px solid var(--border);border-radius:6px;background:' + bg + ';">'
             + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px;">' + role + '</div>'
-            + '<div style="white-space:pre-wrap;line-height:1.45;">' + escapeHtml(entry.content || '') + '</div>'
+            + '<div style="line-height:1.45;">' + renderMarkdown(entry.content || '') + '</div>'
             + '</div>';
         }).join('');
         analysisChatMessagesEl.scrollTop = analysisChatMessagesEl.scrollHeight;
@@ -2297,4 +2360,4 @@ function renderHeartRateZones(zoneData, ui) {
   </div>`;
 }
 
-module.exports = { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, buildTranslationPrompt };
+module.exports = { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, renderMarkdown, buildTranslationPrompt };

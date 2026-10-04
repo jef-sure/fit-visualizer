@@ -3631,7 +3631,9 @@ test('comparison UI wires Compare/Remove through a delegated click handler', () 
   assert.ok(source.indexOf('${comparisonBlock}') < source.indexOf('id="analysisChatMessages"'));
 
   // The comparison text must read as prominently as the main analysis text, not as a footnote.
-  const cardTextStyle = /font-size:1\.08rem;line-height:1\.6;white-space:pre-wrap;word-break:break-word;/g;
+  // Both are rendered as markdown now, so the three sites (analysis text, server-rendered card,
+  // client-rendered card) share the same container style without the old pre-wrap.
+  const cardTextStyle = /font-size:1\.08rem;line-height:1\.6;word-break:break-word;/g;
   assert.equal((source.match(cardTextStyle) || []).length, 3,
     'expected the same font-size on the analysis text, the server-rendered card, and the client-rendered card');
 });
@@ -5005,4 +5007,29 @@ test('form controls use a dedicated input border and a shared focus style', () =
   assert.match(html, /\.actSelector \{[\s\S]*?var\(--input-border\)/);
   assert.match(html, /input:not\(\[type=checkbox\]\):focus, input\[type=checkbox\]:focus, textarea:focus, select:focus/);
   assert.match(html, /input\[type=checkbox\] \{ accent-color: var\(--accent\); \}/);
+});
+
+test('the AI text renders markdown (headings, bold, lists) and still escapes HTML', () => {
+  const { renderMarkdown } = require('../activity-webview');
+  const body = '### 1) Характер\nЯ **подтверждаю класс темп**: 50% времени в зоне темпа.\n\n- отставание на 20 км: +1:13\n- HR 145 vs 150\n\n`peak20 = 144`';
+  const html = renderMarkdown(body);
+  assert.match(html, /<h3 style="[^"]*">1\) Характер<\/h3>/);
+  assert.match(html, /<strong>подтверждаю класс темп<\/strong>/);
+  assert.match(html, /<ul style="[^"]*"><li>отставание на 20 км: \+1:13<\/li><li>HR 145 vs 150<\/li><\/ul>/);
+  assert.match(html, /<code>peak20 = 144<\/code>/);
+  assert.match(html, /<p style="[^"]*">Я <strong>подтверждаю класс темп<\/strong>: 50% времени в зоне темпа\.<\/p>/);
+  // Raw HTML in the model text must not be interpreted.
+  const attack = renderMarkdown('<script>alert(1)</script> and **bold**');
+  assert.doesNotMatch(attack, /<script>/);
+  assert.match(attack, /&lt;script&gt;/);
+});
+
+test('the generated page script carries the same markdown renderer the server uses', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const html = renderActivityContentHtml({}, {}, { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] }, null, 'n', false, null, {},
+    { text: '### Title\n**bold**', version: 30, modelId: 'm' }, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm', null, [], null, null);
+  assert.match(html, /const renderMarkdown = \(text\) => \{/);
+  // The page uses it for the analysis text and chat, not the old escaped pre-wrap.
+  assert.match(html, /renderMarkdown\(text\)/);
+  assert.match(html, /renderMarkdown\(entry\.content \|\| ''\)/);
 });
