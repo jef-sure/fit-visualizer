@@ -3915,7 +3915,7 @@ test('analysis summary tail is parsed tolerantly and cut from the displayed text
   const { parseAnalysisSummary, describeAnalysisForHistory } = require('../analysis-summary');
   const clean = parseAnalysisSummary(`Main answer.\n\nSecond paragraph.\n\n---\nSUMMARY\ntype: threshold\nfinding: HR drift 142→157 on the 34-min flat\nadvice_category: pacing\nadvice: start the flat 1–2 km/h slower\nopen: none\nrevised: none`);
   assert.equal(clean.body, 'Main answer.\n\nSecond paragraph.');
-  assert.deepEqual(clean.summary, { type: 'threshold', finding: 'HR drift 142→157 on the 34-min flat', adviceCategory: 'pacing', advice: 'start the flat 1–2 km/h slower', open: null, revised: null, purpose: [], conditions: [] });
+  assert.deepEqual(clean.summary, { type: 'threshold', finding: 'HR drift 142→157 on the 34-min flat', adviceCategory: 'pacing', advice: 'start the flat 1–2 km/h slower', open: null, revised: null, trend: null, purpose: [], conditions: [] });
 
   // Markdown decoration, case, a category with extras and missing fields.
   const messy = parseAnalysisSummary('Answer.\n\n**SUMMARY**\n- **Type:** Tempo\n- **Advice category:** `Load` (or pacing)\n- **Advice:** add one easy day\n- **Revised:** earlier heat hypothesis');
@@ -4042,6 +4042,40 @@ function splitCheckpoints(firstKmh, secondKmh, totalKm = 20) {
   }
   return rows;
 }
+
+test('trend indicators compute verdicts at their thresholds and hide without comparable data', () => {
+  const { loadRhythm, postClimbRecovery, routeEfficiency, describeTrendVerdicts } = require('../trend-metrics');
+
+  // Indicator 1: a synthetic series of 6 rides. The base is the median of the last 5 priors.
+  const prior = (km, elapsedS, avgHr) => ({ km, elapsedS, avgHr });
+  const priors = [prior(19.5, 2700, 145), prior(19.5, 2760, 145), prior(19.5, 2730, 146), prior(19.5, 2700, 144), prior(19.5, 2715, 145)];
+  const usual = routeEfficiency(prior(19.5, 2715, 145), priors);
+  assert.ok(Math.abs(usual.deltaPct) < 3 && usual.verdict === 'usual');
+  const better = routeEfficiency(prior(19.5, 2600, 142), priors);
+  assert.ok(better.deltaPct <= -3 && ['better-once', 'tendency-better'].includes(better.verdict));
+  assert.equal(routeEfficiency(prior(19.5, 2700, 145), priors.slice(0, 3)), null, 'fewer than 5 priors -> hidden');
+
+  // Indicator 2 thresholds.
+  assert.equal(loadRhythm(300, 290, 1.5).verdict, 'steady');
+  assert.equal(loadRhythm(500, 290, 1.5).verdict, 'above-habit');
+  assert.equal(loadRhythm(520, 290, 2.5).verdict, 'spike-monotonous');
+  assert.equal(loadRhythm(200, 290, 1.5).verdict, 'below-habit');
+  assert.equal(loadRhythm(200, 290, 1.5, true).verdict, 'below-habit-weeks');
+  assert.equal(loadRhythm(300, 0, 1.5), null, 'no chronic load -> hidden');
+
+  // Indicator 3: drop vs median of 5.
+  const drops = [20, 22, 21, 23, 22];
+  assert.equal(postClimbRecovery(22, drops).verdict, 'usual');
+  assert.equal(postClimbRecovery(30, drops).verdict, 'faster');
+  assert.equal(postClimbRecovery(14, drops).verdict, 'slower');
+  assert.equal(postClimbRecovery(22, drops.slice(0, 4)), null, 'fewer than 5 priors -> hidden');
+
+  // Verdict phrases: one line per indicator, none mention health or fitness.
+  const t = (text, ...values) => values.reduce((out, v, i) => out.replace(`{${i}}`, String(v)), text);
+  const phrases = describeTrendVerdicts({ efficiency: usual, rhythm: loadRhythm(300, 290, 1.5), recovery: postClimbRecovery(22, drops) }, t);
+  assert.equal(phrases.length, 3);
+  assert.ok(phrases.every((line) => !/health|fitness/i.test(line)));
+});
 
 test('route-typical second-half pattern separates the route from the day', () => {
   const { summarizeRoutePattern } = require('../route-store');
@@ -4575,7 +4609,7 @@ test('a stale derived-feature version triggers one background rebuild with progr
   assert.match(source, /if \(\(silent \|\| background\) && !skipStaleCheck && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
   assert.match(source, /reason: 'auto'/);
   assert.match(source, /WHERE features_version != \$\{FEATURES_VERSION\}/);
-  assert.equal(require('../activity-features').FEATURES_VERSION, 6, 'the version bump is what makes existing caches stale');
+  assert.equal(require('../activity-features').FEATURES_VERSION, 7, 'the version bump is what makes existing caches stale');
 
   const { needsDerivedFeatureRebuild } = loadExtensionInternalsForTest();
   const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });

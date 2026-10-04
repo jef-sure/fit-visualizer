@@ -4,7 +4,7 @@
 
 **A FIT file viewer that doesn't stop at viewing.**
 
-> A thousand years from now, perhaps they will dig up a gum wrapper and the shards of coins… — (c) Mumiy Troll
+> Maybe a thousand years from now, they’ll dig up a gum wrapper and fragments of coins… — (c) Mumiy Troll
 
 Open a `.fit` file from your bike computer or sports watch right in VS Code and see the ride: speed, heart rate and elevation charts, the route on a map, and the ride split into climbs, descents, flats and stops. Every ride you open goes into a local history, so the next one can be compared with what came before — and if you use GitHub Copilot, you can talk it through in plain language.
 

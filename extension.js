@@ -33,6 +33,8 @@ const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, loc
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
+const { loadRhythm, postClimbRecovery, routeEfficiency } = require('./trend-metrics');
+const PRIOR_RIDES_FOR_TRENDS = 5;
 const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readAssignment, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { CONDITIONS, FEELINGS, PURPOSES, inferNotesPreFill, readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
@@ -112,7 +114,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 34;
+const ANALYSIS_VERSION = 35;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const ROUTE_FILTER_STATE_KEY = 'fitVisualizer.routeFilter';
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
@@ -318,6 +320,22 @@ function needsDerivedFeatureRebuild(db) {
   const stale = Number(db.exec(`SELECT COUNT(*) FROM activity_features WHERE features_version != ${FEATURES_VERSION}`)[0]?.values?.[0]?.[0] || 0);
   const fresh = Number(db.exec(`SELECT COUNT(*) FROM activity_features WHERE features_version = ${FEATURES_VERSION}`)[0]?.values?.[0]?.[0] || 0);
   return stale > 0 || fresh < activities;
+}
+
+// Part I, UI side: the three computed indicators for the route card, same numbers as the prompt.
+async function getTrendsForCard(dbPath, activityId) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  try {
+    const context = getTrainingContextFromDb(db, activityId);
+    const route = context?.routeContext;
+    if (!route && !context?.rhythm) return null;
+    return { ...route?.trends, rhythm: context?.rhythm ?? route?.trends?.rhythm ?? null };
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
 }
 
 async function getRouteCard(dbPath, activityId) {
@@ -1098,6 +1116,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
     const comparisons = selId ? await getActivityComparisonsForActivity(dbPath, selId) : [];
     const routeCard = selId ? await getRouteCard(dbPath, selId) : null;
+    const routeTrends = selId ? await getTrendsForCard(dbPath, selId) : null;
     // The Session Notes form pre-fills with what the model inferred for this ride; fields the
     // user has already declared are merged field by field in the webview.
     if (data) data.inferredNotes = inferNotesPreFill(data.inferredNotes);
@@ -1116,7 +1135,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     );
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard, chips.qualityFlags, context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null, modelPicker
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard ? { ...routeCard, trends: routeTrends } : null, chips.qualityFlags, context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null, modelPicker
     );
     translationJustGenerated = false;
     if (selId) {
@@ -3158,10 +3177,27 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   } : null;
   const qualityFlags = [...(currentData?.qualityFlags || []), ...(offsetFlag ? [offsetFlag] : [])];
   if (currentData) currentData.qualityFlags = qualityFlags;
+  // Part I, indicator 2: acute:chronic load rhythm, from the same volume rows the prompt prints.
+  if (context.volume?.length) {
+    const weekNow = context.volume[0]?.sports?.[0];
+    const weekPrev = context.volume[1]?.sports?.[0];
+    const monthAvg = context.volume[2]?.sports?.[0];
+    const acute = weekNow?.trimpActivities ? weekNow.trimpSum : null;
+    const chronic = monthAvg?.trimpActivities && monthAvg.activities
+      ? (monthAvg.trimpSum / (28 / 7)) : null;
+    const prevRatioLow = (() => {
+      if (!(weekPrev?.trimpActivities) || !(chronic > 0)) return false;
+      return weekPrev.trimpSum / chronic < 0.8;
+    })();
+    context.rhythm = (context.monotony?.monotony != null)
+      ? loadRhythm(acute, chronic, context.monotony.monotony, prevRatioLow) : null;
+  }
   context.qualityFlags = qualityFlags;
   context.routeContext = currentRouteInfo
     ? buildRouteContext({ routeInfo: currentRouteInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected, readRouteNote(db, currentRouteInfo.routeId))
     : null;
+  // The rhythm indicator is route-independent; it joins the trends block in the prompt.
+  if (context.routeContext) context.routeContext.trends = { ...context.routeContext.trends, rhythm: context.rhythm };
   const routeProfileForStretches = ['same', 'reversed'].includes(currentRouteInfo?.relation)
     ? buildRouteProfile(db, currentRouteInfo) : null;
   context.routeProfile = routeProfileForStretches;
@@ -3306,6 +3342,46 @@ function buildRouteContext(currentData, activities, selected, routeNote = null) 
     }
   }
   const pattern = summarizeRoutePattern(currentData.checkpoints || [], priorSameRoute);
+
+  // Part I: three computed trend indicators. Only where comparable data exists; nulls mean the
+  // indicator is not shown and never reaches the prompt.
+  // Marks sit at each ride's own segment boundaries, so exact km values differ ride to ride;
+  // place identity is approximated by km within 150 m (route length differences are tiny here).
+  // The indicator uses the current ride's LAST mark that at least PRIOR_RIDES priors reach.
+  const priorMarkCounts = new Map();
+  for (const activity of priorSameRoute) {
+    for (const cp of activity.checkpoints || []) {
+      const bucket = Math.round(cp.km * 2) / 2;
+      priorMarkCounts.set(bucket, (priorMarkCounts.get(bucket) || 0) + 1);
+    }
+  }
+  const nearMark = (km) => {
+    const bucket = Math.round(km * 2) / 2;
+    return priorMarkCounts.get(bucket) || 0;
+  };
+  const currentMarks = (currentData.checkpoints || []).filter((cp) => nearMark(cp.km) >= PRIOR_RIDES_FOR_TRENDS);
+  const lastMark = currentMarks.at(-1) || null;
+  const markKm = lastMark ? lastMark.km : null;
+  const pickPrior = (checkpoints) => (checkpoints || [])
+    .reduce((best, cp) => (Number.isFinite(cp.km) && Math.abs(cp.km - markKm) <= 0.2
+      && (!best || Math.abs(cp.km - markKm) < Math.abs(best.km - markKm)) ? cp : best), null);
+  const trends = {
+    efficiency: lastMark
+      ? routeEfficiency(lastMark,
+          priorSameRoute.map((activity) => pickPrior(activity.checkpoints)).filter(Boolean))
+      : null,
+    recovery: (() => {
+      const climbs = (currentData.segments || []).filter((segment) => segment.type === 'climb');
+      const finalClimb = climbs.at(-1);
+      if (!finalClimb || !(finalClimb.durationS >= 180) || finalClimb.postClimbHrDropBpm == null) return null;
+      const priorDrops = priorSameRoute
+        .map((activity) => (activity.segments || [])
+          .filter((segment) => segment.type === 'climb' && segment.durationS >= 180)
+          .map((segment) => segment.postClimbHrDropBpm))
+        .flat().filter((drop) => Number.isFinite(drop));
+      return postClimbRecovery(finalClimb.postClimbHrDropBpm, priorDrops, finalClimb.avgHr);
+    })(),
+  };
   const regular = pattern && pattern.slowerCount / pattern.priorCount >= 0.6;
   const patternLine = pattern
     ? `Route-typical pattern (${pattern.priorCount} earlier rides): after km ${pattern.splitKm} the average speed is at least 3% below the first part in ${pattern.slowerCount} of ${pattern.priorCount} rides (median ${pattern.medianChangePct >= 0 ? '+' : ''}${pattern.medianChangePct}%). This ride: ${pattern.currentChangePct >= 0 ? '+' : ''}${pattern.currentChangePct}% (a bigger drop than in ${pattern.currentDropsMoreThanCount} of ${pattern.priorCount} earlier rides).${regular ? ' A pattern this regular belongs to the route, not to the day: discuss only how this ride differs from it.' : ''}`
@@ -3316,6 +3392,7 @@ function buildRouteContext(currentData, activities, selected, routeNote = null) 
     relation: routeInfo.relation,
     patternLine,
     verdictLine,
+    trends,
     routeNote: routeNote ? String(routeNote).trim() : null,
     rideCount: routeInfo.rideCount,
     priorRideCount: priorSameRoute.length,

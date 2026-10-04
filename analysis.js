@@ -287,8 +287,29 @@ function formatConversation(history) {
     .slice(-24).map((entry) => `${entry.role === 'user' ? 'User report' : 'Assistant hypothesis'} (${entry.ts || 'message date unknown'}): ${String(entry.content).trim()}`).join('\n');
 }
 
+// Part I: the three computed trend indicators. Numbers and one-line verdicts are code output;
+// the model explains movement, it does not recompute or rename them.
+function buildTrendsBlock(trends) {
+  if (!trends || !(trends.efficiency || trends.rhythm || trends.recovery)) return '';
+  const rows = [];
+  if (trends.efficiency) {
+    const e = trends.efficiency;
+    rows.push(`Route efficiency at km ${e.km}: effort (time x HR) ${e.effort} vs median ${e.medianEffort} of ${e.samples} prior rides (${e.deltaPct > 0 ? '+' : ''}${e.deltaPct}%), ${e.verdict}. Lower is better.`);
+  }
+  if (trends.rhythm) {
+    const r = trends.rhythm;
+    rows.push(`Load rhythm: 7-day TRIMP / 28-day weekly average = ${r.ratio}, monotony ${r.monotony}, ${r.verdict}.`);
+  }
+  if (trends.recovery) {
+    const c = trends.recovery;
+    rows.push(`Post-climb HR recovery: −${c.drop} bpm in 60 s vs median −${c.medianDrop} of ${c.samples} prior rides (${c.delta > 0 ? '+' : ''}${c.delta} bpm), ${c.verdict}${c.climbPeakHr != null ? `; HR at the climb top ${c.climbPeakHr} bpm` : ''}. Faster drop is better.`);
+  }
+  if (!rows.length) return '';
+  return `**Trends on this route (computed):**\n${rows.join('\n')}\nTrends are computed facts about this route. Explain in one or two sentences what moved and the most likely reason from this ride's data (conditions, route stretch, notes), without re-deriving the numbers. Do not call any of them health or fitness.`;
+}
+
 function buildRouteContextBlock(routeContext) {
-  if (!routeContext || !(routeContext.checkpointLines?.length || routeContext.climbLine || routeContext.patternLine || routeContext.routeNote)) return '';
+  if (!routeContext || !(routeContext.checkpointLines?.length || routeContext.climbLine || routeContext.patternLine || routeContext.routeNote || routeContext.trends)) return '';
   const lines = (routeContext.checkpointLines || []).join('\n');
   return joinNonEmpty([
     `**Same-Route Context (GPS-confirmed):**\nRoute "${routeContext.routeName}" (${routeContext.relation}); ${routeContext.priorRideCount} earlier comparable rides (same direction).`,
@@ -297,6 +318,7 @@ function buildRouteContextBlock(routeContext) {
     routeContext.patternLine,
     routeContext.verdictLine,
     routeContext.climbLine,
+    buildTrendsBlock(routeContext.trends),
     routeContext.note,
   ], '\n');
 }
@@ -1233,6 +1255,7 @@ module.exports = {
   buildTrainingHistoryContext,
   buildAltitudeQualityBlock,
   buildRouteContextBlock,
+  buildTrendsBlock,
   buildRouteProfileBlock,
   formatFieldsSkippingEmpty,
   generateAnalysisPrompt,

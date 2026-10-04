@@ -477,6 +477,37 @@ function renderSessionNotesCard(notes, ui, mapId, inferred = null) {
     </section>`;
 }
 
+// Part I, UI: one row per computed trend - value, median of 5, an arrow, and the code verdict
+// phrase. No causes, no "health": those are the model's job, guided by the same numbers.
+function renderTrendCards(trends, ui) {
+  const arrow = (direction) => direction === 'up' ? '↑' : direction === 'down' ? '↓' : '→';
+  const cards = [];
+  if (trends.efficiency) {
+    const e = trends.efficiency;
+    const dir = Math.abs(e.deltaPct) < 3 ? 'flat' : e.deltaPct < 0 ? 'down' : 'up';
+    cards.push({ k: ui.trendEfficiencyLabel, v: `${e.deltaPct > 0 ? '+' : ''}${e.deltaPct}%`, arrow: dir === 'down' ? '↓' : dir === 'up' ? '↑' : '→',
+      phrase: dir === 'down' ? ui.trendEfficiencyBetter : dir === 'up' ? ui.trendEfficiencyWorse : ui.trendUsual,
+      hint: formatUi(ui.trendEfficiencyHint, e.km) });
+  }
+  if (trends.rhythm) {
+    const r = trends.rhythm;
+    const dir = r.verdict === 'steady' ? 'flat' : r.verdict === 'below-habit' || r.verdict === 'below-habit-weeks' ? 'down' : 'up';
+    cards.push({ k: ui.trendRhythmLabel, v: String(r.ratio), arrow: arrow(dir),
+      phrase: r.verdict === 'steady' ? ui.trendSteady : r.verdict === 'above-habit' ? ui.trendAboveHabit
+        : r.verdict === 'spike-monotonous' ? ui.trendSpikeMonotonous
+          : r.verdict === 'below-habit-weeks' ? ui.trendBelowHabitWeeks : ui.trendBelowHabit,
+      hint: ui.trendRhythmHint });
+  }
+  if (trends.recovery) {
+    const c = trends.recovery;
+    const dir = c.verdict === 'usual' ? 'flat' : c.verdict === 'faster' ? 'up' : 'down';
+    cards.push({ k: ui.trendRecoveryLabel, v: `−${c.drop} bpm`, arrow: arrow(dir),
+      phrase: c.verdict === 'usual' ? ui.trendUsual : c.verdict === 'faster' ? ui.trendHrFaster : ui.trendHrSlower,
+      hint: formatUi(ui.trendRecoveryHint, c.medianDrop) });
+  }
+  return `<div class="routeTrends">${cards.map((card) => `<div class="routeTrendCard"><div class="k">${escapeHtml(card.k)}</div><div class="v">${escapeHtml(card.arrow)} ${escapeHtml(card.v)}</div><div class="routeTrendPhrase">${escapeHtml(card.phrase)}</div><div class="routeTrendHint">${escapeHtml(card.hint)}</div></div>`).join('')}</div>`;
+}
+
 function renderRouteCard(route, ui, mapId) {
   const direction = route.relation === 'reversed' ? ui.routeDirectionReversed
     : route.relation === 'partial' ? ui.routeDirectionPartial : ui.routeDirectionSame;
@@ -507,6 +538,7 @@ function renderRouteCard(route, ui, mapId) {
       ${facts.length ? `<div class="routeFactsGrid">${facts.map((fact) => `<div class="metric"><div class="k">${escapeHtml(fact.k)}</div><div class="v">${escapeHtml(fact.v)}</div></div>`).join('')}</div>` : ''}
       ${climbLine}
       ${profilePendingLine}
+      ${(route.trends && (route.trends.efficiency || route.trends.rhythm || route.trends.recovery)) ? renderTrendCards(route.trends, ui) : ''}
       <form id="${mapId}RouteForm" class="manualDataForm">
         <label>
           <span>${escapeHtml(ui.routeNameLabel)}</span>
@@ -2130,6 +2162,12 @@ function sharedCss() {
     .routeDirectionBadge { border:1px solid var(--input-border); border-radius:999px; padding:2px 10px; font-size:0.8rem; color:var(--muted); background:var(--input-bg); }
     .routeFactsGrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; margin-bottom:10px; }
     .routePartial { color:var(--muted); font-size:0.85rem; margin:-4px 0 10px 0; }
+    .routeTrends { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; margin-bottom:10px; }
+    .routeTrendCard { background:color-mix(in srgb,var(--card) 70%,var(--bg)); border:1px solid var(--border); border-radius:10px; padding:8px 10px; }
+    .routeTrendCard .k { color:var(--muted); font-size:0.75rem; text-transform:uppercase; letter-spacing:0.06em; }
+    .routeTrendCard .v { font-size:1.15rem; font-weight:700; color:var(--accent); margin-top:2px; }
+    .routeTrendPhrase { font-size:0.85rem; color:var(--ink); margin-top:4px; }
+    .routeTrendHint { font-size:0.75rem; color:var(--muted); margin-top:2px; }
     .routeClimbs { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
     .routeClimbsLabel { color:var(--muted); font-size:0.85rem; }
     .routeClimbBadge { border:1px solid color-mix(in srgb,#d35400 45%,var(--border)); background:color-mix(in srgb,#d35400 14%,var(--card)); color:var(--ink); border-radius:6px; padding:2px 8px; font-size:0.85rem; white-space:nowrap; }

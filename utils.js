@@ -1172,6 +1172,23 @@ function summarizeSegmentRange(records, range, shared, options) {
       firstHalfHr: halfAverage('heart_rate', true), secondHalfHr: halfAverage('heart_rate', false),
       firstHalfPower: halfAverage('power', true), secondHalfPower: halfAverage('power', false),
     } : null,
+    // Numeric twin of the prompt string (analysis.js): bpm dropped in the 60 s after the climb,
+    // for the route-recovery trend; only a non-negative whole number, else null.
+    postClimbHrDropBpm: (() => {
+      if (type !== 'climb' || !(rangeDurationSeconds(records, startIndex, endIndex) >= 180)) return null;
+      const climbEndHr = asNumber(records[endIndex]?.heart_rate);
+      if (!(climbEndHr > 0)) return null;
+      const limit = asNumber(records[endIndex]?.elapsed_time) + 60;
+      let afterHr = null;
+      for (let index = endIndex + 1; index < records.length; index += 1) {
+        const record = records[index];
+        const elapsed = asNumber(record.elapsed_time);
+        if (Number.isFinite(elapsed) && elapsed > limit) break;
+        if (!(asNumber(record.speed) > 5) || !(asNumber(record.heart_rate) > 0)) return null;
+        afterHr = asNumber(record.heart_rate);
+      }
+      return Number.isFinite(afterHr) && afterHr > 0 && climbEndHr - afterHr >= 0 ? Math.round(climbEndHr - afterHr) : null;
+    })(),
     speedConfidence: confidenceSamples && highConfidence / confidenceSamples >= 0.8 ? 'high' : 'low',
     technical,
     routePoints: [0, 0.25, 0.5, 0.75, 1].map((fraction) => {
