@@ -1080,7 +1080,14 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
   };
 
   const activities = await loadActivityListFromDb(dbPath);
-  const selectedId = preselectId || (activities[0]?.id ? Number(activities[0].id) : null);
+  // The persisted route filter narrows the activity list; without an explicit preselect the
+  // initial ride must belong to that filter too, otherwise the page opens with the filter saying
+  // one route and the content (segments, route card) showing the newest ride overall.
+  const initialFilter = context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null;
+  const filterApplies = (activity) => !initialFilter || String(activity.route_name || '') === initialFilter;
+  const initialPool = activities.filter(filterApplies);
+  const selectedId = preselectId
+    || (initialPool[0]?.id ? Number(initialPool[0].id) : activities[0]?.id ? Number(activities[0].id) : null);
   let translationJustGenerated = false;
   async function render(selId, selCompId) {
     const data = selId ? await loadFitDataFromDb(dbPath, selId) : null;
