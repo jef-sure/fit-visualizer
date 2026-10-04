@@ -34,7 +34,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
   getHrZoneIndex: getHeartRateZoneIndex,
 });
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null, qualityFlags = [], routeFilter = null, routeUi = null) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null, qualityFlags = [], routeFilter = null, routeUi = null, modelPicker = null) {
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
   const ui = localizeUi(translate);
   const glossary = localizeGlossary(translate);
@@ -112,7 +112,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles, routeCard, qualityFlags, routeUi)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles, routeCard, qualityFlags, routeUi, modelPicker)
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -491,7 +491,7 @@ function renderRouteCard(route, ui, mapId, routeUi = null) {
     </section>`;
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm', routeCard = null, qualityFlags = [], routeUi = null) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm', routeCard = null, qualityFlags = [], routeUi = null, modelPicker = null) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -621,6 +621,18 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
   const routeCardHtml = routeCard && !isComparison ? renderRouteCard(routeCard, ui, mapId, routeUi) : '';
   const notesCardHtml = isComparison ? '' : renderSessionNotesCard(fitData.sessionNotes, ui, mapId, fitData.inferredNotes);
+
+  // The analysis-model picker: the current pin (or the default entry) first, then the models the
+  // vendor offers. Changing it re-analyzes the ride with that model so wording can be compared.
+  const modelPickerModels = Array.isArray(modelPicker?.models) ? modelPicker.models : [];
+  const modelPickerCurrent = modelPicker?.current || null;
+  const modelOptions = [
+    `<option value=""${modelPickerCurrent ? '' : ' selected'}>${escapeHtml(ui.analysisModelDefault)}</option>`,
+    ...modelPickerModels.map((model) => {
+      const sel = modelPickerCurrent === model.id ? ' selected' : '';
+      return `<option value="${escapeHtml(model.id)}"${sel}>${escapeHtml(model.name)}</option>`;
+    }),
+  ].join('');
 
   return `<main class="wrap">
     <section class="hero">
@@ -794,7 +806,13 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <p style="margin:0;">${escapeHtml(ui.loadingAnalysis)}</p>
       </div>
       <div id="analysisMeta" style="display:none;padding:0 12px 6px 12px;font-size:0.75rem;color:var(--muted);"></div>
-      <button id="analyzeBtn" style="margin-top:10px;padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.analyzeActivity)}</button>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <button id="analyzeBtn" style="margin-top:10px;padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.analyzeActivity)}</button>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:10px;color:var(--muted);font-size:0.85rem;">
+          <span>${escapeHtml(ui.analysisModelLabel)}</span>
+          <select id="modelSel" class="actSelector" style="width:auto;min-width:160px;">${modelOptions}</select>
+        </label>
+      </div>
       ${comparisonBlock}
       <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
         <h3 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--muted);">${escapeHtml(ui.followUpChat)}</h3>
@@ -965,6 +983,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           showAnalysisMeta();
           analyzeBtn.disabled = false;
           analyzeBtn.textContent = analyzeButtonLabel();
+          const modelSel = document.getElementById('modelSel');
+          if (modelSel) modelSel.disabled = false;
           setSegmentBudgetWarning(Array.isArray(msg.warnings) ? msg.warnings : []);
         } else if (msg.type === 'noAnalysis') {
           hasAnalysis = false;
@@ -976,6 +996,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           analysisContent.innerHTML = '<div style="color:#ff6b6b;">' + escapeHtml(formatMessage(ui.error, msg.error)) + '</div>';
           analyzeBtn.disabled = false;
           analyzeBtn.textContent = analyzeButtonLabel();
+          const modelSel = document.getElementById('modelSel');
+          if (modelSel) modelSel.disabled = false;
         } else if (msg.type === 'analysisChatState') {
           chatMessages = Array.isArray(msg.messages) ? msg.messages : [];
           renderChatMessages();
@@ -1208,6 +1230,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           analyzeBtn.disabled = true;
           analyzeBtn.textContent = ui.analyzing;
           vscode.postMessage({ type: 'analyzeActivity', id: window.currentActivityId, force: hasAnalysis });
+        });
+
+        const modelSel = document.getElementById('modelSel');
+        modelSel?.addEventListener('change', () => {
+          if (!window.currentActivityId || window.currentActivityId === 'null') return;
+          modelSel.disabled = true;
+          analyzeBtn.disabled = true;
+          analyzeBtn.textContent = ui.analyzing;
+          vscode.postMessage({ type: 'setAnalysisModel', id: window.currentActivityId, modelId: modelSel.value });
         });
       }
 

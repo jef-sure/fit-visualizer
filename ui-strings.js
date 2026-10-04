@@ -212,6 +212,8 @@ const UI_STRINGS = {
   you: 'You',
   olderAnalysis: 'Analyzed with an older version. Re-analyze for updated insights.',
   analyzedBy: 'Analyzed by {0} · format {1} · {2}',
+  analysisModelLabel: 'Model',
+  analysisModelDefault: 'Default (cheapest/first)',
   wheelPrompt: 'Type your current wheel circumference above to see a suggested value.',
   wheelCalibrationEvidence: 'Based on recent rides ({0} km of trusted GPS distance), the recorded distance differs by {1}%.',
   wheelSuggestion: 'Wheel circumference is probably closer to {0} mm than {1} mm. Click Save Zones to keep it.',

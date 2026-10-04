@@ -4931,3 +4931,21 @@ test('prompts carry the Voice block and the evaluator measures hedging, English 
   assert.equal(aggregate.informalAddressCount, 1);
   assert.ok(aggregate.meanEnglishTerms > 0);
 });
+
+test('analysis card has a model dropdown and re-analysis selects the model (B5 UI)', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const base = { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] };
+  const modelPicker = { models: [{ id: 'gpt-6-luna', name: 'gpt-6-luna' }, { id: 'claude-opus-5', name: 'claude-opus-5' }], current: 'gpt-6-luna' };
+  const html = renderActivityContentHtml({}, {}, { ...base }, null, 'n', false, null, {},
+    { text: 'Analysis body', version: 30, modelId: 'gpt-6-luna', analyzedAt: '2026-10-04T09:00:00.000Z' },
+    [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm', null, [], null, modelPicker);
+  assert.match(html, /id="modelSel"/);
+  assert.match(html, /<option value="gpt-6-luna" selected>gpt-6-luna<\/option>/);
+  assert.match(html, /<option value="claude-opus-5">claude-opus-5<\/option>/);
+  assert.match(html, /Default \(cheapest\/first\)/);
+  assert.match(html, /type: 'setAnalysisModel'/);
+  // Without a pin, the default entry is selected.
+  const noPin = renderActivityContentHtml({}, {}, { ...base }, null, 'n', false, null, {},
+    { text: 'x', version: 30 }, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm', null, [], null, { models: [{ id: 'gpt-6-luna', name: 'gpt-6-luna' }], current: null });
+  assert.match(noPin, /<option value="" selected>Default \(cheapest\/first\)<\/option>/);
+});

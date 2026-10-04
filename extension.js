@@ -459,6 +459,17 @@ async function updateModelPriceTable() {
 // Lets the athlete pick which model answers one-off analyses: the QuickPick lists the models the
 // current vendor actually offers, plus a "default/cheapest" entry that clears the pinned id. The
 // pin overrides the cheapest-model heuristic, so prompt experiments stay reproducible.
+// The models the current vendor actually offers, for the analysis-model picker on the page.
+async function listAvailableModels() {
+  const vendor = getLanguageModelVendor();
+  try {
+    const models = await vscode.lm.selectChatModels({ vendor });
+    return models.map((model) => ({ id: model.id, name: model.name || model.id }));
+  } catch {
+    return [];
+  }
+}
+
 async function selectAnalysisModel() {
   const vendor = getLanguageModelVendor();
   let models = [];
@@ -1028,6 +1039,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const segments = buildDisplaySegments(data, athleteProfile, hrConfig);
     const chips = buildDisplayChips(data, athleteProfile, hrConfig, segments, asNumber(wheelCalibration?.ratio) || null);
     if (data) data.sessionClass = chips.sessionClass;
+    const modelPicker = { models: await listAvailableModels(), current: getAnalysisModelId() || null };
     const bundledTranslations = await loadBundledTranslationBundle(
       context.extensionUri.fsPath, vscode.env.language
     );
@@ -1036,7 +1048,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     );
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard, chips.qualityFlags, context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null, routeUi
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard, chips.qualityFlags, context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null, routeUi, modelPicker
     );
     translationJustGenerated = false;
     if (selId) {
@@ -1056,7 +1068,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       return Number.isInteger(id) && id > 0 ? id : null;
     };
     const hasCompId = msg.compId != null && msg.compId !== '';
-    if (['selectActivity', 'analyzeActivity', 'analysisChatTurn', 'updateActivityHeartRate',
+    if (['selectActivity', 'analyzeActivity', 'setAnalysisModel', 'analysisChatTurn', 'updateActivityHeartRate',
       'updateHeartRateProfile', 'updateRoute', 'updateActivityNotes', 'autoCalculateHeartRateProfile', 'compareActivitiesAI', 'removeComparison']
       .includes(msg.type)) {
       if (!asActivityId(msg.id)) {
@@ -1143,6 +1155,21 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
         const requestedActivityId = Number(msg.id);
         const { text: analysis, warnings, modelId, analyzedAt } = await generateActivityAnalysis(dbPath, requestedActivityId, msg.force);
         panel.webview.postMessage({ type: 'analysisResult', id: requestedActivityId, analysis, warnings, modelId, analyzedAt });
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        panel.webview.postMessage({ type: 'analysisError', id: Number(msg.id), error: errorMsg });
+      }
+    } else if (msg.type === 'setAnalysisModel') {
+      // Pick the model from the page dropdown, persist it and re-analyze this activity with it,
+      // so the athlete can compare how different models phrase the same ride.
+      try {
+        const requestedActivityId = Number(msg.id);
+        const modelId = typeof msg.modelId === 'string' && msg.modelId.trim() ? msg.modelId.trim() : null;
+        await vscode.workspace.getConfiguration('fitVisualizer').update(
+          'analysisModelId', modelId, vscode.ConfigurationTarget.Global
+        );
+        const { text: analysis, warnings, modelId: usedModelId, analyzedAt } = await generateActivityAnalysis(dbPath, requestedActivityId, true);
+        panel.webview.postMessage({ type: 'analysisResult', id: requestedActivityId, analysis, warnings, modelId: usedModelId, analyzedAt, selectedModelId: modelId });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         panel.webview.postMessage({ type: 'analysisError', id: Number(msg.id), error: errorMsg });
