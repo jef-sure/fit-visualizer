@@ -7,6 +7,7 @@ const { describeStretches } = require('./route-features');
 const { buildDataQualityFlagBlock } = require('./data-quality');
 const { buildRouteSignature, matchRoutes } = require('./route-match');
 const { computeCheckpoints } = require('./route-store');
+const { describeSpeed, normalizeSport, profileFor, sportPromptAdditions } = require('./sport-profiles');
 const { SUMMARY_TAIL_INSTRUCTION, describeAnalysisForHistory } = require('./analysis-summary');
 const { buildInferredNotesBlock, buildSessionNotesBlock, describeNotesShort } = require('./activity-notes');
 
@@ -76,10 +77,14 @@ function postClimbHrDrop(segment, records) {
   return `post-climb HR drop 60 s: −${drop} bpm (descriptive)`;
 }
 
-function describeSegment(segment, records) {
+function describeSegment(segment, records, profile = null) {
   if (segment.type === 'stopped') {
     return joinNonEmpty(['stopped', segment.distanceKm != null ? `${segment.distanceKm} km` : null]);
   }
+  const cadenceUnit = profile?.cadenceUnit === 'spm' ? 'spm' : 'rpm';
+  const speedText = profile && profile.speedUnit !== 'kmh'
+    ? describeSpeed(segment.avgSpeedKmh, profile)
+    : segment.avgSpeedKmh != null ? `${segment.avgSpeedKmh} km/h` : null;
   // The basis is implied by which metric is quoted, so it is explained once per block instead of per line.
   return joinNonEmpty([
     segment.type,
@@ -89,10 +94,10 @@ function describeSegment(segment, records) {
     segmentEffortText(segment),
     segment.avgHr != null && segment.effortBasis !== 'hr' ? `avg HR ${segment.avgHr}` : null,
     segment.hrDriftPct != null ? `HR drift ${segment.hrDriftPct > 0 ? '+' : ''}${segment.hrDriftPct}%` : null,
-    segment.avgCadence != null && segment.durationS >= 600 ? `cadence ${segment.avgCadence} rpm` : null,
+    segment.avgCadence != null && segment.durationS >= 600 ? `cadence ${segment.avgCadence} ${cadenceUnit}` : null,
     segment.durationS >= 600 && segment.tempStart != null && segment.tempEnd != null
       ? `temp ${segment.tempStart}→${segment.tempEnd} °C` : null,
-    segment.avgSpeedKmh != null ? `${segment.avgSpeedKmh} km/h` : null,
+    speedText,
     segment.distanceKm != null ? `${segment.distanceKm} km` : null,
     segment.type === 'climb' && segment.elevGainM ? `+${segment.elevGainM} m` : null,
     segment.type === 'climb' && segment.elevGainM >= 25 && segment.durationS - (segment.pausedS || 0) >= 120
@@ -158,6 +163,7 @@ function buildSegmentContext(segments, options = {}) {
     return { text: '', lines: 0, maxLines: 0, exceeded: false, displayRows: [] };
   }
   const records = Array.isArray(options.records) ? options.records : null;
+  const profile = options.sport ? profileFor(options.sport) : null;
 
   const notableStopSeconds = Number(options.notableStopSeconds) || 300;
   const shortStops = list.filter((segment) => segment.type === 'stopped' && segment.durationS < notableStopSeconds);
@@ -169,7 +175,7 @@ function buildSegmentContext(segments, options = {}) {
     const first = members[0];
     const last = members[members.length - 1];
     const span = `${formatHms(first.startElapsed)}-${formatHms(last.endElapsed)}`;
-    const body = row.kind === 'repeat' ? describeRepeat(row) : describeSegment(first, records);
+    const body = row.kind === 'repeat' ? describeRepeat(row) : describeSegment(first, records, profile);
     return { time: `${span} (${formatClock(last.endElapsed - first.startElapsed)})`, details: body, members };
   });
 
@@ -654,10 +660,14 @@ function responseLanguageInstruction(locale, isChat = false) {
 
 function buildWorkoutFields(session, records, altitudeSettlingWindow = null) {
   const activityDateTime = formatActivityDateTime(session.start_time);
+  const profile = profileFor(session.sport, session.sub_sport);
   const powerSource = session.power_source === 'estimated'
     ? 'estimated from motion data'
     : session.power_source === 'measured' ? 'measured' : null;
+  // Power is a cycling-only training-load metric; for other sports it is hidden entirely rather
+  // than shown as an estimate.
   const wholeRidePowerIsEstimated = powerSource === 'estimated from motion data';
+  const showPower = profile.usesPower;
   // Local wall-clock time comes from the device-configured UTC offset; without it the UTC stamp stands.
   const localStart = Number.isFinite(Number(session.utc_offset_s))
     ? localClock(session.start_time, session.utc_offset_s)
@@ -702,6 +712,16 @@ function buildWorkoutFields(session, records, altitudeSettlingWindow = null) {
   const elevationNote = ascentDiverges
     ? `device reports ${deviceAscentM.toFixed(0)}/${deviceDescentM.toFixed(0)} m; sources disagree, treat ascent/descent and first-segment grade with caution`
     : null;
+  const speedLabel = profile.speedUnit === 'kmh' ? 'Speed' : 'Pace';
+  const avgSpeedText = profile.speedUnit === 'kmh'
+    ? formatPositive(session.avg_speed_kmh, 2)
+    : describeSpeed(session.avg_speed_kmh, profile);
+  const maxSpeedText = profile.speedUnit === 'kmh'
+    ? formatPositive(session.max_speed_kmh, 2)
+    : describeSpeed(session.max_speed_kmh, profile);
+  const speedUnitSuffix = profile.speedUnit === 'kmh' ? 'km/h' : null;
+  const cadenceLabel = profile.cadenceUnit === 'rpm' ? 'Avg Cadence' : 'Avg Cadence';
+  const showElevation = profile.terrain;
   const text = formatFieldsSkippingEmpty([
     ['Sport', session.sport], ['Sub-sport', session.sub_sport],
     ['Date', activityDateTime.date],
@@ -710,28 +730,28 @@ function buildWorkoutFields(session, records, altitudeSettlingWindow = null) {
     ['Distance', session.total_distance_km?.toFixed(2), 'km'],
     ['Duration (timer)', session.total_timer_s ? formatHms(Math.round(session.total_timer_s)) : null],
     ['Elapsed Time (incl. stops)', elapsedText ? `${elapsedText}${elapsedNote ? ` (${elapsedNote})` : ''}` : null],
-    ['Avg Speed', formatPositive(session.avg_speed_kmh, 2), 'km/h'],
-    ['Max Speed', formatPositive(session.max_speed_kmh, 2), 'km/h'],
-    ['Avg Cadence', formatPositive(session.avg_cadence, 0), 'rpm'],
+    [`Avg ${speedLabel}`, avgSpeedText, speedUnitSuffix],
+    [`Max ${speedLabel}`, maxSpeedText, speedUnitSuffix],
+    [cadenceLabel, formatPositive(session.avg_cadence, 0), profile.cadenceUnit],
     ['Calories', formatPositive(session.total_calories, 0), 'kcal'],
-    ['Average Power', wholeRidePowerIsEstimated ? null : formatPositive(session.avg_power, 0), 'W'],
-    ['Max Power', wholeRidePowerIsEstimated ? null : formatPositive(session.max_power, 0), 'W'],
-    ['Normalized Power', wholeRidePowerIsEstimated ? null : formatPositive(session.normalized_power, 0), 'W'],
-    ['FTP Used for Power Metrics', wholeRidePowerIsEstimated ? null : formatPositive(session.ftp, 0), 'W'],
-    ['Intensity Factor', wholeRidePowerIsEstimated ? null : formatPositive(session.intensity_factor, 2)],
-    ['TSS', wholeRidePowerIsEstimated ? null : formatPositive(session.training_stress_score, 1)],
-    ['xPower (GC)', wholeRidePowerIsEstimated ? null : formatPositive(session.xpower, 0), 'W'],
-    ['RI (GC)', wholeRidePowerIsEstimated ? null : formatPositive(session.relative_intensity_gc, 2)],
-    ['BikeStress (GC)', wholeRidePowerIsEstimated ? null : formatPositive(session.bike_stress_score, 1)],
-    ['Power:HR decoupling (EF)', wholeRidePowerIsEstimated ? null : formatFinite(session.decoupling_pct, 1)],
+    ['Average Power', showPower && !wholeRidePowerIsEstimated ? formatPositive(session.avg_power, 0) : null, 'W'],
+    ['Max Power', showPower && !wholeRidePowerIsEstimated ? formatPositive(session.max_power, 0) : null, 'W'],
+    ['Normalized Power', showPower && !wholeRidePowerIsEstimated ? formatPositive(session.normalized_power, 0) : null, 'W'],
+    ['FTP Used for Power Metrics', showPower && !wholeRidePowerIsEstimated ? formatPositive(session.ftp, 0) : null, 'W'],
+    ['Intensity Factor', showPower && !wholeRidePowerIsEstimated ? formatPositive(session.intensity_factor, 2) : null],
+    ['TSS', showPower && !wholeRidePowerIsEstimated ? formatPositive(session.training_stress_score, 1) : null],
+    ['xPower (GC)', showPower && !wholeRidePowerIsEstimated ? formatPositive(session.xpower, 0) : null, 'W'],
+    ['RI (GC)', showPower && !wholeRidePowerIsEstimated ? formatPositive(session.relative_intensity_gc, 2) : null],
+    ['BikeStress (GC)', showPower && !wholeRidePowerIsEstimated ? formatPositive(session.bike_stress_score, 1) : null],
+    ['Power:HR decoupling (EF)', showPower && !wholeRidePowerIsEstimated ? formatFinite(session.decoupling_pct, 1) : null],
     ['TRIMP', formatPositive(session.trimp, 1)],
     ['hrTSS', formatPositive(session.hr_tss, 1)],
     ['Estimated threshold HR used for hrTSS', formatPositive(session.lactate_threshold_hr, 0), 'bpm'],
     ['Avg Heart Rate', formatPositive(session.avg_hr, 0), 'bpm'],
     ['Max Heart Rate', formatPositive(session.max_hr, 0), 'bpm'],
-    ['Elevation Gain', ascentText ? `${ascentText} m${settlingNote ? ` (${settlingNote})` : ''}${elevationNote ? ` (${elevationNote})` : ''}` : null],
-    ['Elevation Loss', descentText ? `${descentText} m${settlingNote || elevationNote ? ' (same notes)' : ''}` : null],
-    ['Power source', powerSource],
+    ['Elevation Gain', showElevation && ascentText ? `${ascentText} m${settlingNote ? ` (${settlingNote})` : ''}${elevationNote ? ` (${elevationNote})` : ''}` : null],
+    ['Elevation Loss', showElevation && descentText ? `${descentText} m${settlingNote || elevationNote ? ' (same notes)' : ''}` : null],
+    ['Power source', showPower ? powerSource : null],
   ]);
   return { text, powerSource };
 }
@@ -861,7 +881,7 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
     : '';
   const zoneContext = buildZoneContext(fitData.records, heartRateConfig);
   const sessionClassContext = buildSessionClassContext(fitData.sessionClass, heartRateConfig);
-  const segmentContext = buildSegmentContext(fitData.segments, { records: fitData.records }).text;
+  const segmentContext = buildSegmentContext(fitData.segments, { records: fitData.records, sport: session.sport }).text;
   const historyContext = buildRecentHistoryContext(recentHistory);
   const hasSegments = Boolean(segmentContext);
   const hasRouteStretches = Boolean(fitData.segments?.some((segment) => segment.routeStretches?.length));
@@ -921,7 +941,8 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
       : null,
   ].filter(Boolean).map((note) => `- ${note}`).join('\n');
 
-  const instructions = `Analyze this ${session.sport || 'sports'} activity as a thoughtful sports coach in the context of the athlete's evolving practice. An activity may be recreational, have several goals, or have no stated goal. Use only the supplied workout and prior-history data; never use later activities. This is a fresh analysis of this activity, not an answer to an archived question.
+  const sportCue = sportPromptAdditions(normalizeSport(session.sport, session.sub_sport));
+  const instructions = `Analyze this ${session.sport || 'sports'} activity as a thoughtful sports coach in the context of the athlete's evolving practice. An activity may be recreational, have several goals, or have no stated goal. Use only the supplied workout and prior-history data; never use later activities. This is a fresh analysis of this activity, not an answer to an archived question.${sportCue ? ` ${sportCue}` : ''}
 
 **Principles:**
 ${ANALYSIS_PRINCIPLES.map((principle, index) => `${index + 1}. ${principle}`).join('\n')}
@@ -986,7 +1007,7 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
   const session = fitData.sessions?.[0] || {};
   const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records, fitData.altitudeSettlingWindow);
   const safeHistory = formatConversation(history);
-  const segmentContext = buildSegmentContext(fitData.segments, { records: fitData.records }).text;
+  const segmentContext = buildSegmentContext(fitData.segments, { records: fitData.records, sport: session.sport }).text;
 
   const routeContext = progressSummary?.trainingContext?.routeContext;
   const routeProfile = progressSummary?.trainingContext?.routeProfile;
@@ -1045,8 +1066,8 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
   const comparedSession = comparedFitData.sessions?.[0] || {};
   const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records);
   const { text: comparedWorkoutFields, powerSource: comparedPowerSource } = buildWorkoutFields(comparedSession, comparedFitData.records);
-  const segmentContext = buildSegmentContext(collapseShortStops(fitData.segments), { records: fitData.records }).text;
-  const comparedSegmentContext = buildSegmentContext(collapseShortStops(comparedFitData.segments), { records: comparedFitData.records }).text;
+  const segmentContext = buildSegmentContext(collapseShortStops(fitData.segments), { records: fitData.records, sport: session.sport }).text;
+  const comparedSegmentContext = buildSegmentContext(collapseShortStops(comparedFitData.segments), { records: comparedFitData.records, sport: comparedSession.sport }).text;
   const hasSegments = Boolean(segmentContext) || Boolean(comparedSegmentContext);
 
   // Route relation and (only on the same route) an aligned checkpoint table. A different route

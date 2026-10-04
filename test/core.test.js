@@ -4763,3 +4763,56 @@ test('activity_features stores checkpoints for the route UI', async () => {
     db.close();
   }
 });
+
+test('sport profiles map FIT sports and format pace per profile (C6)', () => {
+  const { normalizeSport, profileFor, describeSpeed, formatPace, sportPromptAdditions } = require('../sport-profiles');
+  assert.equal(normalizeSport('cycling'), 'cycling');
+  assert.equal(normalizeSport('mountain_biking'), 'cycling');
+  assert.equal(normalizeSport('running'), 'running');
+  assert.equal(normalizeSport('trail_running'), 'running');
+  assert.equal(normalizeSport('hiking'), 'hiking');
+  assert.equal(normalizeSport('mountaineering'), 'hiking');
+  assert.equal(normalizeSport('walking'), 'walking');
+  assert.equal(normalizeSport('swimming'), 'swimming');
+  assert.equal(normalizeSport('open_water_swimming'), 'swimming');
+  assert.equal(normalizeSport('yoga'), 'other');
+
+  assert.equal(profileFor('cycling').usesPower, true);
+  assert.equal(profileFor('running').usesPower, false);
+  assert.equal(profileFor('swimming').speedUnit, 'minPer100m');
+
+  // Pace conversions: 12 km/h = 5:00 /km; 3 km/h = 20:00 /km.
+  assert.equal(formatPace(12, 'minPerKm'), '5:00 /km');
+  assert.equal(formatPace(3, 'minPerKm'), '20:00 /km');
+  // 4 km/h swim = 1:30 /100 m.
+  assert.equal(formatPace(4, 'minPer100m'), '1:30 /100 m');
+  assert.equal(describeSpeed(12, profileFor('running')), '5:00 /km');
+  assert.equal(describeSpeed(12, profileFor('cycling')), '12.00 km/h');
+  assert.equal(describeSpeed(0, profileFor('running')), null);
+
+  assert.match(sportPromptAdditions('hiking'), /sustained ascent\/descent/);
+  assert.equal(sportPromptAdditions('cycling'), null);
+});
+
+test('running workout fields use pace and spm, and drop power and elevation for swimming (C6)', () => {
+  const { generateAnalysisPrompt } = require('../analysis');
+  const run = generateAnalysisPrompt({ sessions: [{ sport: 'running', total_distance_km: 10, total_timer_s: 3000, avg_speed_kmh: 12, max_speed_kmh: 14, avg_cadence: 85 }], records: [], segments: [] }, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.match(run, /Avg Pace: 5:00 \/km/);
+  assert.match(run, /Max Pace: 4:17 \/km/);
+  assert.match(run, /Avg Cadence: 85 spm/);
+  assert.match(run, /This is a running activity: describe pace in min\/km/);
+  assert.doesNotMatch(run, /Average Power/);
+
+  const swim = generateAnalysisPrompt({ sessions: [{ sport: 'swimming', total_distance_km: 1, total_timer_s: 1800, avg_speed_kmh: 2 }], records: [], segments: [] }, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.match(swim, /Avg Pace: 3:00 \/100 m/);
+  assert.match(swim, /This is a swimming activity/);
+  assert.doesNotMatch(swim, /Elevation Gain/);
+  assert.doesNotMatch(swim, /Power source/);
+
+  // Cycling keeps km/h and power; no sport cue.
+  const cycle = generateAnalysisPrompt({ sessions: [{ sport: 'cycling', total_distance_km: 20, avg_speed_kmh: 30, avg_cadence: 90, power_source: 'measured', avg_power: 200 }], records: [], segments: [] }, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.match(cycle, /Avg Speed: 30\.00 km\/h/);
+  assert.match(cycle, /Avg Cadence: 90 rpm/);
+  assert.match(cycle, /Average Power: 200 W/);
+  assert.doesNotMatch(cycle, /This is a (running|swimming|hiking)/);
+});

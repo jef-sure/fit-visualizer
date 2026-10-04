@@ -1034,14 +1034,8 @@ const EFFORT_SIGNAL_STRATEGIES = {
 };
 
 function normalizeSport(sport) {
-  const value = String(sport || '').toLowerCase();
-  if (value.includes('cycl') || value.includes('bik')) {
-    return 'cycling';
-  }
-  if (value.includes('run')) {
-    return 'running';
-  }
-  return 'other';
+  const { normalizeSport: normalize } = require('./sport-profiles');
+  return normalize(sport);
 }
 
 function selectEffortSignal(segment, context = {}) {
