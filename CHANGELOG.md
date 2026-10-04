@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.26.8 - 2026-10-04
+
+### Fixed
+
+- **Switching activities could silently stop updating the page** (route card and everything else), traced to a crash risk introduced in 0.26.7: the model-picker's default-label lookup called the async `selectPreferredModel` without `await`. A throw inside an async function becomes a rejected promise, not a synchronous exception, so the surrounding `try/catch` never caught it; the rejection went unhandled on a later tick, which Node's default behavior turns into a crash of the process the extension host runs in. This fired whenever a pinned model id (`analysisModelId` or the new `comparisonModelId`) was momentarily unavailable — plausible with a flaky BYOK endpoint mid-session.
+- The middle-tier model default (comparison and chat) was unreachable whenever any offered model had a known price, because that check ran before the tier check. It also matched `gpt-5-mini` as middle tier on the `gpt-5` substring; cheap and flagship markers are now excluded from the middle-tier match.
+
 ## 0.26.7 - 2026-10-04
 
 ### Changed

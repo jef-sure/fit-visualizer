@@ -477,21 +477,24 @@ async function getModelPickerData() {
   const models = Array.isArray(raw) ? raw : [];
   // The default (no explicit choice) still resolves within the configured vendor.
   const vendorModels = models.filter((model) => !model.vendor || model.vendor === vendor);
-  const resolveDefault = (options, fallbackLabel) => {
+  const resolveDefault = async (options, fallbackLabel) => {
     if (!vendorModels.length) return fallbackLabel;
     try {
-      const resolved = selectPreferredModel(vscode, vendor, vendorModels, { ...options });
+      const resolved = await selectPreferredModel(vscode, vendor, vendorModels, { ...options });
       return resolved?.name || resolved?.id || fallbackLabel;
     } catch {
+      // A pinned model id that is momentarily unavailable (a flaky BYOK endpoint) must not break
+      // the picker label, and above all must not become an unawaited rejection: Node's default
+      // unhandled-rejection behaviour would crash the extension host, which this render() runs in.
       return fallbackLabel;
     }
   };
-  const analysisDefault = resolveDefault({
+  const analysisDefault = await resolveDefault({
     modelId: getAnalysisModelId(),
     preferCheapModel: getPreferCheapAnalysisModel(),
     cheapModelMarkers: getCheapModelMarkers(),
   }, getPreferCheapAnalysisModel() ? vscode.l10n.t('cheapest model') : vscode.l10n.t('first listed model'));
-  const middleDefault = resolveDefault({
+  const middleDefault = await resolveDefault({
     preferCheapModel: true,
     tier: 'middle',
     modelId: getComparisonModelId(),

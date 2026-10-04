@@ -189,7 +189,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, awaitDerivedFeatureRebuild, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, awaitDerivedFeatureRebuild, getModelPickerData, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -4504,6 +4504,47 @@ test('asking to record notes is suppressed when recent analyses already suggeste
   assert.doesNotMatch(withNotes, /No session notes/);
   const tail = /open: <one question whose answer would change the advice[^>]*usually none>/.exec(require('../analysis-summary').SUMMARY_TAIL_INSTRUCTION);
   assert.ok(tail, 'the tail instruction encourages none');
+});
+
+test('the model picker never leaves an unhandled rejection when a pinned model is unavailable', async () => {
+  // selectPreferredModel is async: a throw inside it becomes a *rejected promise*, not a
+  // synchronous exception. Calling it without await, as a prior version of getModelPickerData
+  // did, meant its try/catch could never catch that rejection — Node's default handling of an
+  // unhandled rejection is to crash the process, which runs the whole extension host.
+  let rejections = 0;
+  const onRejection = () => { rejections += 1; };
+  process.on('unhandledRejection', onRejection);
+  try {
+    const { getModelPickerData } = loadExtensionInternalsForTest({
+      lm: { selectChatModels: async () => [{ id: 'available-model', name: 'Available', vendor: 'copilot' }] },
+      workspace: {
+        getConfiguration: () => ({
+          // A pinned id that is not in the list above makes selectPreferredModel reject.
+          get: (key) => (key === 'analysisModelId' ? 'missing-pinned-model' : undefined),
+        }),
+      },
+    });
+    const picker = await getModelPickerData();
+    assert.equal(picker.defaultName, 'cheapest model', 'falls back instead of propagating the rejection');
+    // The rejection, if any, would usually surface on a later tick.
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(rejections, 0, 'no unhandled rejection was produced');
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
+});
+
+test('the middle model tier is reachable even when models have a known price', async () => {
+  const { selectPreferredModel } = require('../analysis');
+  const vscode = { lm: { selectChatModels: async () => [] } };
+  // Both models have a known price in model-pricing.js, so the cheapest-first branch would
+  // previously run before the tier check and make 'middle' unreachable.
+  const models = [
+    { id: 'gpt-5-mini', name: 'GPT-5 mini' },
+    { id: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
+  ];
+  const chosen = await selectPreferredModel(vscode, 'copilot', models, { preferCheapModel: true, tier: 'middle' });
+  assert.equal(chosen.id, 'claude-sonnet-5', 'the sonnet-class model is preferred over the cheapest for the middle tier');
 });
 
 test('a stale derived-feature version triggers one background rebuild with progress, a fresh one does not', async () => {

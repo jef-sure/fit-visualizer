@@ -562,6 +562,27 @@ async function selectPreferredModel(vscode, vendor, models, options) {
     return models[0];
   }
 
+  // The middle tier is decided before the cheapest-first ranking below would otherwise win on
+  // any model with a known price (nearly always true), which made this branch unreachable.
+  if (options.tier === 'middle') {
+    // The default for comparison and chat: a middle-tier model, not the cheapest and not the
+    // flagship. Prefer names carrying a mid-tier marker; otherwise take the median of the
+    // price-ranked list.
+    const MIDDLE_MARKERS = ['sonnet', 'gemini', 'gpt-5', 'pro', 'plus'];
+    const cheapOrFlagshipMarkers = [...DEFAULT_CHEAP_MODEL_MARKERS, 'ultra', 'opus'];
+    const mid = models.find((model) => {
+      const name = `${model.id || ''} ${model.family || ''} ${model.name || ''}`.toLowerCase();
+      return MIDDLE_MARKERS.some((marker) => name.includes(marker))
+        && !cheapOrFlagshipMarkers.some((marker) => name.includes(marker));
+    });
+    if (mid) return mid;
+    const rankedAll = rankModelsByCost(models);
+    if (rankedAll.length >= 3) {
+      return rankedAll[Math.floor(rankedAll.length / 2)].model;
+    }
+    return models[Math.min(1, models.length - 1)] || models[0];
+  }
+
   const ranked = rankModelsByCost(models);
   if (ranked.length) {
     return ranked[0].model;
@@ -581,27 +602,10 @@ async function selectPreferredModel(vscode, vendor, models, options) {
     : DEFAULT_CHEAP_MODEL_MARKERS)
     .map((marker) => String(marker).trim().toLowerCase())
     .filter(Boolean);
-  const matchesMarker = (model) => {
+  const match = models.find((model) => {
     const name = `${model.id || ''} ${model.family || ''} ${model.name || ''}`.toLowerCase();
     return markers.some((marker) => name.includes(marker));
-  };
-  if (options.tier === 'middle') {
-    // The default for comparison and chat: a middle-tier model, not the cheapest and not the
-    // flagship. Prefer names carrying a mid-tier marker; otherwise drop the marker-matched
-    // cheapest/flagship ends from the price-ranked list and take the cheapest of what remains.
-    const MIDDLE_MARKERS = ['sonnet', 'gemini', 'gpt-5', 'pro', 'plus'];
-    const mid = models.find((model) => {
-      const name = `${model.id || ''} ${model.family || ''} ${model.name || ''}`.toLowerCase();
-      return MIDDLE_MARKERS.some((marker) => name.includes(marker)) && !name.includes('ultra');
-    });
-    if (mid) return mid;
-    const rankedAll = rankModelsByCost(models);
-    if (rankedAll.length >= 3) {
-      return rankedAll[Math.floor(rankedAll.length / 2)].model;
-    }
-    return models[Math.min(1, models.length - 1)] || models[0];
-  }
-  const match = models.find(matchesMarker);
+  });
   return match || models[0];
 }
 
