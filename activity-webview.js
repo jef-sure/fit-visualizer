@@ -225,9 +225,10 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
     .lineAComp { stroke: var(--vscode-charts-purple, #b88fce); }
     .lineBComp { stroke: var(--vscode-charts-green); }
     .lineCComp { stroke: var(--vscode-charts-yellow); }
-    .cmpTable { width:100%; border-collapse:collapse; font-size:0.9rem; }
-    .cmpTable th, .cmpTable td { padding:5px 10px; border-bottom:1px solid var(--border); }
+    .cmpTable { width:100%; border-collapse:collapse; font-size:0.9rem; table-layout:fixed; }
+    .cmpTable th, .cmpTable td { padding:5px 10px; border-bottom:1px solid var(--border); text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .cmpTable th { color:var(--muted); font-size:0.75rem; text-transform:uppercase; }
+    .cmpTable th:first-child, .cmpTable td:first-child { width:38%; }
     .cmpLabel { color:var(--muted); }
     .cmpA { font-weight:700; color:var(--accent); }
     .cmpB { font-weight:700; color: var(--vscode-charts-purple, #b88fce); }
@@ -2302,7 +2303,7 @@ function renderComparisonTable(a, b, aName, bName, glossary, ui) {
     [ui.elevationLossM, a.elevationLossM.toFixed(0), b.elevationLossM.toFixed(0), 'elevationLoss'],
   ].map(([label, va, vb, term]) => `<tr><td class="cmpLabel">${renderTerm(label, term, glossary)}</td><td class="cmpA">${escapeHtml(va)}</td><td class="cmpB">${escapeHtml(vb)}</td></tr>`).join('');
   return `<section class="chart"><h2>${escapeHtml(ui.comparison)}</h2><table class="cmpTable">
-    <thead><tr><th></th><th>${escapeHtml(aName || ui.activity)}</th><th>${escapeHtml(bName || ui.comparison)}</th></tr></thead>
+    <thead><tr><th></th><th title="${escapeHtml(aName || ui.activity)}">${escapeHtml(aName || ui.activity)}</th><th title="${escapeHtml(bName || ui.comparison)}">${escapeHtml(bName || ui.comparison)}</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></section>`;
 }
