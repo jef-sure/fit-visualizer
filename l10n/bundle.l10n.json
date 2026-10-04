@@ -262,13 +262,13 @@
   "As usual": "As usual",
   "More than usual": "More than usual",
   "Less than usual": "Less than usual",
-  "Less than usual, second week": "Less than usual, second week",
+  "Less than usual for a second week": "Less than usual for a second week",
   "Much more than usual": "Much more than usual",
   "Recovery after the climb": "Recovery after the climb",
   "Faster than usual": "Faster than usual",
   "Slower than usual": "Slower than usual",
   "As usual": "As usual",
-  "{0} · time × heart rate to km {1}, vs the median of 5 prior rides": "{0} · time × heart rate to km {1}, vs the median of 5 prior rides",
-  "{0}% of a usual week · TRIMP for 7 days vs the 28-day average": "{0}% of a usual week · TRIMP for 7 days vs the 28-day average",
-  "−{0} bpm in 60 s · median of 5 prior rides: −{1}": "−{0} bpm in 60 s · median of 5 prior rides: −{1}"
+  "{0} — time multiplied by heart rate to km {1}, against the median of your 5 previous rides on this route.": "{0} — time multiplied by heart rate to km {1}, against the median of your 5 previous rides on this route.",
+  "{0}% of a usual week — heart-rate load over the 7 days before this ride against the 28-day average.": "{0}% of a usual week — heart-rate load over the 7 days before this ride against the 28-day average.",
+  "The heart rate fell {0} bpm in the 60 s after the final climb; the median of your 5 previous rides is {1} bpm.": "The heart rate fell {0} bpm in the 60 s after the final climb; the median of your 5 previous rides is {1} bpm."
 }

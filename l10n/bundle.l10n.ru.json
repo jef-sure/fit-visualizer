@@ -262,13 +262,13 @@
   "As usual": "Как обычно",
   "More than usual": "Больше обычного",
   "Less than usual": "Меньше обычного",
-  "Less than usual, second week": "Меньше обычного вторую неделю подряд",
+  "Less than usual for a second week": "Ниже обычного вторую неделю подряд",
   "Much more than usual": "Резко больше обычного",
   "Recovery after the climb": "Восстановление после подъёма",
   "Faster than usual": "Быстрее обычного",
   "Slower than usual": "Медленнее обычного",
   "As usual": "Как обычно",
-  "{0} · time × heart rate to km {1}, vs the median of 5 prior rides": "{0} · время × пульс до км {1}, против медианы 5 прошлых заездов",
-  "{0}% of a usual week · TRIMP for 7 days vs the 28-day average": "{0}% от обычной недели · TRIMP за 7 дней против среднего за 28 дней",
-  "−{0} bpm in 60 s · median of 5 prior rides: −{1}": "−{0} уд/мин за 60 с · медиана 5 прошлых заездов: −{1}"
+  "{0} — time multiplied by heart rate to km {1}, against the median of your 5 previous rides on this route.": "{0} — время, умноженное на пульс, до км {1}, против медианы ваших 5 прошлых заездов по этому маршруту.",
+  "{0}% of a usual week — heart-rate load over the 7 days before this ride against the 28-day average.": "{0}% от обычной недели — нагрузка по пульсу за 7 дней перед этим заездом против среднего за 28 дней.",
+  "The heart rate fell {0} bpm in the 60 s after the final climb; the median of your 5 previous rides is {1} bpm.": "Пульс упал на {0} уд/мин за 60 с после последнего подъёма; медиана ваших 5 прошлых заездов — {1} уд/мин."
 }

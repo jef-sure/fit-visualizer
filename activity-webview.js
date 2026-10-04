@@ -2163,8 +2163,8 @@ function sharedCss() {
     .routeTrends { display:grid; gap:10px; margin:12px 0 14px; max-width:760px; }
     .routeTrendCard { background:color-mix(in srgb,var(--card) 70%,var(--bg)); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
     .routeTrendTitle { color:var(--muted); font-size:0.9rem; }
-    .routeTrendVerdict { font-size:1.15rem; font-weight:700; color:var(--ink); margin-top:3px; }
-    .routeTrendDetail { font-size:0.85rem; line-height:1.45; color:var(--muted); margin-top:5px; }
+    .routeTrendVerdict { font-size:1.15rem; font-weight:700; color:var(--accent); margin-top:3px; }
+    .routeTrendDetail { font-size:0.92rem; line-height:1.5; color:var(--ink); margin-top:6px; }
     .routeClimbs { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
     .routeClimbsLabel { color:var(--muted); font-size:0.85rem; }
     .routeClimbBadge { border:1px solid color-mix(in srgb,#d35400 45%,var(--border)); background:color-mix(in srgb,#d35400 14%,var(--card)); color:var(--ink); border-radius:6px; padding:2px 8px; font-size:0.85rem; white-space:nowrap; }
