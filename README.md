@@ -99,7 +99,7 @@ It works for cycling and running; most of the examples come from cycling because
 - Show matching low-opacity terrain segment bands behind all distance charts, controlled by one shared toggle
 - Hover terrain-colored map sections or chart bands for the available segment details, including duration, distance, grade, speed, heart rate, effort, elevation, and technical status
 - Review a compact table of detected segments and, when the FIT device recorded them, its laps
-- Automatic ride segmentation — splits a ride into climbs, descents, flats, and stops, and estimates effort with a physics-based power model on climbs or heart rate elsewhere, honestly labeling which one applies to each segment
+- Automatic ride segmentation — splits a ride into stretches of steady effort (named climb, descent or flat) and stops, and estimates effort with a physics-based power model on climbs or heart rate elsewhere, honestly labeling which one applies to each segment
 - Wheel-circumference calibration hint — compares your wheel sensor's distance against GPS on trustworthy straight stretches and suggests a correction when there's enough evidence, silent otherwise
 - Save dated heart-rate zone profiles
 - Generate AI analysis of the current ride in the context of comparable past rides, recent training load, and personal records
@@ -154,11 +154,11 @@ Right-click a `.fit` file in the Explorer for two shortcuts to the commands abov
 
 ## Effort Segmentation
 
-Each ride is split into segments by terrain (climb, descent, flat) and by effort within each terrain type, plus stops. Segments show duration, distance, average grade, and an effort estimate:
+Each ride is split into segments where the effort changes, plus stops. A segment is a stretch of roughly steady effort of at least two minutes: a new one starts when heart rate (about 5 bpm) or power (about 30 W, measured or estimated) settles at a different level and stays there. Terrain only names a segment (climb, descent, flat); one segment can hold a gentle rise and a gentle fall if the effort was the same. A typical ride gets around 15–20 segments per hour. Heart rate is read 20 s back, since it trails the effort that caused it. Rides without heart rate are split on power alone, and rides with neither fall back to splitting by grade. Segments show duration, distance, average grade, and an effort estimate:
 
 - **Measured power**, when present, remains the preferred effort signal.
 - **Climbs** may use virtual power when spatial grade coverage and the model's contribution checks support conditional relative comparison. Otherwise heart rate is preferred; without HR, a climb estimate may be shown for rough description only.
-- **Flats and descents** use heart rate when available. Rough motion power does not split these sections into effort intervals when HR is missing.
+- **Flats and descents** use heart rate when available.
 - Segments where speed data itself is unreliable (technical descents, poor GPS reception) are marked as such, with no effort number attached rather than a misleading one.
 
 The virtual power model accounts for gravity, rolling resistance, aerodynamic drag, and acceleration. Frontal area and rolling resistance are configurable; wind is not modelled. Grade is estimated by a robust local height-versus-distance fit using windows from 30 to 120 m, rather than differences between neighbouring heights. Stops, missing altitude, recording gaps and distance resets break the fit. Real slopes above 18% are no longer rejected solely for their steepness.
@@ -291,14 +291,13 @@ Most settings can be left at their defaults. Segmentation thresholds are mainly 
 | `fitVisualizer.analysisModelId`                  | ``      | Pins one-off analyses to one model id, overriding the cheapest-model selection; useful for reproducible prompts.   |
 | `fitVisualizer.powerModel.dragArea`              | `0.32`  | Effective frontal area CdA (m²) for estimated power: ~0.25 tucked on a TT bike, ~0.32 on the hoods, 0.40+ upright. |
 | `fitVisualizer.powerModel.rollingResistance`     | `0.004` | Rolling resistance Crr for estimated power; raise it for wider or knobbly tyres.                                   |
-| `fitVisualizer.segmentation.gradeThresholdPct`   | `2.5`   | Grade (%) separating climbs/descents from flat terrain.                                                            |
-| `fitVisualizer.segmentation.gradeHysteresisPct`  | `0.5`   | Extra margin required to switch terrain type, to stop flapping right at the threshold.                             |
-| `fitVisualizer.segmentation.minSegmentSeconds`   | `45`    | Shorter segments get merged into a neighbor.                                                                       |
+| `fitVisualizer.segmentation.gradeThresholdPct`   | `2.5`   | Grade (%) from which a segment is called a climb or a descent rather than flat.                                    |
+| `fitVisualizer.segmentation.gradeHysteresisPct`  | `0.5`   | Margin for switching terrain type; used only for rides with neither heart rate nor power.                          |
+| `fitVisualizer.segmentation.minSegmentSeconds`   | `45`    | A shorter stretch of movement between two stops is treated as part of the stop.                                    |
 | `fitVisualizer.segmentation.technicalGradePct`   | `-8`    | Descent grade below which an erratic speed trace marks the segment as technical (no effort estimate).              |
-| `fitVisualizer.segmentation.effortWindowSeconds` | `10`    | Averaging window before splitting a segment into intervals.                                                        |
-| `fitVisualizer.segmentation.minEffortMacroSeconds` | `600` | Minimum terrain-segment duration before splitting it into effort intervals.                                        |
-| `fitVisualizer.segmentation.effortMergeTolerancePct` | `12` | Maximum adjacent effort difference to merge into one continuous terrain segment.                                   |
-| `fitVisualizer.segmentation.effortCostThreshold` | —       | Merge-cost limit for interval detection; left empty, it's derived from the ride's own noise level.                 |
+| `fitVisualizer.segmentation.effortMinSegmentSeconds` | `120` | Shortest stretch of steady effort that becomes a segment of its own. |
+| `fitVisualizer.segmentation.effortHrStepBpm` | `5` | Heart-rate difference that counts as a different level of effort. Lower gives more segments. |
+| `fitVisualizer.segmentation.effortPowerStepWatts` | `30` | Power difference (measured or estimated) that counts as a different level of effort. Lower gives more segments. |
 | `fitVisualizer.segmentation.stopSpeedKmh`        | `1`     | Speed at/below which a record counts as stopped.                                                                   |
 | `fitVisualizer.segmentation.stopMinSeconds`      | `10`    | Minimum duration to count as a stop or auto-paused gap.                                                            |
 | `fitVisualizer.segmentation.gpsTrustMinKm`       | `1`     | Minimum continuous, straight distance before a GPS window can confirm — or calibrate against — the recorded speed. |

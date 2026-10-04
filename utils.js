@@ -1,3 +1,5 @@
+const { splitMovingRun, usableChannels } = require('./effort-segmentation');
+
 function safeJson(value) {
   return JSON.stringify(value).replace(/</g, '\\u003c');
 }
@@ -1191,7 +1193,6 @@ function buildActivitySegments(records, context = {}) {
   const stops = detectStops(records, options);
   const gradeSamples = computeGrade(records);
   const grades = gradeSeriesPct(records, optionNumber(options, 'gradeSmoothWindow', 15), gradeSamples);
-  const macros = segmentByGrade(records, { ...options, grades, stops });
   const shared = {
     grades,
     gradeSamples,
@@ -1201,32 +1202,80 @@ function buildActivitySegments(records, context = {}) {
       return Number.isFinite(altitude) ? altitude * 1000 : Number.NaN;
     }), 5),
   };
-  const windowSeconds = optionNumber(options, 'effortWindowSeconds', 10);
-  const minSegmentSeconds = optionNumber(options, 'minSegmentSeconds', 45);
   const athlete = context.athlete || {};
 
-  const segments = [];
-  for (const macro of macros) {
-    const macroSummary = summarizeSegmentRange(records, macro, shared, options);
-    const effort = selectEffortSignal(macroSummary, context);
+  const ranges = segmentByEffort(records, { ...options, grades, stops, altitudesM: shared.altitudesM })
+    || segmentByGrade(records, { ...options, grades, stops });
 
-    const ranges = effort.basis === 'none'
-      ? [macro]
-      : splitByEffort(records, macro, effort.basis, windowSeconds, minSegmentSeconds, options);
-
-    for (const range of ranges) {
-      const summary = ranges.length === 1 ? macroSummary : summarizeSegmentRange(records, range, shared, options);
-      const rangeEffort = selectEffortSignal(summary, context);
-      segments.push({
-        ...summary,
-        effortBasis: rangeEffort.basis,
-        effortReason: rangeEffort.reason,
-        hrDriftPct: segmentHrDrift(records, range, summary, rangeEffort.basis, athlete, options),
-      });
-    }
-  }
+  const segments = ranges.map((range) => {
+    const summary = summarizeSegmentRange(records, range, shared, options);
+    const effort = selectEffortSignal(summary, context);
+    return {
+      ...summary,
+      effortBasis: effort.basis,
+      effortReason: effort.reason,
+      hrDriftPct: segmentHrDrift(records, range, summary, effort.basis, athlete, options),
+    };
+  });
 
   return segments.map((segment, index) => ({ ...segment, index }));
+}
+
+// Segments follow how the effort felt, not the terrain: change points of heart rate and power,
+// each piece at least two minutes. The terrain only names a piece (climb, descent, flat). Returns
+// null when the ride has neither heart rate nor power to split on; the caller then uses the grade.
+function segmentByEffort(records, options = {}) {
+  const stopped = new Array(records.length).fill(false);
+  for (const stop of Array.isArray(options.stops) ? options.stops : []) {
+    for (let index = stop.startIndex; index <= stop.endIndex && index < records.length; index += 1) {
+      stopped[index] = true;
+    }
+  }
+  const channels = usableChannels(records, (index) => !stopped[index]);
+  if (!channels.hr && !channels.power) {
+    return null;
+  }
+
+  const runs = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const type = stopped[index] ? 'stopped' : 'flat';
+    const last = runs[runs.length - 1];
+    if (last && last.type === type) last.endIndex = index;
+    else runs.push({ startIndex: index, endIndex: index, type });
+  }
+  // A brief moving stretch between stops is stop-and-go traffic, not a segment of its own.
+  const merged = mergeShortRuns(runs, records, optionNumber(options, 'minSegmentSeconds', 45));
+
+  const thresholdPct = optionNumber(options, 'gradeThresholdPct', 2.5);
+  const altitudes = Array.isArray(options.altitudesM) ? options.altitudesM : [];
+  const grades = Array.isArray(options.grades) ? options.grades : [];
+  const terrainOf = (startIndex, endIndex) => {
+    const runM = (asNumber(records[endIndex]?.distance) - asNumber(records[startIndex]?.distance)) * 1000;
+    const rise = asNumber(altitudes[endIndex]) - asNumber(altitudes[startIndex]);
+    let gradePct = runM > 50 && Number.isFinite(rise) ? (100 * rise) / runM : Number.NaN;
+    if (!Number.isFinite(gradePct)) {
+      const finite = grades.slice(startIndex, endIndex + 1).map(asNumber).filter(Number.isFinite);
+      gradePct = finite.length ? average(finite) : 0;
+    }
+    return gradePct >= thresholdPct ? 'climb' : gradePct <= -thresholdPct ? 'descent' : 'flat';
+  };
+
+  const config = {
+    hrStepBpm: asNumber(options.effortHrStepBpm),
+    powerStepWatts: asNumber(options.effortPowerStepWatts),
+    minSeconds: asNumber(options.effortMinSegmentSeconds),
+  };
+  const result = [];
+  for (const run of merged) {
+    if (run.type === 'stopped') {
+      result.push({ startIndex: run.startIndex, endIndex: run.endIndex, type: 'stopped' });
+      continue;
+    }
+    for (const [startIndex, endIndex] of splitMovingRun(records, run.startIndex, run.endIndex, channels, config)) {
+      result.push({ startIndex, endIndex, type: terrainOf(startIndex, endIndex) });
+    }
+  }
+  return result;
 }
 
 // Pw:HR drift needs a trusted power signal and enough time for a half-vs-half split to mean anything.
@@ -1242,73 +1291,6 @@ function segmentHrDrift(records, range, summary, basis, athlete, options) {
     maxHeartRate: athlete.maxHeartRate,
   });
   return Number.isFinite(drift) ? roundTo(drift, 1) : null;
-}
-
-function splitByEffort(records, macro, basis, windowSeconds, minSegmentSeconds, options) {  const valueOf = basis === 'hr'
-    ? (record) => asNumber(record?.heart_rate)
-    : (record) => asNumber(record?.power);
-
-  // A short climb or descent cannot carry enough stable windows to distinguish effort changes from vPower/HR noise.
-  if (rangeDurationSeconds(records, macro.startIndex, macro.endIndex) < optionNumber(options, 'minEffortMacroSeconds', 600)) {
-    return [macro];
-  }
-
-  const windows = [];
-  for (let index = macro.startIndex; index <= macro.endIndex; index += 1) {
-    const elapsed = asNumber(records[index]?.elapsed_time);
-    const last = windows[windows.length - 1];
-    if (!last || (Number.isFinite(elapsed) && Number.isFinite(last.startElapsed)
-      && elapsed - last.startElapsed >= windowSeconds)) {
-      windows.push({ startIndex: index, endIndex: index, startElapsed: elapsed, values: [] });
-    } else {
-      windows[windows.length - 1].endIndex = index;
-    }
-    const value = valueOf(records[index]);
-    if (Number.isFinite(value)) {
-      windows[windows.length - 1].values.push(value);
-    }
-  }
-
-  if (windows.length < 2) {
-    return [macro];
-  }
-
-  const parts = bottomUpSegment(
-    windows.map((window) => (window.values.length ? average(window.values) : Number.NaN)),
-    options
-  ).map((part) => ({
-    startIndex: windows[part.start].startIndex,
-    endIndex: windows[part.end].endIndex,
-    type: macro.type,
-    effortValues: windows.slice(part.start, part.end + 1).flatMap((window) => window.values),
-  }));
-
-  const effortMergeTolerance = optionNumber(options, 'effortMergeTolerancePct', 12) / 100;
-  const merged = [];
-  for (const part of parts) {
-    const last = merged[merged.length - 1];
-    const effort = part.effortValues.length ? average(part.effortValues) : Number.NaN;
-    const previousEffort = last?.effortValues?.length ? average(last.effortValues) : Number.NaN;
-    if (last && Number.isFinite(effort) && Number.isFinite(previousEffort)
-      && Math.abs(effort - previousEffort) <= Math.max(effort, previousEffort) * effortMergeTolerance) {
-      last.endIndex = part.endIndex;
-      last.effortValues.push(...part.effortValues);
-      continue;
-    }
-    if (last && rangeDurationSeconds(records, last.startIndex, last.endIndex) < minSegmentSeconds) {
-      last.endIndex = part.endIndex;
-      last.effortValues.push(...part.effortValues);
-      continue;
-    }
-    merged.push({ ...part });
-  }
-  if (merged.length > 1
-    && rangeDurationSeconds(records, merged[merged.length - 1].startIndex, merged[merged.length - 1].endIndex) < minSegmentSeconds) {
-    merged[merged.length - 2].endIndex = merged[merged.length - 1].endIndex;
-    merged.pop();
-  }
-
-  return merged.map(({ effortValues, ...part }) => part);
 }
 
 function segmentEffortValue(segment) {
@@ -1341,7 +1323,7 @@ function segmentsAreSimilar(left, right, options = {}) {
   return Math.abs(leftEffort - rightEffort) <= Math.max(leftEffort, rightEffort) * effortTolerance;
 }
 
-// Collapses runs of near-identical segments, including alternating work/rest intervals (period 2).
+// Collapses alternating work/rest intervals (a pair of segments repeated at least three times).
 function groupSimilarSegments(segments, options = {}) {
   const list = Array.isArray(segments) ? segments : [];
   const rows = [];
@@ -1364,9 +1346,11 @@ function groupSimilarSegments(segments, options = {}) {
 
   while (index < list.length) {
     let best = null;
-    for (const period of [1, 2]) {
+    // Effort segmentation never leaves two neighbours of the same kind and level, so only
+    // alternating patterns (work/rest) can repeat; a single kind in a row is not collapsed.
+    for (const period of [2]) {
       const repeats = cycleRepeats(index, period);
-      const minRepeats = period === 1 ? 3 : 2;
+      const minRepeats = 3;
       if (repeats >= minRepeats && (!best || repeats * period > best.repeats * best.period)) {
         best = { period, repeats };
       }
@@ -1392,9 +1376,9 @@ function groupSimilarSegments(segments, options = {}) {
 // Not a cap to truncate at: exceeding it means the segmentation thresholds themselves misfired.
 function segmentLineBudget(durationSeconds, options = {}) {
   const hours = Math.max(0, asNumber(durationSeconds) || 0) / 3600;
-  const perHour = optionNumber(options, 'promptLinesPerHour', 10);
-  const minLines = optionNumber(options, 'promptMinLines', 10);
-  const hardCeiling = optionNumber(options, 'promptMaxLines', 150);
+  const perHour = optionNumber(options, 'promptLinesPerHour', 24);
+  const minLines = optionNumber(options, 'promptMinLines', 12);
+  const hardCeiling = optionNumber(options, 'promptMaxLines', 240);
   return clamp(Math.round(hours * perHour), minLines, hardCeiling);
 }
 
@@ -1972,6 +1956,7 @@ module.exports = {
   groupSimilarSegments,
   haversineKm,
   normalizeCoordinate,
+  segmentByEffort,
   segmentByGrade,
   segmentLineBudget,
   selectEffortSignal,

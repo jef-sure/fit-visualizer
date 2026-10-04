@@ -140,7 +140,7 @@ function describeRepeat(row) {
       : null;
     const coverageRange = (field, label) => {
       const values = members.map((member) => member[field]).filter((value) => value != null);
-      return values.length ? `${label} coverage ${Math.min(...values)}-${Math.max(...values)}%${values.length < members.length ? '; some unknown' : ''}` : null;
+      return values.length ? `${label} coverage ${Math.min(...values) === Math.max(...values) ? Math.min(...values) : `${Math.min(...values)}-${Math.max(...values)}`}%${values.length < members.length ? '; some unknown' : ''}` : null;
     };
     const vpowerUses = members.map((member) => member.vpowerUse);
     const hasVpower = vpowerUses.some((value) => value && value !== 'not assessed');
@@ -191,6 +191,7 @@ function buildSegmentContext(segments, options = {}) {
   const numbered = lines.map((line, index) => `${index + 1}. ${line}`).join('\n');
   const bases = new Set(list.map((segment) => segment.effortBasis));
   const notes = [
+    'Segments follow changes in effort, not terrain: the type names the average terrain, and a flat segment may hold gentle rises and falls.',
     bases.has('vpower') && bases.has('hr')
       ? 'Effort basis is implied by the metric quoted. vpower is a motion estimate with segment-specific use limits, not measured power; HR describes internal response, not mechanical work.'
       : null,

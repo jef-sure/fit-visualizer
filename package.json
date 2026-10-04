@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "description": "FIT file viewer and analyzer: charts, map, climb/descent segments, heart-rate zones, ride history and AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
@@ -192,34 +192,26 @@
           "maximum": 0,
           "description": "Descent grade below which an erratic speed trace marks the segment as technical (no effort estimate)."
         },
-        "fitVisualizer.segmentation.effortWindowSeconds": {
+        "fitVisualizer.segmentation.effortMinSegmentSeconds": {
           "type": "number",
-          "default": 10,
+          "default": 120,
+          "minimum": 30,
+          "maximum": 900,
+          "description": "Shortest stretch of steady effort that becomes a segment of its own. Segments follow heart rate and power; the terrain only names them."
+        },
+        "fitVisualizer.segmentation.effortHrStepBpm": {
+          "type": "number",
+          "default": 5,
           "minimum": 1,
-          "maximum": 120,
-          "description": "Averaging window for the effort signal before splitting a segment into intervals."
+          "maximum": 20,
+          "description": "Heart-rate difference (bpm) that counts as a different level of effort when it lasts for the minimum segment length. Lower values give more segments."
         },
-        "fitVisualizer.segmentation.minEffortMacroSeconds": {
+        "fitVisualizer.segmentation.effortPowerStepWatts": {
           "type": "number",
-          "default": 600,
-          "minimum": 60,
-          "maximum": 3600,
-          "description": "Minimum terrain-segment duration before splitting it into separate effort intervals."
-        },
-        "fitVisualizer.segmentation.effortMergeTolerancePct": {
-          "type": "number",
-          "default": 12,
-          "minimum": 1,
-          "maximum": 50,
-          "description": "Maximum adjacent effort difference in percent to merge into one continuous terrain segment."
-        },
-        "fitVisualizer.segmentation.effortCostThreshold": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "default": null,
-          "description": "Merge cost limit for interval detection. Leave empty to derive it from the noise of the effort signal."
+          "default": 30,
+          "minimum": 5,
+          "maximum": 150,
+          "description": "Power difference (W, measured or estimated) that counts as a different level of effort. Lower values give more segments."
         },
         "fitVisualizer.segmentation.stopSpeedKmh": {
           "type": "number",

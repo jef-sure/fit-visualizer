@@ -404,6 +404,7 @@ const {
   roundTo,
   segmentByGrade,
   segmentLineBudget,
+  segmentByEffort,
   selectEffortSignal,
   selectFtpEstimate,
 } = require('../utils');
@@ -1344,8 +1345,8 @@ test('activity segments combine terrain, effort basis and aggregates', () => {
   assert.equal(climb.vpowerUse, 'not assessed');
   assert.ok(climb.avgGrade > 5 && climb.avgGrade < 7);
   assert.ok(climb.elevGainM > 0);
-  // Terrain boundaries shift by a sample or two because of the hysteresis.
-  assert.ok(Math.abs(climb.avgPower - 240) <= 5, `expected ~240 W, got ${climb.avgPower}`);
+  // Heart rate lags the effort, so its change points are placed about 20 s early.
+  assert.ok(Math.abs(climb.avgPower - 240) <= 12, `expected ~240 W, got ${climb.avgPower}`);
   assert.ok(climb.distanceKm > 0, `expected a positive segment distance, got ${climb.distanceKm}`);
 
   const flat = segments.find((segment) => segment.type === 'flat');
@@ -1385,11 +1386,11 @@ test('estimated segment effort includes quality gates and shared spatial grade',
 
 test('long segments expose half-by-half dynamics without labelling HR change as recovery', () => {
   const records = terrainRecords([[0, 800]], { speedKmh: 24,
-    heartRateFor: (elapsed) => elapsed < 400 ? 130 : 135 });
+    heartRateFor: (elapsed) => elapsed < 400 ? 130 : 131 });
   const segments = buildActivitySegments(records, { sport: 'cycling' });
   assert.equal(segments.length, 1);
   assert.equal(segments[0].dynamics.firstHalfHr, 130);
-  assert.ok(segments[0].dynamics.secondHalfHr >= 134);
+  assert.ok(segments[0].dynamics.secondHalfHr >= 130.5);
   assert.equal(segments[0].hrDriftPct, null);
 });
 
@@ -1502,6 +1503,60 @@ test('continuous flat terrain merges adjacent micro-segments with similar heart 
   assert.ok(flats[0].durationS >= 790);
 });
 
+test('segments follow effort on a flat road: an 8 bpm step splits, a 2 bpm wobble does not', () => {
+  const stepped = terrainRecords([[0, 900]], {
+    speedKmh: 24,
+    heartRateFor: (elapsed) => (elapsed < 450 ? 128 : 138) + (elapsed % 7 < 3 ? 1 : -1),
+  });
+  const parts = buildActivitySegments(stepped, { sport: 'cycling' });
+  assert.equal(parts.length, 2);
+  assert.ok(parts.every((segment) => segment.type === 'flat'));
+  assert.ok(Math.abs(parts[0].endElapsed - 450) <= 30, `boundary near the HR step, got ${parts[0].endElapsed}`);
+  assert.ok(parts[0].avgHr < 131 && parts[1].avgHr > 135);
+
+  const wobble = terrainRecords([[0, 900]], { speedKmh: 24, heartRateFor: (elapsed) => 130 + (Math.floor(elapsed / 60) % 2 ? 1 : -1) });
+  assert.equal(buildActivitySegments(wobble, { sport: 'cycling' }).length, 1);
+});
+
+test('effort segments are at least two minutes, are named by terrain and never cross a stop', () => {
+  const records = terrainRecords([[0, 240], [0, 240], [6, 360], [0, 240]], {
+    speedKmh: 20,
+    heartRateFor: (elapsed) => (elapsed < 240 ? 120 : elapsed < 480 ? 140 : elapsed < 840 ? 160 : 135),
+  });
+  for (let i = 400; i < 460; i += 1) records[i].speed = 0;
+  const segments = buildActivitySegments(records, { sport: 'cycling' });
+  const moving = segments.filter((segment) => segment.type !== 'stopped');
+  assert.ok(moving.every((segment) => segment.durationS >= 119), 'no moving segment shorter than the minimum');
+  assert.ok(segments.some((segment) => segment.type === 'stopped'));
+  assert.ok(moving.some((segment) => segment.type === 'climb'));
+  segments.forEach((segment, index) => {
+    if (index) assert.equal(segment.startIndex, segments[index - 1].endIndex + 1, 'segments tile the ride');
+  });
+});
+
+test('power steps split segments when heart rate is missing, and the grade is the fallback without either', () => {
+  const noHr = terrainRecords([[0, 900]], {
+    speedKmh: 24,
+    heartRateFor: () => null,
+    powerFor: (elapsed) => (elapsed < 450 ? 120 : 190),
+  });
+  assert.equal(buildActivitySegments(noHr, { sport: 'cycling', powerSource: 'estimated' }).length, 2);
+
+  const bare = terrainRecords([[0.2, 300], [6, 300], [0.2, 300]], { speedKmh: 20, heartRateFor: () => null });
+  const types = buildActivitySegments(bare, { sport: 'cycling' }).map((segment) => segment.type);
+  assert.deepEqual(types, ['flat', 'climb', 'flat']);
+});
+
+test('segmentByEffort leaves the pieces contiguous and keeps stops as they are', () => {
+  const records = terrainRecords([[0, 600]], { speedKmh: 22, heartRateFor: (elapsed) => (elapsed < 300 ? 125 : 140) });
+  const stops = detectStops(records);
+  const ranges = segmentByEffort(records, { stops });
+  assert.equal(ranges[0].startIndex, 0);
+  assert.equal(ranges.at(-1).endIndex, records.length - 1);
+  ranges.forEach((range, index) => { if (index) assert.equal(range.startIndex, ranges[index - 1].endIndex + 1); });
+  assert.equal(segmentByEffort(records.map((r) => ({ ...r, heart_rate: null, power: undefined })), { stops }), null);
+});
+
 test('segments drop meaningless aggregates and drift', () => {
   const records = terrainRecords([[0.2, 120], [0.2, 120], [0.2, 120]], {
     powerFor: () => 150,
@@ -1531,10 +1586,9 @@ test('segmentation thresholds are exposed as settings', () => {
     'fitVisualizer.segmentation.gradeHysteresisPct',
     'fitVisualizer.segmentation.minSegmentSeconds',
     'fitVisualizer.segmentation.technicalGradePct',
-    'fitVisualizer.segmentation.effortWindowSeconds',
-    'fitVisualizer.segmentation.minEffortMacroSeconds',
-    'fitVisualizer.segmentation.effortMergeTolerancePct',
-    'fitVisualizer.segmentation.effortCostThreshold',
+    'fitVisualizer.segmentation.effortMinSegmentSeconds',
+    'fitVisualizer.segmentation.effortHrStepBpm',
+    'fitVisualizer.segmentation.effortPowerStepWatts',
     'fitVisualizer.segmentation.stopSpeedKmh',
     'fitVisualizer.segmentation.stopMinSeconds',
     'fitVisualizer.segmentation.gpsTrustMinKm',
@@ -2786,7 +2840,7 @@ test('analysis prompts use the VS Code language and leave unknown locales alone'
   }
 });
 
-test('segment breakdown lists segments, collapses repeats and folds short stops', () => {
+test('segment breakdown lists segments, collapses alternating repeats and folds short stops', () => {
   const segments = [
     { index: 0, type: 'climb', effortBasis: 'vpower', startElapsed: 0, endElapsed: 300, durationS: 300, avgGrade: 6.2, avgPower: 215, avgHr: 148, elevGainM: 90, hrDriftPct: 3 },
     { index: 1, type: 'stopped', effortBasis: 'none', startElapsed: 300, endElapsed: 323, durationS: 23 },
@@ -2877,7 +2931,10 @@ test('collapseShortStops merges a same-type segment interrupted by a short stop'
 });
 
 test('grouped repeats retain coverage and the weakest vpower use limitation', () => {
-  const segments = Array.from({ length: 8 }, (_, index) => ({
+  const segments = Array.from({ length: 8 }, (_, index) => (index % 2 ? {
+    index, type: 'flat', effortBasis: 'hr', startElapsed: index * 240, endElapsed: (index + 1) * 240,
+    durationS: 240, avgHr: 125, avgGrade: 0.3, hrCoveragePct: 100, gradeCoveragePct: 85,
+  } : {
     index, type: 'climb', effortBasis: 'vpower', startElapsed: index * 240,
     endElapsed: (index + 1) * 240, durationS: 240, avgPower: 200, avgGrade: 5,
     hrCoveragePct: index ? 100 : 70, powerCoveragePct: 90, gradeCoveragePct: 85,
@@ -2886,7 +2943,7 @@ test('grouped repeats retain coverage and the weakest vpower use limitation', ()
   const context = buildSegmentContext(segments);
   assert.equal(context.lines, 1);
   assert.match(context.text, /HR coverage 70-100%/);
-  assert.match(context.text, /grade coverage 85-85%/);
+  assert.match(context.text, /grade coverage 85%/);
   assert.match(context.text, /vpower use: rough description only/);
 });
 
@@ -2905,10 +2962,10 @@ test('segment lines keep grade and vpower diagnostics only where vpower is the q
 });
 
 test('segment line budget scales with duration and never truncates', () => {
-  assert.equal(segmentLineBudget(0), 10);
-  assert.equal(segmentLineBudget(3600), 10);
-  assert.equal(segmentLineBudget(10 * 3600), 100);
-  assert.equal(segmentLineBudget(1000 * 3600), 150);
+  assert.equal(segmentLineBudget(0), 12);
+  assert.equal(segmentLineBudget(3600), 24);
+  assert.equal(segmentLineBudget(5 * 3600), 120);
+  assert.equal(segmentLineBudget(1000 * 3600), 240);
 
   const noisy = [];
   for (let i = 0; i < 40; i += 1) {
@@ -2926,7 +2983,7 @@ test('segment line budget scales with duration and never truncates', () => {
   }
   const context = buildSegmentContext(noisy);
   assert.equal(context.lines, 40, 'the list is reported in full');
-  assert.equal(context.maxLines, 10);
+  assert.equal(context.maxLines, 12);
   assert.equal(context.exceeded, true, 'and flagged so the thresholds get reviewed');
 });
 
@@ -4367,7 +4424,7 @@ test('a stale derived-feature version triggers one silent background rebuild, a 
   assert.match(source, /scheduleDerivedFeatureAutoRebuild\(\);/);
   assert.match(source, /if \(silent && !skipStaleCheck && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
   assert.match(source, /WHERE features_version != \$\{FEATURES_VERSION\}/);
-  assert.equal(require('../activity-features').FEATURES_VERSION, 3, 'the version bump is what makes existing caches stale');
+  assert.equal(require('../activity-features').FEATURES_VERSION, 4, 'the version bump is what makes existing caches stale');
 
   const { needsDerivedFeatureRebuild } = loadExtensionInternalsForTest();
   const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });

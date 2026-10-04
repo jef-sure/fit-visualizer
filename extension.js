@@ -112,7 +112,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 31;
+const ANALYSIS_VERSION = 32;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const ROUTE_FILTER_STATE_KEY = 'fitVisualizer.routeFilter';
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
@@ -1712,8 +1712,9 @@ function getSegmentationOptions() {
     gradeHysteresisPct: read('gradeHysteresisPct'),
     minSegmentSeconds: read('minSegmentSeconds'),
     technicalGradePct: read('technicalGradePct'),
-    effortWindowSeconds: read('effortWindowSeconds'),
-    effortCostThreshold: read('effortCostThreshold'),
+    effortHrStepBpm: read('effortHrStepBpm'),
+    effortPowerStepWatts: read('effortPowerStepWatts'),
+    effortMinSegmentSeconds: read('effortMinSegmentSeconds'),
     speedThresholdKmh: read('stopSpeedKmh'),
     minDurationSeconds: read('stopMinSeconds'),
     gapSeconds: read('stopMinSeconds'),

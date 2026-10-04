@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.26.0 - 2026-10-04
+
+### Upgrade Notes
+
+- Run **FIT: Re-analyze Outdated Analyses** (analysis format 32). Segments are recomputed in the background on the first start; re-indexing is not required.
+
+### Changed
+
+- **Segments follow the effort, not the terrain.** Until now a ride was cut by grade (2.5 %) and a segment of "flat" could hold 14 minutes at anything from 16 to 40 km/h. Now the ride is cut where heart rate or power settles at a different level: a step of about 5 bpm or 30 W that lasts at least two minutes starts a new segment. Terrain only names the segment (climb, descent, flat). The method was picked from ten candidates on 39 real rides (see `scripts/segmentation-lab`): within a segment of the open stretch the heart rate varies by about 2 bpm, and there, where 25 km/h is easy and 19 km/h is hard, the two are told apart (about 15 bpm between them).
+- Heart rate is read 20 s back, because it trails the effort that causes it. Power (measured or estimated) is the second channel and takes over when heart rate is missing; rides with neither fall back to grade.
+- A typical ride now has 15–20 segments per hour instead of about 5, so the prompt's segment-line guideline is 24 per hour. Only alternating work/rest patterns (three or more repeats) are collapsed into one line; a run of same-kind segments is no longer merged, because the new segmentation separated them on purpose.
+- Settings: `effortMinSegmentSeconds` (120), `effortHrStepBpm` (5) and `effortPowerStepWatts` (30) replace `effortWindowSeconds`, `minEffortMacroSeconds`, `effortMergeTolerancePct` and `effortCostThreshold`.
+
+### Added
+
+- `scripts/segmentation-lab`: the experiment harness behind the choice (strategies, metrics, HTML reports). Not part of the extension package.
+
 ## 0.25.0 - 2026-10-04
 
 ### Upgrade Notes
