@@ -167,7 +167,17 @@ function buildSegmentContext(segments, options = {}) {
 }
 
 // Older entries keep only type and advice category; the latest ones carry the full summary.
-const SUMMARY_DETAIL_ENTRIES = 6;
+const SUMMARY_DETAIL_ENTRIES = 3;
+const HISTORY_CHAR_LIMIT = 4500;
+
+
+// Whether an advice to record notes appeared in the recent analyses already, so the model does not
+// keep asking for them in every answer.
+function notesSuggestedRecently(recentHistory) {
+  const entries = Array.isArray(recentHistory) ? recentHistory.slice(-5) : [];
+  return entries.some((entry) => entry.analysisSummary?.adviceCategory === 'data'
+    && /record|note|rpe|запиш|заметк/i.test(String(entry.analysisSummary?.advice || '')));
+}
 
 function buildRecentHistoryContext(entries, options = {}) {
   const list = Array.isArray(entries) ? entries : [];
@@ -195,11 +205,11 @@ function buildRecentHistoryContext(entries, options = {}) {
       entry.reportedAvgHr != null
         ? `user-reported avg/max HR ${Number(entry.reportedAvgHr).toFixed(0)}/${Number.isFinite(Number(entry.reportedMaxHr)) ? Number(entry.reportedMaxHr).toFixed(0) : '?'} bpm (summary only, no time series)` : null,
       intensity,
-      entry.peak20 != null ? `peak20 ${entry.peak20} bpm` : null,
       entry.trimp != null ? `TRIMP ${Number(entry.trimp).toFixed(0)}` : null,
       classText,
       describeNotesShort(entry.notes),
-      entry.elevationM != null ? `ascent ${Number(entry.elevationM).toFixed(0)} m` : null,
+      entry.routeId && entry.ascentM == null ? null : entry.routeId ? null : entry.elevationM != null ? `ascent ${Number(entry.elevationM).toFixed(0)} m` : null,
+      ['threshold', 'vo2max/anaerobic'].includes(entry.sessionClass?.label) && entry.peak20 != null ? `peak20 ${entry.peak20} bpm` : null,
       entry.hrProfileDate && entry.hrProfileDate !== list[index - 1]?.hrProfileDate ? `HR profile ${entry.hrProfileDate}` : null,
       entry.source && entry.source !== 'fit' ? `source ${entry.source}` : null,
     ]);
@@ -218,7 +228,16 @@ function buildRecentHistoryContext(entries, options = {}) {
   const summaryNote = list.some((entry) => entry.analysisSummary)
     ? 'Lines marked "AI summary" are earlier model hypotheses, not evidence; their relative dates refer to that activity\'s own date. An unchanged HR profile date is shown only where it starts.\n'
     : '';
-  return `**Recent Activity History (earlier workouts, oldest first):**\n${summaryNote}${rendered.join('\n\n')}${categoryLine}`;
+  // Hard cap on the whole block: whole oldest entries are dropped, lines are never cut mid-way.
+  const blockLength = (items) => `**Recent Activity History (earlier workouts, oldest first):**\n${summaryNote}${items.join('\n\n')}${categoryLine}`.length;
+  let renderedList = rendered;
+  let omitted = 0;
+  while (renderedList.length > 1 && blockLength(renderedList) > HISTORY_CHAR_LIMIT) {
+    renderedList = renderedList.slice(1);
+    omitted += 1;
+  }
+  const omittedNote = omitted ? `\n${omitted} older ride${omitted > 1 ? 's' : ''} omitted to fit the block; their facts remain in the period totals.` : '';
+  return `**Recent Activity History (earlier workouts, oldest first):**\n${summaryNote}${renderedList.join('\n\n')}${omittedNote}${categoryLine}`;
 }
 
 function formatConversation(history) {
@@ -251,16 +270,13 @@ function buildRouteProfileBlock(routeProfile) {
   const climbs = described.climbs.length
     ? described.climbs.map((climb) => `km ${climb.fromKm}-${climb.toKm} +${climb.gainM} m (avg ${climb.avgGradePct}%)`).join('; ')
     : 'no sustained climb steeper than 3%';
-  const sections = described.rows
-    .map((row) => `${row.fromKm}-${row.toKm} (${fmtGrade(row.gradePct)}): ${row.ownKmh ?? '?'}${row.otherKmh ? ` vs ${row.otherKmh}` : ''}`).join('; ');
   const effects = described.asymmetric.map((stretch) =>
     `- km ${stretch.fromKm}-${stretch.toKm} is near-flat, yet about ${stretch.ownKmh} km/h here vs ${stretch.otherKmh} km/h in the opposite direction`).join('\n');
   return joinNonEmpty([
     `**Route Profile (derived from earlier rides of this route${routeProfile.rideCounts ? `: ${routeProfile.rideCounts.same} in the first-ride direction, ${routeProfile.rideCounts.reversed} opposite` : ''}; riding ${reversed ? 'opposite to the first ride' : 'in the first-ride direction'}):**`,
     `Length ${routeProfile.lengthKm} km, ascent ~${ascent} m, descent ~${descent} m. Climbs in this direction: ${climbs}.`,
-    `Typical moving speed by section, this direction vs opposite (km/h; terrain grade in this direction): ${sections}.`,
     effects ? `Direction effects on near-flat ground (grade does not explain them; consistent with prevailing wind, surface or junctions, not with fitness):\n${effects}` : null,
-    'These are medians of earlier rides, not the conditions of this day.',
+    'These are medians of earlier rides, not the conditions of this day. When this ride\'s slow stretch coincides with a listed direction effect, say so and do not list wind as an open question.',
   ], '\n');
 }
 
@@ -313,7 +329,9 @@ function buildTrainingHistoryContext(context) {
     `**Training Volume and Covered Intensity:**\nHistorical baseline anchored at ${context.windowEnd}: all periods end at or before the current activity start; the current activity is excluded from every historical total. These are rolling windows, not calendar weeks.\n${volume}\n${context.intensityNote}\n${context.coverageNote}`,
     `**Adaptive Observation Window:**\n${context.windowDays} days: ${context.windowStart.slice(0, 10)} to ${context.windowEnd.slice(0, 10)}; ${context.activities} same-sport activities. Window selection is not evidence of fitness.\n${describeTrend('Duration pattern', context.durationTrend)}\n${describeTrend('Distance pattern', context.distanceTrend)}\n${joinNonEmpty([interruptions, monotony], '\n')}`,
     context.offsetChangeNote ? `**Device Timezone Consistency:**\n${context.offsetChangeNote}` : null,
-    matches ? `**Candidate Segment Comparisons:**\n${matches}\nMatching uses ordered terrain, duration and distance, not equal HR/power. Similar structure does not establish identical route, intent, weather or training stimulus; consider intensity separately.` : '**Candidate Segment Comparisons:** No eligible matches; training-volume context remains available.',
+    context.routeContext
+      ? null
+      : matches ? `**Candidate Segment Comparisons:**\n${matches}\nMatching uses ordered terrain, duration and distance, not equal HR/power. Similar structure does not establish identical route, intent, weather or training stimulus; consider intensity separately.` : '**Candidate Segment Comparisons:** No eligible matches; training-volume context remains available.',
     context.routeContext ? buildRouteContextBlock(context.routeContext) : null,
     context.routeProfile ? buildRouteProfileBlock(context.routeProfile) : null,
     context.altitudeQuality ? buildAltitudeQualityBlock(context.altitudeQuality) : null,
@@ -540,7 +558,7 @@ function describeLanguageModelError(vscode, error) {
 // Character budgets per block (reference: a ~1 h, 1 Hz ride). Matching is by heading prefix; the
 // log shows budget/actual and an overshoot is reported as a warning, never truncated.
 const PROMPT_BLOCK_BUDGETS = Object.freeze([
-  ['This Workout', 1500], ['Segment Breakdown', 1600], ['Same-Route Context', 1500], ['Route Profile', 2400], ['Heuristic Session Class', 400],
+  ['This Workout', 1500], ['Segment Breakdown', 1600], ['Same-Route Context', 1500], ['Route Profile', 1000], ['Heuristic Session Class', 400],
   ['Time in Heart-Rate Zones', 900], ['Peak Sustained', 900], ['Recent Activity History', 4500],
   ['Training Volume and Covered Intensity', 3200], ['Dated User Context', 3200], ['Principles', 4000],
   ['Questions for Analysis', 1800],
@@ -776,7 +794,9 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
     ], '\n\n')
     : joinNonEmpty(['**Comparable Training History:** No earlier activities within 75%-125% of this workout\'s distance are available. This workout establishes the initial baseline for rides of this distance.',
       loadFields ? `**Recent Imported Activity Context (independent of distance matching):**\n${loadFields}` : null], '\n\n');
-  const priorAnalysisContext = String(previousAnalysis || '').trim()
+  // The full previous-analysis text is a fallback: the structured history rows already carry its
+  // summary, and this ride's own last analysis only needs full text when nothing was parsed.
+  const priorAnalysisContext = String(previousAnalysis || '').trim() && !recentHistory?.some((entry) => entry.analysisSummary)
     ? `**Previous Workout Analysis (AI hypothesis, not evidence):**\n${String(previousAnalysis).trim()}`
     : '';
   const safeFollowUpHistory = formatConversation(followUpHistory);
@@ -833,7 +853,9 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
       : null,
     fitData.sessionNotes
       ? null
-      : 'No session notes (RPE, purpose, conditions) are recorded for this ride. They are entered in the Session Notes section of the activity page. Suggest recording them only when that is the most useful next step, and then as a data suggestion, not as pacing advice.',
+      : notesSuggestedRecently(recentHistory)
+        ? 'No session notes for this ride. Notes were already suggested in recent analyses; do not suggest them again.'
+        : 'No session notes (RPE, purpose, conditions) are recorded for this ride. They are entered in the Session Notes section of the activity page. Suggest recording them only when that is the most useful next step, and then as a data suggestion, not as pacing advice.',
     hasRouteStretches
       ? 'Where a flat segment is broken down by route stretch, the speed change between stretches belongs to the route; treat only the deviation from typical speed and the HR change as this ride\'s facts. Do not list the cause of a route-typical speed change as an open question.'
       : null,

@@ -33,7 +33,7 @@ type: <one of: ${SESSION_TYPES.join(' | ')}>
 finding: <the single most important observation with its number>
 advice_category: <one of: ${ADVICE_CATEGORIES.join(' | ')}>
 advice: <the practical step in one short sentence>
-open: <the main unresolved question about this ride, not a route-wide pattern, or none>
+open: <one question whose answer would change the advice and is not answered by the route profile, notes or flags; usually none>
 revised: <what from the earlier summaries you now revise, or none>`;
 
 const stripDecoration = (text) => String(text ?? '')

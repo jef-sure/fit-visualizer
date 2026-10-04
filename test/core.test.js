@@ -3205,7 +3205,7 @@ test('recent history carries per-session intensity, peak, load and class', () =>
       sessionClass: { label: 'threshold', confidence: 'high' }, source: 'fit',
     },
   ]);
-  assert.match(text, /2026-08-19: 20\.1 km, 00:48:31, FIT avg HR 147 bpm, L\/M\/H 42\/25\/33%, peak20 158 bpm, TRIMP 113, class threshold/);
+  assert.match(text, /2026-08-19: 20\.1 km, 00:48:31, FIT avg HR 147 bpm, L\/M\/H 42\/25\/33%, TRIMP 113, class threshold, peak20 158 bpm/);
 });
 
 test('period volume includes TRIMP sum, session class mix and week monotony', () => {
@@ -3853,8 +3853,8 @@ test('summary types are normalized across languages and older history entries ar
 
   const entries = Array.from({ length: 8 }, (_, i) => ({ startTime: `2026-08-0${i + 1}T10:00:00.000Z`, distanceKm: 20, analysisSummary: summary }));
   const text = buildRecentHistoryContext(entries);
-  assert.equal((text.match(/finding: f/g) || []).length, 6, 'only the latest six carry the full summary');
-  assert.equal((text.match(/AI summary: type: tempo; advice\[load\]\n/g) || []).length, 2);
+  assert.equal((text.match(/finding: f/g) || []).length, 3, 'only the latest three carry the full summary');
+  assert.equal((text.match(/AI summary: type: tempo; advice\[load\]\n/g) || []).length, 5);
 });
 
 test('same-route context takes the latest prior rides and formats signed split differences', () => {
@@ -3974,7 +3974,7 @@ test('route features derive climbs, per-direction speeds and flat-ground directi
   assert.equal(sectionSpeeds([{ elapsed_time: 0, distance: 0 }], 10), null);
 });
 
-test('route profile block lists climbs, section speeds and direction effects, and is cached per member count', async () => {
+test('route profile block lists climbs and direction effects, and is cached per member count', async () => {
   const { buildRouteProfileBlock } = require('../analysis');
   assert.equal(buildRouteProfileBlock(null), '');
   const text = buildRouteProfileBlock({
@@ -3987,7 +3987,7 @@ test('route profile block lists climbs, section speeds and direction effects, an
   });
   assert.match(text, /20 in the first-ride direction, 14 opposite/);
   assert.match(text, /km 19\.8-20\.4 \+35 m \(avg 5\.6%\)/);
-  assert.match(text, /0-2 \(-1\.9%\): 27 vs 14\.2/);
+  assert.doesNotMatch(text, /Typical moving speed by section/);
   assert.match(text, /km 4-10 is near-flat, yet about 27\.5 km\/h here vs 23 km\/h in the opposite direction/);
   assert.match(text, /not with fitness/);
 
@@ -4304,4 +4304,52 @@ test('flat segments get a route-stretch breakdown with typical speeds and a comp
   assert.match(prompt, /by route stretch \(this ride \/ typical for this direction\)/);
   assert.match(prompt, /speed change between stretches belongs to the route/);
   assert.doesNotMatch(prompt, /temporal halves/);
+});
+
+test('history keeps a hard character budget by dropping whole oldest entries', () => {
+  const summary = { type: 'tempo', finding: `${'long finding '.repeat(20)}`, adviceCategory: 'load', advice: 'a', open: null, revised: null };
+  // Full summaries only for the latest three; older entries are brief, so 12 entries stay short.
+  // To exercise the cap, make every entry verbose with analysisText instead.
+  // The realistic worst case: verbose rows with conversation context and full summaries on top.
+  const entries = Array.from({ length: 12 }, (_, i) => ({
+    startTime: `2026-08-${String(i + 1).padStart(2, '0')}T10:00:00.000Z`, utcOffsetS: 7200, distanceKm: 20.4,
+    durationS: 3600, avgHr: 147, trimp: 113, hrTss: 68, elevationM: 118, peak20: 158,
+    sessionClass: { label: 'threshold', confidence: 'high' }, notes: { rpe: 7, purpose: 'endurance' },
+    hrProfileDate: '2026-08-01', routeId: 2,
+    analysisSummary: { type: 'threshold', finding: `${'отчётливый вывод с подробностями '.repeat(12)}${i}`, adviceCategory: 'load',
+      advice: `${'рекомендация с объяснением причины '.repeat(10)}${i}`, open: `${'вопрос с контекстом '.repeat(8)}`, revised: `${'пересмотр '.repeat(6)}` },
+  }));
+  const text = buildRecentHistoryContext(entries);
+  assert.ok(text.length <= 4700, `${text.length} must fit the 4500 budget plus header and notes`);
+  assert.match(text, /older rides? omitted to fit the block; their facts remain in the period totals/);
+  assert.match(text, /2026-08-12/, 'the latest entries survive');
+  assert.match(text, /2026-08-12/, 'the latest entries survive');
+  assert.doesNotMatch(text, /2026-08-01: /, 'the oldest entry is dropped whole');
+  
+});
+
+test('routed rides drop the ascent line and peak20 stays only for hard classes', () => {
+  const base = { startTime: '2026-08-01T10:00:00.000Z', distanceKm: 20, elevationM: 110, peak20: 150, durationS: 3600 };
+  const routed = buildRecentHistoryContext([{ ...base, routeId: 2 }]);
+  assert.doesNotMatch(routed, /ascent 110 m/);
+  const unrouted = buildRecentHistoryContext([{ ...base, sessionClass: { label: 'endurance' } }]);
+  assert.match(unrouted, /ascent 110 m/);
+  assert.doesNotMatch(unrouted, /peak20 150/);
+  const hard = buildRecentHistoryContext([{ ...base, sessionClass: { label: 'threshold' } }]);
+  assert.match(hard, /peak20 150/);
+});
+
+test('asking to record notes is suppressed when recent analyses already suggested it', () => {
+  const data = { sessions: [{ sport: 'cycling' }], records: [] };
+  const recentWithDataAdvice = [{ startTime: '2026-08-02T10:00:00.000Z', distanceKm: 20,
+    analysisSummary: { type: 'tempo', adviceCategory: 'data', advice: 'Record perceived effort and conditions next time.', finding: 'f' } }];
+  const suppressed = generateAnalysisPrompt(data, { total_activities: 0, trainingContext: buildTrainingContext(recentWithDataAdvice, '2026-08-03', 'cycling', []) }, {}, null, [], recentWithDataAdvice, 'en');
+  assert.match(suppressed, /Notes were already suggested in recent analyses; do not suggest them again/);
+  assert.doesNotMatch(suppressed, /Suggest recording them only when that is the most useful next step/);
+  const untouched = generateAnalysisPrompt(data, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.match(untouched, /Suggest recording them only when that is the most useful next step/);
+  const withNotes = generateAnalysisPrompt({ ...data, sessionNotes: { rpe: 7, purpose: 'endurance' } }, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.doesNotMatch(withNotes, /No session notes/);
+  const tail = /open: <one question whose answer would change the advice[^>]*usually none>/.exec(require('../analysis-summary').SUMMARY_TAIL_INSTRUCTION);
+  assert.ok(tail, 'the tail instruction encourages none');
 });
