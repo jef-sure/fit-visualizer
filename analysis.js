@@ -5,7 +5,7 @@ const { computeElevationGainLoss } = require('./chart-data');
 const { rankModelsByCost } = require('./model-pricing');
 const { describeStretches } = require('./route-features');
 const { buildDataQualityFlagBlock } = require('./data-quality');
-const { buildRouteSignature, matchRoutes } = require('./route-match');
+const { buildRouteSignature, matchRoutes, haversineM } = require('./route-match');
 const { computeCheckpoints } = require('./route-store');
 const { describeSpeed, normalizeSport, profileFor, sportPromptAdditions } = require('./sport-profiles');
 const { SUMMARY_TAIL_INSTRUCTION, describeAnalysisForHistory } = require('./analysis-summary');
@@ -293,7 +293,7 @@ function buildRouteContextBlock(routeContext) {
   return joinNonEmpty([
     `**Same-Route Context (GPS-confirmed):**\nRoute "${routeContext.routeName}" (${routeContext.relation}); ${routeContext.priorRideCount} earlier comparable rides (same direction).`,
     routeContext.routeNote ? `User note about this route (user-declared, applies to every ride on it): ${routeContext.routeNote}` : null,
-    lines ? `Checkpoint splits (this ride vs median of up to 5 prior same-route rides):\n${lines}` : null,
+    lines ? `Checkpoint splits at this ride's segment boundaries (plus every 2 km inside long segments); prior rides are matched by place on the road, so differing segmentation does not break the comparison. Median of up to 5 prior same-route rides:\n${lines}` : null,
     routeContext.patternLine,
     routeContext.verdictLine,
     routeContext.climbLine,
@@ -1004,16 +1004,24 @@ function buildCheckpointComparisonTable(aCheckpoints, bCheckpoints) {
   const listA = Array.isArray(aCheckpoints) ? aCheckpoints : [];
   const listB = Array.isArray(bCheckpoints) ? bCheckpoints : [];
   if (!listA.length || !listB.length) return '';
-  const byKm = new Map(listB.map((checkpoint) => [Math.round(Number(checkpoint.km) * 10) / 10, checkpoint]));
+  // Marks sit at each ride's own segment boundaries, so they are paired by place on the road
+  // (GPS within 150 m, km as a fallback), never by ordinal position.
+  const distanceM = (a, b) => {
+    if ([a.lat, a.lon, b.lat, b.lon].every(Number.isFinite)) return haversineM(a.lat, a.lon, b.lat, b.lon);
+    return Number.isFinite(a.km) && Number.isFinite(b.km) ? Math.abs(a.km - b.km) * 1000 : Infinity;
+  };
   const rows = listA.map((checkpoint) => {
-    const other = byKm.get(Math.round(Number(checkpoint.km) * 10) / 10);
-    if (!other) return null;
+    const other = listB.reduce((best, candidate) => {
+      const d = distanceM(checkpoint, candidate);
+      return !best || d < best.d ? { candidate, d } : best;
+    }, null)?.candidate;
+    if (!other || distanceM(checkpoint, other) > 150) return null;
     const time = `${formatHms(checkpoint.elapsedS)} / ${formatHms(other.elapsedS)}`;
     const hr = checkpoint.avgHr != null && other.avgHr != null ? `, HR ${checkpoint.avgHr} / ${other.avgHr}` : '';
     return `- km ${checkpoint.km}: ${time}${hr}`;
   }).filter(Boolean);
   if (rows.length < 2) return '';
-  return `**Checkpoints (This Workout / Compared Activity):**\n${rows.join('\n')}`;
+  return `**Checkpoints (This Workout / Compared Activity; paired by place, each ride's own marks):**\n${rows.join('\n')}`;
 }
 
 function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, baseAnalysis, history, userQuestion, locale) {
@@ -1088,7 +1096,7 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
   const sameRoute = relation.type === 'same' || relation.type === 'reversed';
   const routeRelationLine = describeRouteRelation(relation);
   const checkpointTable = sameRoute
-    ? buildCheckpointComparisonTable(computeCheckpoints(fitData.records), computeCheckpoints(comparedFitData.records))
+    ? buildCheckpointComparisonTable(computeCheckpoints(fitData.records, fitData.segments), computeCheckpoints(comparedFitData.records, comparedFitData.segments))
     : '';
 
   const dataQualityNote = (label, source) => (source === 'estimated from motion data'

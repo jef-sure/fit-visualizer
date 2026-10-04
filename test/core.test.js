@@ -3333,24 +3333,47 @@ test('route signatures identify the same loop, a reversed ride, a partial ride a
   assert.equal(buildRouteSignature([{ position_lat: 1, position_long: 1, distance: 0.1 }]), null);
 });
 
-test('checkpoints accumulate time and HR per distance mark and summarize prior rides', () => {
+test('checkpoints sit at segment boundaries, densify long segments and match priors by place', () => {
   const { computeCheckpoints, summarizeCheckpoints } = require('../route-store');
   const records = [];
+  const lat0 = 52.0; const lon0 = 21.0;
   for (let s = 0; s <= 3600; s += 1) {
-    records.push({ elapsed_time: s, distance: (s / 3600) * 20, heart_rate: 130 + Math.floor(s / 600) * 5 });
+    const km = (s / 3600) * 20;
+    records.push({ elapsed_time: s, distance: km, heart_rate: 130 + Math.floor(s / 600) * 5,
+      position_lat: lat0 + km * 0.009, position_long: lon0 });
   }
-  const marks = computeCheckpoints(records);
-  assert.deepEqual(marks.map((m) => m.km), [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]);
-  assert.equal(marks[0].elapsedS, 360);
+  // Boundaries at 5 km and 12 km split the 20 km ride into stretches of 5, 7 and 8 km; the long
+  // ones gain an extra mark every 2 km counted from the boundary.
+  const segments = [
+    { type: 'flat', startElapsed: 0, endElapsed: 900 },
+    { type: 'flat', startElapsed: 900, endElapsed: 2160 },
+    { type: 'flat', startElapsed: 2160, endElapsed: 3600 },
+  ];
+  const marks = computeCheckpoints(records, segments);
+  assert.deepEqual(marks.map((m) => m.km), [2, 5, 7, 9, 12, 14, 16, 18, 20]);
+  assert.ok(marks.every((m) => Number.isFinite(m.lat)), 'each mark carries its GPS place');
   assert.equal(marks[0].avgHr, 130);
   assert.ok(Math.abs(marks[0].avgSpeedKmh - 20) < 0.5);
 
-  const summary = summarizeCheckpoints(marks, [
-    { checkpoints: marks.map((m) => ({ ...m, elapsedS: m.elapsedS + 60 })) },
-    { checkpoints: marks.map((m) => ({ ...m, elapsedS: m.elapsedS - 60 })) },
-  ]);
-  assert.equal(summary[0].priorRides, 2);
-  assert.equal(summary[0].priorMedianS, marks[0].elapsedS + 60, 'median of [−60, +60] picks the upper middle');
+  // A prior ride with different segmentation but the same road: matched by GPS, not by km.
+  const priorMarks = [6, 9, 14, 20].map((km) => ({ km, lat: lat0 + km * 0.009, lon: lon0,
+    elapsedS: (km / 20) * 3600 + 60, avgHr: 140 }));
+  const summary = summarizeCheckpoints(marks, [{ checkpoints: priorMarks }]);
+  // The nearest prior mark to the 5 km mark (0.009° ≈ 1 km) is the one at 6 km, ~1 km away:
+  // same road, but beyond the 150 m radius, so it does not match — the radius is doing its job.
+  assert.equal(summary[0].priorRides, 0);
+  const near = summarizeCheckpoints([marks[1]], [{ checkpoints: [{ km: 5.02, lat: lat0 + 5.02 * 0.009, lon: lon0, elapsedS: 960, avgHr: 140 }] }]);
+  assert.equal(near[0].priorRides, 1, 'a prior mark within 150 m of the same place matches');
+  assert.equal(near[0].priorMedianS, 960);
+
+  // Without GPS on either side the fallback is km within 150 m.
+  const kmSummary = summarizeCheckpoints([{ km: 10, elapsedS: 1800 }], [{ checkpoints: [{ km: 10.1, elapsedS: 1860 }] }]);
+  assert.equal(kmSummary[0].priorRides, 1);
+  assert.equal(summarizeCheckpoints([{ km: 10, elapsedS: 1800 }], [{ checkpoints: [{ km: 14, elapsedS: 2520 }] }])[0].priorRides, 0);
+
+  // A ride with no segments: marks every 2 km plus the end (the densify pass over one long stretch).
+  const plain = computeCheckpoints(records);
+  assert.deepEqual(plain.map((m) => m.km), [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]);
 });
 
 test('ride-to-route assignment creates a route once and attaches later rides with their relation', async () => {
@@ -4425,7 +4448,7 @@ test('a stale derived-feature version triggers one silent background rebuild, a 
   assert.match(source, /scheduleDerivedFeatureAutoRebuild\(\);/);
   assert.match(source, /if \(silent && !skipStaleCheck && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
   assert.match(source, /WHERE features_version != \$\{FEATURES_VERSION\}/);
-  assert.equal(require('../activity-features').FEATURES_VERSION, 4, 'the version bump is what makes existing caches stale');
+  assert.equal(require('../activity-features').FEATURES_VERSION, 5, 'the version bump is what makes existing caches stale');
 
   const { needsDerivedFeatureRebuild } = loadExtensionInternalsForTest();
   const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
@@ -4706,8 +4729,8 @@ test('chat and comparison prompts carry principles, notes and route relation (C5
   );
   assert.match(same, /Coaching Principles:/);
   assert.match(same, /Route relation: same route, same direction/);
-  assert.match(same, /Checkpoints \(This Workout \/ Compared Activity\):/);
-  assert.match(same, /km 2:/);
+  assert.match(same, /Checkpoints \(This Workout \/ Compared Activity; paired by place, each ride's own marks\):/);
+  assert.ok(same.includes('- km'), 'checkpoint rows appear');
 
   // Different start points: different route, so no checkpoint table and no route-relation line.
   const diffA = straightGpsRecords(600, 20, { startLat: 52.0, startLon: 21.0 });

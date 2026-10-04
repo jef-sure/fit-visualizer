@@ -4,11 +4,12 @@
 // recorded per ride). The canonical signature is the member with the least total deviation to
 // all others (a medoid, recomputed lazily).
 
-const { buildRouteSignature, matchRoutes } = require('./route-match');
+const { buildRouteSignature, matchRoutes, haversineM } = require('./route-match');
 const { buildAltitudeRide, computeConsensusProfile, mirrorAltitudeRide } = require('./altitude-quality');
 const { computeRouteFeatures, sectionCount, sectionSpeeds } = require('./route-features');
 
-const CHECKPOINT_SPACING_KM = 2;
+const CHECKPOINT_SPACING_KM = 2; // extra marks inside a long segment
+const CHECKPOINT_MATCH_RADIUS_M = 150;
 
 // Assign (or create) a route for one ride against existing canonical signatures. Idempotent:
 // a ride that already has an assignment keeps it, so repeated context builds do not recount.
@@ -87,26 +88,61 @@ function parseCanonical(json) {
   }
 }
 
-// Checkpoint rows for one ride: cumulative time, average HR and speed to each mark.
+// Checkpoints for one ride: a mark at every segment boundary plus extra marks every 2 km inside
+// segments longer than that. A mark carries the place on the road (lat/lon at the crossing, plus
+// km when GPS is missing), so rides are compared place-to-place even when their segments differ.
 // Records carry elapsed_time, distance, heart_rate; speed comes from deltas.
-function computeCheckpoints(records, { spacingKm = CHECKPOINT_SPACING_KM } = {}) {
+function computeCheckpoints(records, segments = [], { spacingKm = CHECKPOINT_SPACING_KM } = {}) {
   const list = (Array.isArray(records) ? records : [])
     .filter((record) => Number.isFinite(Number(record?.distance)) && Number.isFinite(Number(record?.elapsed_time)));
   if (list.length < 10) return [];
-  const totalKm = list[list.length - 1].distance;
-  const marks = [];
-  for (let km = spacingKm; km < totalKm; km += spacingKm) marks.push(km);
-  if (totalKm - (marks.at(-1) || 0) >= spacingKm / 2) marks.push(totalKm);
+  const first = list[0];
+  const last = list[list.length - 1];
+  const totalKm = last.distance - first.distance;
+  if (!(totalKm > 0)) return [];
+
+  // Segment boundaries as distances; out-of-range and duplicate values are dropped later.
+  const edges = new Set();
+  for (const segment of Array.isArray(segments) ? segments : []) {
+    if (segment?.type === 'stopped') continue;
+    for (const elapsed of [segment.startElapsed, segment.endElapsed]) {
+      if (Number.isFinite(Number(elapsed)) && elapsed > first.elapsed_time && elapsed < last.elapsed_time) edges.add(elapsed);
+    }
+  }
+  const kmAt = (elapsed) => {
+    let previous = first;
+    for (const record of list) {
+      if (record.elapsed_time > elapsed) return previous.distance + (record.distance - previous.distance)
+        * ((elapsed - previous.elapsed_time) / (record.elapsed_time - previous.elapsed_time || 1));
+      if (record.elapsed_time === elapsed) return record.distance;
+      previous = record;
+    }
+    return last.distance;
+  };
+  const marks = [...edges].sort((a, b) => a - b).map(kmAt)
+    .filter((km) => km > first.distance && km < last.distance);
+  // Extra marks inside stretches between boundaries that are longer than the spacing.
+  const dense = [first.distance, ...marks, last.distance];
+  for (let index = 0; index + 1 < dense.length; index += 1) {
+    const from = dense[index];
+    const to = dense[index + 1];
+    if (to - from <= spacingKm) continue;
+    for (let km = from + spacingKm; km < to - spacingKm / 2; km += spacingKm) marks.push(km);
+  }
+  marks.sort((a, b) => a - b);
+  const unique = marks.filter((km, index) => index === 0 || km - marks[index - 1] > 0.2);
+  const final = unique.length && last.distance - unique[unique.length - 1] >= spacingKm / 2
+    ? [...unique, last.distance] : unique.length ? [...unique] : [last.distance];
 
   const result = [];
-  let prevTime = list[0].elapsed_time;
-  let prevDistance = list[0].distance;
+  let prevTime = first.elapsed_time;
+  let prevDistance = first.distance;
   let markIndex = 0;
   let hrSum = 0;
   let hrCount = 0;
   let spanTime = 0;
   let spanDistance = 0;
-  for (let index = 1; index < list.length && markIndex < marks.length; index += 1) {
+  for (let index = 1; index < list.length && markIndex < final.length; index += 1) {
     const record = list[index];
     const dt = record.elapsed_time - prevTime;
     const dd = record.distance - prevDistance;
@@ -119,9 +155,11 @@ function computeCheckpoints(records, { spacingKm = CHECKPOINT_SPACING_KM } = {})
         hrCount += dt;
       }
     }
-    while (markIndex < marks.length && record.distance >= marks[markIndex]) {
+    while (markIndex < final.length && record.distance >= final[markIndex]) {
       result.push({
-        km: Math.round(marks[markIndex] * 10) / 10,
+        km: Math.round(final[markIndex] * 10) / 10,
+        lat: Number.isFinite(Number(record.position_lat)) ? Number(record.position_lat) : null,
+        lon: Number.isFinite(Number(record.position_long)) ? Number(record.position_long) : null,
         elapsedS: Math.round(record.elapsed_time),
         avgHr: hrCount > 0 ? Math.round(hrSum / hrCount) : null,
         avgSpeedKmh: spanTime > 0 && spanDistance > 0 ? (spanDistance / (spanTime / 3600)) : null,
@@ -138,13 +176,29 @@ function computeCheckpoints(records, { spacingKm = CHECKPOINT_SPACING_KM } = {})
   return result;
 }
 
-// Median statistics of past same-route rides per checkpoint mark.
+// Prior rides are matched to a mark by place on the road: GPS distance when both have it, km as a
+// fallback (wind trainer, GPS-less rides). 150 m is generous for a point crossed at speed.
+function priorRowsNear(priorRides, mark, radiusM = CHECKPOINT_MATCH_RADIUS_M) {
+  const withGps = Number.isFinite(mark?.lat) && Number.isFinite(mark?.lon);
+  const matches = [];
+  for (const ride of priorRides || []) {
+    let best = null;
+    for (const row of Array.isArray(ride?.checkpoints) ? ride.checkpoints : []) {
+      if (!Number.isFinite(row?.elapsedS)) continue;
+      const d = withGps && Number.isFinite(row.lat) && Number.isFinite(row.lon)
+        ? haversineM(mark.lat, mark.lon, row.lat, row.lon)
+        : Number.isFinite(mark?.km) && Number.isFinite(row.km)
+          ? Math.abs(row.km - mark.km) * 1000 : Infinity;
+      if (best == null || d < best.d) best = { row, d };
+    }
+    if (best != null && best.d <= radiusM) matches.push(best.row);
+  }
+  return matches;
+}
+
 function summarizeCheckpoints(current, priorRides) {
   return current.map((mark) => {
-    const matching = priorRides
-      .flatMap((ride) => ride.checkpoints || [])
-      .filter((row) => Math.abs(row.km - mark.km) < 0.05)
-      .filter((row) => Number.isFinite(row.elapsedS));
+    const matching = priorRowsNear(priorRides, mark);
     const priors = matching.map((row) => row.elapsedS).sort((a, b) => a - b);
     const median = priors.length ? priors[Math.floor(priors.length / 2)] : null;
     const heartRates = matching.map((row) => row.avgHr).filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
@@ -386,5 +440,6 @@ module.exports = {
   setRouteNote,
   describeCheckpointVerdict,
   summarizeCheckpoints,
+  priorRowsNear,
   summarizeRoutePattern,
 };

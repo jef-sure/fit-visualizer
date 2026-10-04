@@ -4,10 +4,11 @@
 
 ### Upgrade Notes
 
-- Run **FIT: Re-analyze Outdated Analyses** (analysis format 32). Segments are recomputed in the background on the first start; re-indexing is not required.
+- Run **FIT: Re-analyze Outdated Analyses** (analysis format 33). Segments and checkpoints are recomputed in the background on the first start; re-indexing is not required.
 
 ### Changed
 
+- **Checkpoints sit at segment boundaries, and prior rides are matched by place on the road, not by kilometre.** The fixed 2-km grid is gone: a mark is placed at every segment boundary, long stretches between boundaries gain an extra mark every 2 km, and each mark carries its GPS position. When this ride's marks are compared with prior rides of the same route, a prior mark counts when it stands within 150 m of the same place — so two rides with different segmentation are still compared point-to-point, and marks that exist only in one ride simply get no line instead of a false pairing. The two-activity comparison table pairs marks the same way.
 - **Segments follow the effort, not the terrain.** Until now a ride was cut by grade (2.5 %) and a segment of "flat" could hold 14 minutes at anything from 16 to 40 km/h. Now the ride is cut where heart rate or power settles at a different level: a step of about 5 bpm or 30 W that lasts at least a minute starts a new segment. Terrain only names the segment (climb, descent, flat). The method was picked from ten candidates on 39 real rides (see `scripts/segmentation-lab`): within a segment of the open stretch the heart rate varies by about 2 bpm, and there, where 25 km/h is easy and 19 km/h is hard, the two are told apart (about 15 bpm between them).
 - Heart rate is read 20 s back, because it trails the effort that causes it. Power (measured or estimated) is the second channel and takes over when heart rate is missing; rides with neither fall back to grade.
 - A typical ride now has 20–25 segments per hour instead of about 5, so the prompt's segment-line guideline is 32 per hour. Only alternating work/rest patterns (three or more repeats) are collapsed into one line; a run of same-kind segments is no longer merged, because the new segmentation separated them on purpose.

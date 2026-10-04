@@ -112,7 +112,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 32;
+const ANALYSIS_VERSION = 33;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const ROUTE_FILTER_STATE_KEY = 'fitVisualizer.routeFilter';
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
@@ -412,7 +412,7 @@ function ensureFeaturesForActivity(db, activityId) {
   const timerS = asNumber(row.total_timer_s);
   const sessionClass = buildSessionClassForActivity(power.records, { total_timer_s: timerS }, hrConfig, profile, segments);
   assignRoute(db, { activityId: row.id, signature: buildRouteSignature(records), createdAt: row.start_time });
-  const checkpoints = computeCheckpoints(records);
+  const checkpoints = computeCheckpoints(records, segments);
   db.run(`
     INSERT INTO activity_features (
       activity_id, features_version, settings_hash, hr_profile_key, athlete_key, feature_cache_key, computed_at,
@@ -2989,7 +2989,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     const sessionClass = buildSessionClassForActivity(power.records, { total_timer_s: timerS }, hrConfig, profile, segments);
     const routeSignature = buildRouteSignature(records);
     const routeInfo = assignRoute(db, { activityId: row.id, signature: routeSignature, createdAt: row.start_time });
-    const checkpoints = computeCheckpoints(records);
+    const checkpoints = computeCheckpoints(records, segments);
     return { records: normalized, segments, hrConfig, powerSource: power.source, sessionClass,
       trimp: summary.trimp, hrTss: summary.hrTss, routeInfo, checkpoints };
   };
@@ -3084,7 +3084,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       ? assignRoute(db, { activityId: selected.id, signature: buildRouteSignature(currentRecords), createdAt: selected.start_time })
       : null);
   const currentCheckpoints = currentData?.checkpoints || currentDetail?.checkpoints
-    || (currentRecords ? computeCheckpoints(currentRecords) : []);
+    || (currentRecords ? computeCheckpoints(currentRecords, currentSegments) : []);
   const context = buildTrainingContext(activities, selected.start_time, selected.sport, currentSegments);
   const offsetChange = detectOffsetChange({
     current: { startTime: selected.start_time, utcOffsetS: selected.utc_offset_s },
