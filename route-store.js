@@ -380,7 +380,10 @@ function readRouteCard(db, activityId) {
     stmt.bind([assignment.routeId]);
     if (!stmt.step()) return null;
     const row = stmt.getAsObject();
-    if (!(row.ride_count >= 2) && !row.note) return null;
+    // A first ride on a fresh route still gets a card: without it the section silently appears
+    // and disappears across selections, which reads as a glitch. The name/note form is useful
+    // right away (naming the route before more rides arrive), and the facts grow in later.
+    if (!(row.ride_count >= 1) && !row.note) return null;
     const features = safeJson(row.features_json)?.features || null;
     const signature = safeJson(row.canonical_signature);
     return { routeId: row.id, name: row.name || '', note: row.note || '', rideCount: row.ride_count,

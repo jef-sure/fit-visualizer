@@ -4174,7 +4174,7 @@ test('route profile block lists climbs and direction effects, and is cached per 
   }
 });
 
-test('activity page shows an editable route card only for a repeated route and wires its save message', () => {
+test('activity page shows an editable route card from the first ride on a route and wires its save message', () => {
   const { renderActivityContentHtml } = loadActivityWebviewForTest();
   const fitData = { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] };
   const render = (routeCard) => renderActivityContentHtml(
