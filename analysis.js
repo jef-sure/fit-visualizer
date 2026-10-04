@@ -823,8 +823,17 @@ const ANALYSIS_PRINCIPLES = Object.freeze([
   'Do not fill missing data with plausible claims; say once what is missing. If recent analyses already pointed out the same missing sensor or data gap, mention it at most briefly and do not make it the practical step again.',
   'Ask the user only when the answer would change the advice and was not asked before; otherwise state the working assumption. Most analyses need no question.',
   'Focus on what is new relative to earlier summaries. Do not repeat advice, caveats or questions already given there unless this activity adds new evidence; do not retell tables. Attribute period statistics to their stated date range, never to one activity.',
-  'Answer in the interface language; translate terms, keep abbreviations such as HR, VAM, TRIMP.',
+  'Answer in the interface language. Translate every term, including the zone and class names that appear in English in the data (recovery, endurance, tempo, threshold, VO2max, mixed, unstructured, undetermined); keep only the abbreviations HR, VAM, TRIMP, RPE, bpm and units such as km/h. Never leave an English word inside a sentence in another language.',
 ]);
+
+// How the answer should sound: a coach talking to the athlete, not a report about "the user".
+// Shared by the analysis, chat and comparison prompts.
+const ANALYSIS_VOICE = `**Voice:**
+- Speak to the athlete directly in the second person and keep one register throughout (in languages with a polite form, use it consistently). Never say "the user" or "the athlete" about the person you are writing to.
+- Plain sentences: one idea each, short, concrete. Write as you would speak to someone standing next to you after the ride.
+- A caveat is said once, where it changes the conclusion. Do not close every sentence or paragraph with a disclaimer such as "this does not prove", "this is a description, not a judgement", "conditions were not controlled". If a limit applies to the whole section, state it in one sentence at the start or end, then move on.
+- Quote at most the two or three numbers that carry the point; do not recite rows of a table or every peak window.
+- Headings are yours: short, natural phrases in the response language. Do not translate the English question labels word for word.`;
 
 function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, previousAnalysis, followUpHistory, recentHistory, locale) {
   const session = fitData.sessions?.[0] || {};
@@ -948,6 +957,8 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
 **Principles:**
 ${ANALYSIS_PRINCIPLES.map((principle, index) => `${index + 1}. ${principle}`).join('\n')}
 
+${ANALYSIS_VOICE}
+
 **Notes for This Data:**
 ${dataNotes}
 
@@ -963,7 +974,7 @@ ${SUMMARY_TAIL_INSTRUCTION}`;
 3. **Current Training Direction**: What patterns, stimulus mix across session types and intensity distribution, or possible phase changes are supported by the dated history? Consider multiple simultaneous priorities; discuss fitness or recovery only where evidence permits.
 4. **Practical Next Step**: Recommend the option best supported by the observed pattern and dated user context, with the reason. Choose what this activity most informs: execution (pacing, climbs, starts, stops), route or format choice, data capture, or next-session load. If recent analyses already gave the same load advice and the pattern is unchanged, do not restate it; pick another relevant point. Add one number worth watching next time on this route when same-route data exist. Add an alternative only if a specific plausible circumstance would change the advice; do not branch on hypothetical goals by default. Not a universal progression plan.
 
-Provide a concise, actionable analysis with 2-4 sentences per section. Explain implications rather than merely retelling the input. Do not fill unsupported topics with boilerplate or mandatory recovery claims.`;
+Answer the four questions in order under your own short headings, 2-4 plain sentences each, in the voice described above. Explain what the numbers mean for the athlete rather than retelling the input. Do not fill unsupported topics with boilerplate or mandatory recovery claims.`;
   return { instructions, data };
 }
 
@@ -1043,6 +1054,8 @@ ${String(userQuestion || '').trim()}
 
 **Coaching Principles:**
 ${renderPrinciples()}
+
+${ANALYSIS_VOICE}
 
 Rules:
 - Use provided workout/history facts; do not invent personal circumstances or later activities.
@@ -1130,6 +1143,8 @@ ${body}
 
 **Coaching Principles:**
 ${renderPrinciples()}
+
+${ANALYSIS_VOICE}
 
 **Evidence Rules:**
 ${evidenceRules}

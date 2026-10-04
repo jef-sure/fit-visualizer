@@ -3,10 +3,30 @@
 
 const { normalizeSessionType, parseAnalysisSummary } = require('./analysis-summary');
 
+// Hedging clauses the model tends to append after every number. Each occurrence counts, so the
+// metric is "disclaimers per answer", and hedgeSharePct is the share of sentences carrying one.
 const DEFENSIVE_PHRASES = Object.freeze([
-  'не доказывает', 'не подтверждает', 'не позволяет', 'не установлен', 'маршрут не подтвержд',
+  'не доказыва', 'не подтвержда', 'не позволяет', 'не позволяют', 'не установлен', 'маршрут не подтвержд',
+  'не свидетельств', 'не обоснован', 'это описание', 'а не вывод', 'не доказательство', 'не контролировал', 'нельзя',
   'does not prove', 'does not establish', 'cannot be concluded', 'route identity not established', 'not evidence of',
+  'is a description, not', 'were not controlled', 'cannot be judged',
 ]);
+
+// English class/zone words left inside a non-English answer (the data feeds them in English).
+const ENGLISH_TERMS = /\b(mixed|tempo|threshold|endurance|recovery|undetermined|unstructured|vo2max)\b/gi;
+// Informal vs polite second person in Russian answers; mixing them in one answer is the defect.
+// \b is ASCII-only in JavaScript, so Cyrillic words need explicit letter-boundary lookarounds.
+const RU_INFORMAL = /(?<![а-яё])(отметь|держи|проверь|запиши|сравни|попробуй|начни|следи|не ускоряйся|тебе|твой|твои)(?![а-яё])/i;
+const RU_POLITE = /(?<![а-яё])(отметьте|держите|проверьте|запишите|сравните|попробуйте|начните|следите|не ускоряйтесь|вам|ваш|ваши|вы сообщили)(?![а-яё])/i;
+
+function countOccurrences(text, phrases) {
+  const lower = String(text).toLowerCase();
+  return phrases.reduce((sum, phrase) => sum + lower.split(phrase).length - 1, 0);
+}
+
+function sentenceCount(text) {
+  return (String(text).match(/[.!?](\s|$)/g) || []).length || 1;
+}
 
 // Flags present in the prompt (one line each, from the Altitude Quality / Data Quality Flags
 // blocks) and the words that count as the answer using them. Patterns anchor on the flag line so
@@ -84,7 +104,11 @@ function checkAnalysisResponse({ response, prompt, previousCategories = [], code
     flagsMissed: flagsMentioned.filter((mentioned) => !mentioned).length,
     chars: body.length,
     cyrillicShare: Math.round(cyrillicShare(body) * 100) / 100,
-    defensivePhrases: DEFENSIVE_PHRASES.filter((phrase) => lowerBody.includes(phrase)).length,
+    defensivePhrases: countOccurrences(body, DEFENSIVE_PHRASES),
+    hedgeSharePct: Math.round((100 * countOccurrences(body, DEFENSIVE_PHRASES)) / sentenceCount(body)),
+    englishTerms: cyrillicShare(body) > 0.5 ? (body.match(ENGLISH_TERMS) || []).length : 0,
+    mixedAddress: cyrillicShare(body) > 0.5 && RU_INFORMAL.test(body) && RU_POLITE.test(body),
+    informalAddress: cyrillicShare(body) > 0.5 && RU_INFORMAL.test(body) && !RU_POLITE.test(body),
   };
 }
 
@@ -106,6 +130,10 @@ function aggregateChecks(results) {
     flagsMissedPct: share((item) => (item.flagsMissed || 0) > 0),
     meanChars: mean((item) => item.chars || 0),
     meanDefensivePhrases: Math.round((10 * results.reduce((sum, item) => sum + (item.defensivePhrases || 0), 0)) / count) / 10,
+    meanHedgeSharePct: mean((item) => item.hedgeSharePct || 0),
+    meanEnglishTerms: Math.round((10 * results.reduce((sum, item) => sum + (item.englishTerms || 0), 0)) / count) / 10,
+    mixedAddressCount: results.filter((item) => item.mixedAddress).length,
+    informalAddressCount: results.filter((item) => item.informalAddress).length,
     openPresentPct: share((item) => item.openPresent),
     openAboutSlowdownCount: results.filter((item) => item.openAboutSlowdown).length,
     asksForEffortCount: results.filter((item) => item.asksForEffort).length,
@@ -124,6 +152,10 @@ function formatAggregate(aggregate, baseline = null) {
     ['categoryRepeatPct', 'advice category repeated 4x', '%'], ['withUnsupportedNumbersPct', 'answers with numbers not in prompt', '%'],
     ['flagsMissedPct', 'present quality flag not mentioned', '%'], ['meanChars', 'mean answer length', ' chars'],
     ['meanDefensivePhrases', 'defensive phrases per answer', ''],
+    ['meanHedgeSharePct', 'sentences carrying a disclaimer', '%'],
+    ['meanEnglishTerms', 'English class/zone words per non-English answer', ''],
+    ['mixedAddressCount', 'answers mixing informal and polite address (ru)', ' of N'],
+    ['informalAddressCount', 'answers in informal address only (ru)', ' of N'],
     ['openPresentPct', 'open question present', '%'],
     ['openAboutSlowdownCount', 'open questions about the flat/slowdown', ' of N'],
     ['asksForEffortCount', 'advices asking to record RPE/conditions', ' of N'],

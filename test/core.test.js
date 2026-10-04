@@ -4903,3 +4903,31 @@ test('derived-feature rebuild is serialized with analyses and awaited by the oth
   await Promise.all([first, second]);
   assert.deepEqual(seen, [1, 2]);
 });
+
+test('prompts carry the Voice block and the evaluator measures hedging, English terms and address', () => {
+  const voice = /\*\*Voice:\*\*[\s\S]*second person[\s\S]*Never say "the user"/;
+  const analysis = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], segments: [] }, { total_activities: 0 }, {}, null, [], [], 'ru');
+  assert.match(analysis, voice);
+  assert.match(analysis, /Translate every term, including the zone and class names/);
+  assert.match(analysis, /under your own short headings/);
+  assert.match(generateAnalysisChatPrompt({ sessions: [{}], records: [], segments: [] }, {}, {}, '', [], 'why?', 'ru'), voice);
+  assert.match(generateComparisonPrompt({ sessions: [{}], records: [], segments: [] }, { sessions: [{}], records: [], segments: [] }, 'ru'), voice);
+
+  const { checkAnalysisResponse, aggregateChecks } = require('../prompt-eval');
+  const tail = '\n---\nSUMMARY\ntype: tempo\nfinding: f\nadvice_category: pacing\nadvice: a\nopen: none\nrevised: none';
+  const robotic = checkAnalysisResponse({ response: `Класс mixed подтверждается. Это описание, а не вывод о форме. Пик не доказывает изменения формы. Отметь время на 18 км.${tail}`, prompt: '' });
+  assert.equal(robotic.englishTerms, 1);
+  assert.equal(robotic.defensivePhrases, 3); // "это описание", "а не вывод", "не доказыва"
+  assert.ok(robotic.hedgeSharePct >= 50);
+  assert.equal(robotic.informalAddress, true);
+  assert.equal(robotic.mixedAddress, false);
+  const mixed = checkAnalysisResponse({ response: `Отметьте время, а потом проверь давление.${tail}`, prompt: '' });
+  assert.equal(mixed.mixedAddress, true);
+  const plain = checkAnalysisResponse({ response: `Смешанная поездка: половина времени в темповой зоне. Проверьте давление перед следующим выездом.${tail}`, prompt: '' });
+  assert.equal(plain.englishTerms, 0);
+  assert.equal(plain.defensivePhrases, 0);
+  const aggregate = aggregateChecks([robotic, mixed, plain]);
+  assert.equal(aggregate.mixedAddressCount, 1);
+  assert.equal(aggregate.informalAddressCount, 1);
+  assert.ok(aggregate.meanEnglishTerms > 0);
+});
