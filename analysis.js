@@ -293,7 +293,7 @@ function buildRouteContextBlock(routeContext) {
   return joinNonEmpty([
     `**Same-Route Context (GPS-confirmed):**\nRoute "${routeContext.routeName}" (${routeContext.relation}); ${routeContext.priorRideCount} earlier comparable rides (same direction).`,
     routeContext.routeNote ? `User note about this route (user-declared, applies to every ride on it): ${routeContext.routeNote}` : null,
-    lines ? `Checkpoint splits at this ride's segment boundaries (plus every 2 km inside long segments); prior rides are matched by place on the road, so differing segmentation does not break the comparison. Median of up to 5 prior same-route rides:\n${lines}` : null,
+    lines ? `Checkpoint splits at this ride's segment boundaries (plus every 2 km inside long segments); prior rides are matched by place on the road, so differing segmentation does not break the comparison. Each line is one place with its own delta; quote places separately, never as a range summary. Median of up to 5 prior same-route rides:\n${lines}` : null,
     routeContext.patternLine,
     routeContext.verdictLine,
     routeContext.climbLine,
@@ -614,7 +614,7 @@ function describeLanguageModelError(vscode, error) {
 const PROMPT_BLOCK_BUDGETS = Object.freeze([
   ['This Workout', 1500], ['Segment Breakdown', 4000], ['Same-Route Context', 2200], ['Route Profile', 1000], ['Altitude Quality', 1800], ['Heuristic Session Class', 400],
   ['Time in Heart-Rate Zones', 900], ['Peak Sustained', 900], ['Recent Activity History', 4500],
-  ['Training Volume and Covered Intensity', 3200], ['Dated User Context', 3200], ['Principles', 4000],
+  ['Training Volume and Covered Intensity', 3200], ['Dated User Context', 3200], ['Principles', 4400],
   ['Questions for Analysis', 1800],
 ]);
 
@@ -820,6 +820,7 @@ function buildSessionClassContext(sessionClass, heartRateConfig) {
 // Positive principles for the analysis prompt; data-specific facts live in the data blocks.
 const ANALYSIS_PRINCIPLES = Object.freeze([
   'Hierarchy of evidence: measurement > calculation > data-quality flag > user message > code heuristic > earlier AI hypothesis. Back each important claim with a number from the data. Repeated AI claims are not independent corroboration.',
+  'Every number you quote is copied from the supplied data at its own place: the same mark, segment or date. Do not generalize a split to a stretch it does not cover, average in your head, flip a sign (slower/faster), or shift a location (segment numbers and km marks are different axes and a ride cannot reference km beyond its length). If the data does not carry a number for a point, the point is made without one or not made.',
   'Explain mechanisms (heat, drift, wind, fatigue) as hypotheses and say what observation would tell them apart.',
   'Compare only what is comparable: the same route and signal source. Without that, speed and HR are description, not a judgement of form.',
   'Separate behaviour (what was done), stimulus (what the load resembles) and form (needs repeatable comparable data; faster speed or lower HR alone does not establish it). Goals may be absent, multiple, or change over time: infer the training direction from repeated patterns, not intentions. Do not infer recovery status, aerobic control, fatigue or overreaching from average and maximum HR alone.',
@@ -830,7 +831,7 @@ const ANALYSIS_PRINCIPLES = Object.freeze([
   'Estimates (vpower, hrTSS, TRIMP) are approximations on their own scales; vpower limits apply per segment and never support absolute performance or FTP claims.',
   'Device temperature, absent fields and partial coverage can change a conclusion: mention each once, where it matters. Temperature may be the device\'s, not ambient air. Absent fields may be unmeasured, withheld, unavailable or inapplicable; treat unknown as unknown rather than zero. Quality flags are measured facts that explain discrepancies, not hedges.',
   'Do not prescribe bpm targets from a peak; phrase effort advice through RPE and comparable stretches, labelled as general guidance.',
-  'Do not fill missing data with plausible claims; say once what is missing. If recent analyses already pointed out the same missing sensor or data gap, mention it at most briefly and do not make it the practical step again.',
+  'Do not fill missing data with plausible claims; say once what is missing. Never present an invented instruction, promise or preference as the user\'s own words; only the supplied session notes and user context are the user\'s. If recent analyses already pointed out the same missing sensor or data gap, mention it at most briefly and do not make it the practical step again.',
   'Ask the user only when the answer would change the advice and was not asked before; otherwise state the working assumption. Most analyses need no question.',
   'Focus on what is new relative to earlier summaries. Do not repeat advice, caveats or questions already given there unless this activity adds new evidence; do not retell tables. Attribute period statistics to their stated date range, never to one activity.',
   'Answer in the interface language. Translate every term, including the zone and class names that appear in English in the data (recovery, endurance, tempo, threshold, VO2max, mixed, unstructured, undetermined); keep only the abbreviations HR, VAM, TRIMP, RPE, bpm and units such as km/h. Never leave an English word inside a sentence in another language.',

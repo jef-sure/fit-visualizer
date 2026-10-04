@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.4 - 2026-10-04
+
+### Changed
+
+- Analysis format 34: the analysis prompt now forbids the fabrication patterns seen in model testing on 39 rides: a split delta must be quoted at its own mark and never generalized to a stretch it does not cover (with its sign kept), segment numbers and km marks are different axes that cannot reference km beyond the ride's length, and an invented instruction or preference may never be presented as the user's own words. Principles budget grows to fit.
+
 ## 0.26.3 - 2026-10-04
 
 ### Fixed

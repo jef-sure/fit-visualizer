@@ -3505,7 +3505,7 @@ test('prompt places data before rules and carries segment guidance', () => {
   const { instructions, data } = generateAnalysisPromptParts({ sessions: [{ total_distance_km: 20 }], segments }, { total_activities: 0 }, {}, null, [], []);
   assert.doesNotMatch(instructions, /\*\*This Workout:\*\*/);
   assert.match(data, /\*\*Questions for Analysis:\*\*/);
-  assert.equal((instructions.match(/^\d+\. /gm) || []).length, 15, 'fifteen principles');
+  assert.equal((instructions.match(/^\d+\. /gm) || []).length, 16, 'sixteen principles');
   assert.match(prompt, /never compare vpower numbers against HR numbers directly/);
   assert.match(prompt, /past analyses of other workouts/);
 
