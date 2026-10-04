@@ -4458,3 +4458,18 @@ test('observed max HR is a 15-second peak with a persisted source and a prompt p
     { maxHeartRate: 172, effectiveDate: '2026-08-14', formulaMaxHeartRate: 172 }, null, [], [], 'en');
   assert.match(plain, /Max HR Source: formula 172/);
 });
+
+test('activity page shows the session-class chip with evidence and quality-flag chips', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const base = { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [], source: 'fit' };
+  const render = (sessionClass, qualityFlags) => renderActivityContentHtml({}, {}, { ...base, sessionClass }, null, 'n', false, null, {}, null, [], null,
+    UI_STRINGS, GLOSSARY, false, 'en', [], null, [], null, false, 'osm', null, qualityFlags);
+  const html = render({ label: 'threshold', confidence: 'high', reasons: ['Z4 28 %'], alternatives: ['tempo'] },
+    [{ code: 'HR_DROPOUT', severity: 'warn', text: '110 s without heart rate' }, { code: 'HR_ABSENT', severity: 'info', text: 'no HR' }]);
+  assert.match(html, /Session class: threshold</);
+  assert.match(html, /title="class: threshold \(high\)\nevidence: Z4 28 %\nalternatives: tempo"/);
+  assert.match(html, /chipWarn[^>]*title="HR_DROPOUT: 110 s without heart rate"/);
+  assert.match(html, /chipInfo[^>]*title="HR_ABSENT: no HR"/);
+  assert.doesNotMatch(render(null, []), /Session class: /);
+  assert.doesNotMatch(render(null, []), /class="chip/);
+});

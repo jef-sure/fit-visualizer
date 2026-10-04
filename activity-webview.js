@@ -34,7 +34,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
   getHrZoneIndex: getHeartRateZoneIndex,
 });
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null, qualityFlags = []) {
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
   const ui = localizeUi(translate);
   const glossary = localizeGlossary(translate);
@@ -89,7 +89,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles, routeCard)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles, routeCard, qualityFlags)
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -396,7 +396,7 @@ function renderRouteCard(route, ui, mapId) {
     </section>`;
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm', routeCard = null) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm', routeCard = null, qualityFlags = []) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -559,6 +559,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       ${metric(ui.elevationLossM, summary.elevationLossM.toFixed(0), 'elevationLoss', glossary)}
       ${metric(ui.gpsPointsLabel, gpsRoute.pointCount, 'gpsPoints', glossary)}
     </section>
+    ${renderSessionChips({ ...fitData, qualityFlags }, ui)}
     ${primaryPower.source === 'estimated' ? `<section style="padding:12px;margin-bottom:16px;background:rgba(255,193,7,0.1);border-left:4px solid #ffc107;color:var(--ink);font-size:0.95rem;line-height:1.5;">
       <strong>${escapeHtml(ui.dataQualityNoteTitle)}</strong> ${escapeHtml(ui.dataQualityNote)}
     </section>` : ''}
@@ -1993,6 +1994,9 @@ function sharedCss() {
     .mapHint { color:var(--muted); font-size:0.85rem; }
     .mapZoomHint { position:absolute; inset:0; z-index:1200; display:flex; align-items:center; justify-content:center; pointer-events:none; opacity:0; transition:opacity 140ms ease; background:color-mix(in srgb,var(--bg) 55%,transparent); color:var(--ink); font-size:1.05rem; font-weight:700; letter-spacing:0.03em; }
     .mapZoomHint.visible { opacity:1; }
+    .chip { border:1px solid var(--border); border-radius:10px; padding:2px 9px; font-size:0.78rem; color:var(--muted); cursor:help; }
+    .chipWarn { border-color:var(--vscode-editorWarning-foreground, #cca700); color:var(--vscode-editorWarning-foreground, #cca700); }
+    .chipInfo { }
     .manualDataForm { display:flex; align-items:end; gap:12px; flex-wrap:wrap; }
     .manualDataForm label { display:grid; gap:4px; color:var(--muted); font-size:0.82rem; }
     .manualDataForm input { width:150px; border:1px solid var(--border); border-radius:6px; padding:6px 8px; background:var(--input-bg); color:var(--input-fg); }
@@ -2004,6 +2008,25 @@ function sharedCss() {
     .calibrationHint { margin-top:10px; padding:8px 10px; border-left:4px solid var(--accent); background:color-mix(in srgb, var(--accent) 12%, transparent); font-size:0.85rem; line-height:1.5; }
     .calibrationHint button { margin-left:8px; border:1px solid var(--border); border-radius:4px; padding:3px 8px; background:var(--input-bg); color:var(--input-fg); cursor:pointer; font-size:0.8rem; }
   `;
+}
+
+function renderSessionChips(fitData, ui) {
+  const sessionClass = fitData?.sessionClass;
+  const flags = Array.isArray(fitData?.qualityFlags) ? fitData.qualityFlags : [];
+  if (!sessionClass?.label && !flags.length) return '';
+  const classTitle = sessionClass ? [
+    `class: ${sessionClass.label} (${sessionClass.confidence || '?'})`,
+    sessionClass.reasons?.length ? `evidence: ${sessionClass.reasons.join('; ')}` : null,
+    sessionClass.alternatives?.length ? `alternatives: ${sessionClass.alternatives.join(', ')}` : null,
+  ].filter(Boolean).join('\n') : null;
+  const parts = [];
+  if (sessionClass?.label) {
+    parts.push(`<span class="chip" title="${escapeHtml(classTitle)}">${escapeHtml(ui.sessionClassLabel)}: ${escapeHtml(String(sessionClass.label))}${sessionClass.confidence === 'low' ? ' ⚠' : ''}</span>`);
+  }
+  for (const flag of flags) {
+    parts.push(`<span class="chip ${flag.severity === 'warn' ? 'chipWarn' : 'chipInfo'}" title="${escapeHtml(`${flag.code}: ${flag.text || flag.detail || ''}`)}">${escapeHtml(flag.code)}</span>`);
+  }
+  return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:-6px 0 16px 0;align-items:center;">${parts.join('')}</div>`;
 }
 
 function metric(label, value, term, glossary) {

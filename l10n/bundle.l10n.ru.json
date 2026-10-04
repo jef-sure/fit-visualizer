@@ -229,5 +229,7 @@
   "Group ride": "Группа",
   "Traffic": "Трафик",
   "Night": "Ночь",
-  "New route": "Новый маршрут"
+  "New route": "Новый маршрут",
+  "Session class": "Класс сессии",
+  "Data quality": "Качество данных"
 }

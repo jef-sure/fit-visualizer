@@ -46,6 +46,8 @@ const UI_STRINGS = {
   condTraffic: 'Traffic',
   condNight: 'Night',
   condNewRoute: 'New route',
+  sessionClassLabel: 'Session class',
+  qualityFlagsLabel: 'Data quality',
   routeSection: 'Route',
   routeNameLabel: 'Route name',
   routeNoteLabel: 'About this route',
