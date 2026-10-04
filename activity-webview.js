@@ -495,6 +495,8 @@ function renderRouteCard(route, ui, mapId) {
         <span class="routeRidesCount">${escapeHtml(formatUi(ui.routeRides, route.rideCount))}</span>
         <span class="routeDirectionBadge">${escapeHtml(direction)}</span>
       </div>
+      ${route.relation === 'partial' && route.relationDetail
+        ? `<div class="routePartial">${escapeHtml(ui.routePartialPrefix)} ${escapeHtml(route.relationDetail)}</div>` : ''}
       ${facts.length ? `<div class="routeFactsGrid">${facts.map((fact) => `<div class="metric"><div class="k">${escapeHtml(fact.k)}</div><div class="v">${escapeHtml(fact.v)}</div></div>`).join('')}</div>` : ''}
       ${climbLine}
       <form id="${mapId}RouteForm" class="manualDataForm">
@@ -2119,6 +2121,7 @@ function sharedCss() {
     .routeRidesCount { color:var(--ink); font-size:1.05rem; font-weight:600; }
     .routeDirectionBadge { border:1px solid var(--input-border); border-radius:999px; padding:2px 10px; font-size:0.8rem; color:var(--muted); background:var(--input-bg); }
     .routeFactsGrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; margin-bottom:10px; }
+    .routePartial { color:var(--muted); font-size:0.85rem; margin:-4px 0 10px 0; }
     .routeClimbs { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
     .routeClimbsLabel { color:var(--muted); font-size:0.85rem; }
     .routeClimbBadge { border:1px solid color-mix(in srgb,#d35400 45%,var(--border)); background:color-mix(in srgb,#d35400 14%,var(--card)); color:var(--ink); border-radius:6px; padding:2px 8px; font-size:0.85rem; white-space:nowrap; }

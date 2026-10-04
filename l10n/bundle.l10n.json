@@ -251,5 +251,6 @@
   "km {0}-{1} · +{2} m · {3}%": "km {0}-{1} · +{2} m · {3}%",
   "vPower n/a": "vPower n/a",
   "Estimated power here (≈{0} W) did not clear the checks for a comparable estimate (coverage, gravity share, or a capped/accelerating sample); heart rate is the quoted effort for this segment instead.": "Estimated power here (≈{0} W) did not clear the checks for a comparable estimate (coverage, gravity share, or a capped/accelerating sample); heart rate is the quoted effort for this segment instead.",
-  "middle-tier model": "middle-tier model"
+  "middle-tier model": "middle-tier model",
+  "This ride:": "This ride:"
 }

@@ -330,6 +330,7 @@ async function getRouteCard(dbPath, activityId) {
     const described = card.features ? describeRouteFeatures(card.features, card.relation === 'reversed' ? 'reversed' : 'same') : null;
     return {
       routeId: card.routeId, name: card.name, note: card.note, rideCount: card.rideCount, relation: card.relation,
+      relationDetail: card.relationDetail ?? null,
       lengthKm: card.features?.lengthKm ?? null, ascentM: card.features?.ascentM ?? null, descentM: card.features?.descentM ?? null,
       climbs: described?.climbs ?? [],
     };

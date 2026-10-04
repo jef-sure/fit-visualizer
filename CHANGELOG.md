@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.9 - 2026-10-04
+
+### Fixed
+
+- The route card on a partial ride (a longer ride that only partly follows the route) now states what part of the route this ride covered, instead of presenting the route's facts as if the whole route was ridden. Full same-direction/reversed rides are unaffected; the card's numbers are route facts by design and stay the same across rides of one route.
+
 ## 0.26.8 - 2026-10-04
 
 ### Fixed

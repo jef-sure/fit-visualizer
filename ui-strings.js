@@ -66,6 +66,7 @@ const UI_STRINGS = {
   routeNotePlaceholder: 'Terrain and conditions that apply to every ride here, for example a climb in the second half or a usual headwind on the way back',
   saveRoute: 'Save route',
   routeRides: '{0} rides on this route',
+  routePartialPrefix: 'This ride:',
   routeDirectionSame: 'this direction',
   routeDirectionReversed: 'opposite direction',
   routeDirectionPartial: 'part of the route',

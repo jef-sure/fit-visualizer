@@ -47,7 +47,8 @@ function readAssignment(db, activityId) {
     stmt.bind([activityId]);
     if (!stmt.step()) return null;
     const row = stmt.getAsObject();
-    return { routeId: row.route_id, relation: String(row.relation || '').split(' ')[0] || 'same', routeName: row.name, rideCount: row.ride_count };
+    const detail = String(row.relation || '');
+    return { routeId: row.route_id, relation: detail.split(' ')[0] || 'same', relationDetail: detail, routeName: row.name, rideCount: row.ride_count };
   } finally {
     stmt.free();
   }
@@ -375,7 +376,7 @@ function readRouteCard(db, activityId) {
     if (!(row.ride_count >= 2) && !row.note) return null;
     const features = safeJson(row.features_json)?.features || null;
     return { routeId: row.id, name: row.name || '', note: row.note || '', rideCount: row.ride_count,
-      relation: assignment.relation, features };
+      relation: assignment.relation, relationDetail: assignment.relationDetail || null, features };
   } finally {
     stmt.free();
   }
