@@ -15,7 +15,7 @@ Already using FIT Visualizer? After an update, refresh your saved AI analyses so
 1. Open the Command Palette (`Ctrl+Shift+P`).
 2. Run **FIT: Re-analyze Outdated Analyses** and confirm.
 
-That's the only step you need — indexing and derived-data rebuilds happen on their own. New users can skip this: it only matters once you have saved analyses.
+That's the only step you need for most updates. One exception: if your files were last indexed by a version **older than 0.20.0**, run **FIT: Index All Files** once too — those versions stored the device's ascent/descent figure scaled down 1000×, and re-indexing restores it. New users can skip all of this: it only matters once you have saved data.
 
 Re-indexing is local and does not change the original FIT files. Re-analysis is optional, requires GitHub Copilot, sends activity and discussion context to the model, and may consume your Copilot allowance.
 
