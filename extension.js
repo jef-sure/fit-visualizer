@@ -168,6 +168,7 @@ function activate(context) {
     rememberDatabasePath,
     resolveActiveDbPath,
     resolveFitUri,
+    selectAnalysisModel,
     selectDatabaseFolder,
     showActivityBrowserInPanel,
     tidyHeartRateProfiles,
@@ -422,6 +423,47 @@ async function updateModelPriceTable() {
   }, () => updateModelPrices(extensionContextRef.globalState));
   vscode.window.showInformationMessage(vscode.l10n.t(
     'Model prices updated: {0} models ({1}).', cache.prices.length, cache.updatedAt.slice(0, 10)
+  ));
+}
+
+// Lets the athlete pick which model answers one-off analyses: the QuickPick lists the models the
+// current vendor actually offers, plus a "default/cheapest" entry that clears the pinned id. The
+// pin overrides the cheapest-model heuristic, so prompt experiments stay reproducible.
+async function selectAnalysisModel() {
+  const vendor = getLanguageModelVendor();
+  let models = [];
+  try {
+    models = await vscode.lm.selectChatModels({ vendor });
+  } catch {
+    models = [];
+  }
+  if (!models.length) {
+    vscode.window.showWarningMessage(vscode.l10n.t('No language models are available for vendor "{0}".', vendor));
+    return;
+  }
+  const current = getAnalysisModelId();
+  const defaultLabel = vscode.l10n.t('Default ({0})', getPreferCheapAnalysisModel() ? 'cheapest' : 'first');
+  const items = [
+    { label: defaultLabel, description: vscode.l10n.t('clear the pinned model'), modelId: null },
+    ...models.map((model) => ({
+      label: model.name || model.id,
+      description: model.id === model.name ? undefined : model.id,
+      detail: current === model.id || current === model.name ? vscode.l10n.t('currently pinned') : undefined,
+      modelId: model.id,
+    })),
+  ];
+  const picked = await vscode.window.showQuickPick(items, {
+    placeHolder: vscode.l10n.t('Select the language model for one-off activity analysis'),
+    matchOnDescription: true,
+  });
+  if (!picked) {
+    return;
+  }
+  await vscode.workspace.getConfiguration('fitVisualizer').update(
+    'analysisModelId', picked.modelId, vscode.ConfigurationTarget.Global
+  );
+  vscode.window.showInformationMessage(vscode.l10n.t(
+    'Analysis model: {0}.', picked.modelId ? picked.label : defaultLabel
   ));
 }
 
@@ -1024,8 +1066,8 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     } else if (msg.type === 'analyzeActivity') {
       try {
         const requestedActivityId = Number(msg.id);
-        const { text: analysis, warnings } = await generateActivityAnalysis(dbPath, requestedActivityId, msg.force);
-        panel.webview.postMessage({ type: 'analysisResult', id: requestedActivityId, analysis, warnings });
+        const { text: analysis, warnings, modelId, analyzedAt } = await generateActivityAnalysis(dbPath, requestedActivityId, msg.force);
+        panel.webview.postMessage({ type: 'analysisResult', id: requestedActivityId, analysis, warnings, modelId, analyzedAt });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         panel.webview.postMessage({ type: 'analysisError', id: Number(msg.id), error: errorMsg });
@@ -1810,32 +1852,36 @@ async function runActivityAnalysis(dbPath, activityId, force) {
   if (!force) {
     const existing = await getCachedAnalysisForCurrentVersion(dbPath, numId);
     if (existing) {
-      return { text: existing, warnings: [] };
+      return { text: existing.text, modelId: existing.modelId, analyzedAt: existing.analyzedAt, warnings: [] };
     }
   }
 
   const { prompt, analysisData } = await buildAnalysisPromptForActivity(dbPath, numId);
+  let usedModelId;
   const rawAnalysis = await requestCopilotAnalysis(vscode, prompt, {
     vendor: getLanguageModelVendor(),
     preferCheapModel: getPreferCheapAnalysisModel(),
     modelId: getAnalysisModelId(),
     cheapModelMarkers: getCheapModelMarkers(),
-    onCompleted: (result) => logLlmRequest(dbPath, {
-      activityId: numId,
-      kind: 'analysis',
-      warnings: segmentBudgetWarnings(analysisData),
-      ...result,
-    }),
+    onCompleted: (result) => {
+      usedModelId = result.modelId;
+      return logLlmRequest(dbPath, {
+        activityId: numId,
+        kind: 'analysis',
+        warnings: segmentBudgetWarnings(analysisData),
+        ...result,
+      });
+    },
   });
   // The SUMMARY tail feeds later prompts; the displayed text never carries it.
   const { body: analysis, summary: analysisSummary } = parseAnalysisSummary(rawAnalysis);
-  await storeAnalysisInDb(dbPath, numId, analysis, analysisSummary);
+  await storeAnalysisInDb(dbPath, numId, analysis, analysisSummary, usedModelId);
   const warnings = segmentBudgetWarnings(analysisData);
   for (const warning of warnings) {
     reportAnalysisWarning(`Activity ${numId}: ${warning.text}`, warning.severity);
   }
 
-  return { text: analysis, warnings: warnings.map(({ severity, text }) => `${severity}: ${text}`) };
+  return { text: analysis, modelId: usedModelId || null, analyzedAt: new Date().toISOString(), warnings: warnings.map(({ severity, text }) => `${severity}: ${text}`) };
 }
 
 // The line budget is a rough guideline for prompt size, never a truncation cap. A small overshoot
@@ -2517,10 +2563,11 @@ async function getCachedAnalysisForCurrentVersion(dbPath, activityId) {
   const db = await openDatabase(SQL, dbPath);
   let stmt;
   try {
-    stmt = db.prepare('SELECT analysis_text FROM activity_analysis WHERE activity_id = ? AND analysis_version = ?');
+    stmt = db.prepare('SELECT analysis_text, model_id, updated_at FROM activity_analysis WHERE activity_id = ? AND analysis_version = ?');
     stmt.bind([activityId, ANALYSIS_VERSION]);
     if (stmt.step()) {
-      return stmt.getAsObject().analysis_text;
+      const row = stmt.getAsObject();
+      return { text: row.analysis_text, modelId: row.model_id || null, analyzedAt: row.updated_at || null };
     }
     return null;
   } finally {
@@ -2535,7 +2582,7 @@ async function getLatestAnalysisAnyVersion(dbPath, activityId) {
   const db = await openDatabase(SQL, dbPath);
   let stmt;
   try {
-    stmt = db.prepare('SELECT analysis_text, analysis_version FROM activity_analysis WHERE activity_id = ? ORDER BY analysis_version DESC LIMIT 1');
+    stmt = db.prepare('SELECT analysis_text, analysis_version, model_id, updated_at FROM activity_analysis WHERE activity_id = ? ORDER BY analysis_version DESC LIMIT 1');
     stmt.bind([activityId]);
     if (stmt.step()) {
       const row = stmt.getAsObject();
@@ -2543,6 +2590,8 @@ async function getLatestAnalysisAnyVersion(dbPath, activityId) {
       return {
         text: row.analysis_text,
         version: Number.isFinite(version) ? version : 0,
+        modelId: row.model_id || null,
+        analyzedAt: row.updated_at || null,
       };
     }
     return null;
@@ -3107,20 +3156,21 @@ function buildRouteContext(currentData, activities, selected, routeNote = null) 
   };
 }
 
-async function storeAnalysisInDb(dbPath, activityId, analysis, summary = null) {
+async function storeAnalysisInDb(dbPath, activityId, analysis, summary = null, modelId = null) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
     const now = new Date().toISOString();
     db.run(`
-      INSERT INTO activity_analysis (activity_id, analysis_text, analysis_version, summary_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO activity_analysis (activity_id, analysis_text, analysis_version, summary_json, model_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(activity_id) DO UPDATE SET
         analysis_text = excluded.analysis_text,
         analysis_version = excluded.analysis_version,
         summary_json = excluded.summary_json,
+        model_id = excluded.model_id,
         updated_at = excluded.updated_at
-    `, [activityId, analysis, ANALYSIS_VERSION, summary ? JSON.stringify(summary) : null, now, now]);
+    `, [activityId, analysis, ANALYSIS_VERSION, summary ? JSON.stringify(summary) : null, modelId, now, now]);
     await persistDatabase(db, dbPath);
   } finally {
     db.close();

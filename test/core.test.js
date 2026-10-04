@@ -4519,3 +4519,20 @@ test('inferred notes from the summary tail reach the prompt as revisable and pre
   assert.match(mixed, /value="rain" style="width:auto;" checked>/);
   assert.doesNotMatch(mixed, /value="headwind" style="width:auto;" checked>/);
 });
+
+test('analysis card shows the model signature and the format version', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const base = { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] };
+  const html = renderActivityContentHtml({}, {}, { ...base }, null, 'n', false, null, {},
+    { text: 'Analysis body', version: 27, modelId: 'gpt-6-luna', analyzedAt: '2026-10-04T09:00:00.000Z' },
+    [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 27, [], null, false, 'osm', null, []);
+  assert.match(html, /"modelId":"gpt-6-luna"/);
+  assert.match(html, /"analyzedAt":"2026-10-04T09:00:00\.000Z"/);
+  assert.match(html, /const analysisVersion = 27;/);
+  assert.match(html, /analyzedBy/);
+  assert.match(html, /formatMessage\(ui\.analyzedBy/);
+  // No model recorded (pre-B5 rows) renders no signature.
+  const bare = renderActivityContentHtml({}, {}, { ...base }, null, 'n', false, null, {},
+    { text: 'Analysis body', version: 27 }, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 27, [], null, false, 'osm', null, []);
+  assert.match(bare, /let analysisMeta = null;/);
+});

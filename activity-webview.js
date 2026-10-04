@@ -710,6 +710,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <div id="analysisContent" style="padding:12px;color:var(--muted);min-height:80px;line-height:1.5;">
         <p style="margin:0;">${escapeHtml(ui.loadingAnalysis)}</p>
       </div>
+      <div id="analysisMeta" style="display:none;padding:0 12px 6px 12px;font-size:0.75rem;color:var(--muted);"></div>
       <button id="analyzeBtn" style="margin-top:10px;padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.analyzeActivity)}</button>
       ${comparisonBlock}
       <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
@@ -741,6 +742,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       }
 
       const analysisContent = document.getElementById('analysisContent');
+      const analysisMetaEl = document.getElementById('analysisMeta');
       const analyzeBtn = document.getElementById('analyzeBtn');
       const analysisChatMessagesEl = document.getElementById('analysisChatMessages');
       const analysisChatInput = document.getElementById('analysisChatInput');
@@ -761,7 +763,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       const comparisonStatus = document.getElementById('comparisonStatus');
       const compareBtn = document.getElementById('compareBtn');
       const vscode = window.fitVisualizerApi;
+      const analysisVersion = ${safeJson(analysisVersion)};
       const initialAnalysis = ${safeJson(analysis?.text || '')};
+      let analysisMeta = ${safeJson(analysis?.modelId || analysis?.analyzedAt ? { modelId: analysis?.modelId || null, analyzedAt: analysis?.analyzedAt || null } : null)};
       let hasAnalysis = Boolean(initialAnalysis);
       let analysisOutdated = ${analysis && asNumber(analysis.version) < analysisVersion ? 'true' : 'false'};
       let chatMessages = ${safeJson(Array.isArray(analysisChat) ? analysisChat : [])};
@@ -778,6 +782,16 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           ? '<div style="margin:0 0 10px 0;padding:8px 10px;border-left:4px solid #ffc107;background:rgba(255,193,7,0.1);font-size:0.92rem;">' + escapeHtml(ui.olderAnalysis) + '</div>'
           : '';
         analysisContent.innerHTML = note + '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(text) + '</div>';
+      }
+
+      function showAnalysisMeta() {
+        if (!analysisMeta || !analysisMeta.modelId) {
+          analysisMetaEl.style.display = 'none';
+          return;
+        }
+        const date = analysisMeta.analyzedAt ? new Date(analysisMeta.analyzedAt).toLocaleDateString() : '';
+        analysisMetaEl.textContent = formatMessage(ui.analyzedBy, analysisMeta.modelId, String(analysisVersion), date).replace(/  /g, ' ');
+        analysisMetaEl.style.display = 'block';
       }
 
       function setSegmentBudgetWarning(warnings) {
@@ -837,6 +851,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       renderChatMessages();
       if (initialAnalysis) {
         showAnalysisText(initialAnalysis);
+        showAnalysisMeta();
         analyzeBtn.textContent = analyzeButtonLabel();
       } else {
         analysisContent.innerHTML = '<p style="margin:0;color:var(--muted);">' + escapeHtml(ui.clickAnalyze) + '</p>';
@@ -862,7 +877,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         if (msg.type === 'analysisResult') {
           hasAnalysis = true;
           analysisOutdated = false;
+          analysisMeta = msg.modelId ? { modelId: msg.modelId, analyzedAt: msg.analyzedAt || null } : null;
           showAnalysisText(msg.analysis);
+          showAnalysisMeta();
           analyzeBtn.disabled = false;
           analyzeBtn.textContent = analyzeButtonLabel();
           setSegmentBudgetWarning(Array.isArray(msg.warnings) ? msg.warnings : []);

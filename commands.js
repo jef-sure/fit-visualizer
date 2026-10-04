@@ -15,6 +15,7 @@ function registerCommands(context, services) {
     rememberDatabasePath,
     resolveActiveDbPath,
     resolveFitUri,
+    selectAnalysisModel,
     selectDatabaseFolder,
     showActivityBrowserInPanel,
     tidyHeartRateProfiles,
@@ -50,6 +51,12 @@ function registerCommands(context, services) {
     'fitVisualizer.updateModelPrices',
     vscode.l10n.t('FIT model price update failed'),
     () => updateModelPriceTable()
+  );
+
+  const selectModel = register(
+    'fitVisualizer.selectAnalysisModel',
+    vscode.l10n.t('FIT model selection failed'),
+    () => selectAnalysisModel()
   );
 
   const reanalyzeOutdated = register(
@@ -101,7 +108,7 @@ function registerCommands(context, services) {
     }
   );
 
-  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, updateModelPrices, customEditor];
+  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, updateModelPrices, selectModel, customEditor];
 }
 
 function createFitEditorProvider(context, services) {

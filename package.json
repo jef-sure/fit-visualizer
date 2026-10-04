@@ -66,6 +66,10 @@
       {
         "command": "fitVisualizer.updateModelPrices",
         "title": "FIT: Update Model Prices"
+      },
+      {
+        "command": "fitVisualizer.selectAnalysisModel",
+        "title": "FIT: Select Analysis Model"
       }
     ],
     "menus": {
