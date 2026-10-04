@@ -1,7 +1,7 @@
 // Pure heart-rate-profile storage helpers, kept free of the vscode import so tests can exercise them directly.
 
 function readHeartRateProfiles(db) {
-  const stmt = db.prepare('SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start, lthr FROM heart_rate_profiles ORDER BY effective_date');
+  const stmt = db.prepare('SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start, lthr, observed_max_source_json FROM heart_rate_profiles ORDER BY effective_date');
   try {
     const rows = [];
     while (stmt.step()) rows.push(stmt.getAsObject());
@@ -18,7 +18,7 @@ function normalizeOptional(value) {
 
 // Saving the same values again must not fork history: the effective profile is reused instead of inserting a row,
 // and a directly following duplicate is removed. A max-HR flip against a neighbouring profile is reported, not blocked.
-function applyHeartRateProfileUpsert(db, { effectiveDate, maxHeartRate, thresholds, lthr = null }, now) {
+function applyHeartRateProfileUpsert(db, { effectiveDate, maxHeartRate, thresholds, lthr = null, observedMaxSource = null }, now) {
   const sameValues = (row) => row
     && Number(row.max_hr) === maxHeartRate
     && normalizeOptional(row.lthr) === normalizeOptional(lthr)
@@ -49,8 +49,8 @@ function applyHeartRateProfileUpsert(db, { effectiveDate, maxHeartRate, threshol
   }
   db.run(`
     INSERT INTO heart_rate_profiles (
-      effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start, lthr, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start, lthr, observed_max_source_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(effective_date) DO UPDATE SET
       max_hr = excluded.max_hr,
       zone2_start = excluded.zone2_start,
@@ -58,8 +58,9 @@ function applyHeartRateProfileUpsert(db, { effectiveDate, maxHeartRate, threshol
       zone4_start = excluded.zone4_start,
       zone5_start = excluded.zone5_start,
       lthr = excluded.lthr,
+      observed_max_source_json = excluded.observed_max_source_json,
       updated_at = excluded.updated_at
-  `, [effectiveDate, maxHeartRate, ...thresholds, lthr ?? null, now, now]);
+  `, [effectiveDate, maxHeartRate, ...thresholds, lthr ?? null, observedMaxSource ? JSON.stringify(observedMaxSource) : null, now, now]);
   if (following && sameValues(following)) {
     db.run('DELETE FROM heart_rate_profiles WHERE effective_date = ?', [following.effective_date]);
   }

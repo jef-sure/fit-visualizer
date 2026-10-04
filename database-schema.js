@@ -242,6 +242,7 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'activities', 'device_moving_time_s', 'REAL');
   addColumnIfMissing(db, 'activities', 'device_elapsed_s', 'REAL');
   addColumnIfMissing(db, 'heart_rate_profiles', 'lthr', 'REAL');
+  addColumnIfMissing(db, 'heart_rate_profiles', 'observed_max_source_json', 'TEXT');
   addColumnIfMissing(db, 'activity_analysis', 'summary_json', 'TEXT');
   addColumnIfMissing(db, 'routes', 'note', 'TEXT');
   addColumnIfMissing(db, 'routes', 'features_json', 'TEXT');

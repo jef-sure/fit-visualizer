@@ -1638,6 +1638,7 @@ function profileRowToConfig(profile) {
     effectiveDate: String(profile.effective_date),
     source: 'dated profile',
     lthr: Number.isFinite(lthr) && lthr > 0 ? lthr : null,
+    observedMaxSource: parseObservedMaxSource(safeParseJson(profile.observed_max_source_json, null)),
   };
 }
 
@@ -1646,8 +1647,8 @@ function getProfileHeartRateConfig(db, startTime) {
   let stmt;
   try {
     stmt = db.prepare(activityDate
-      ? 'SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start, lthr FROM heart_rate_profiles WHERE effective_date <= ? ORDER BY effective_date DESC LIMIT 1'
-      : 'SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start, lthr FROM heart_rate_profiles ORDER BY effective_date DESC LIMIT 1');
+      ? 'SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start, lthr, observed_max_source_json FROM heart_rate_profiles WHERE effective_date <= ? ORDER BY effective_date DESC LIMIT 1'
+      : 'SELECT effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start, lthr, observed_max_source_json FROM heart_rate_profiles ORDER BY effective_date DESC LIMIT 1');
     if (activityDate) {
       stmt.bind([activityDate]);
     }
@@ -2124,6 +2125,15 @@ async function updateActivityHeartRate(dbPath, activityId, avgHrInput, maxHrInpu
   }
 }
 
+function parseObservedMaxSource(value) {
+  const parsed = typeof value === 'string' ? safeParseJson(value, null) : value;
+  if (!parsed || typeof parsed !== 'object') return null;
+  const value_ = parsed;
+  const bpm = Number(value_.bpm);
+  const source = { activityId: Number(value_.activityId) || null, date: String(value_.date || '').slice(0, 10), windowS: Number(value_.windowS) || null, bpm: Number.isFinite(bpm) ? Math.round(bpm) : null };
+  return source.bpm ? source : null;
+}
+
 async function updateHeartRateProfile(dbPath, message) {
   const activityId = Number(message.id);
   if (!Number.isInteger(activityId) || activityId <= 0) {
@@ -2172,7 +2182,8 @@ async function updateHeartRateProfile(dbPath, message) {
   const db = await openDatabase(SQL, dbPath);
   try {
     const now = new Date().toISOString();
-    const { inserted, notice } = applyHeartRateProfileUpsert(db, { effectiveDate, maxHeartRate, thresholds, lthr }, now);
+    const observedMaxSource = parseObservedMaxSource(message.observedMaxSource);
+    const { inserted, notice } = applyHeartRateProfileUpsert(db, { effectiveDate, maxHeartRate, thresholds, lthr, observedMaxSource }, now);
     if (athleteProfile || ftp != null || wheelCircumferenceMm != null) {
       upsertAthleteProfile(db, {
         sex: athleteProfile?.sex,
@@ -2201,6 +2212,33 @@ async function updateHeartRateProfile(dbPath, message) {
   }
 }
 
+
+// The highest 15-second rolling HR average across stored rides, with the activity it came from.
+function observedPeakHeartRateFromDb(db, windowS) {
+  const ids = db.exec("SELECT id, start_time FROM activities WHERE source = 'fit' ORDER BY datetime(start_time), id")[0]?.values || [];
+  let best = null;
+  const { calculatePeakHeartRates } = require('./heart-rate');
+  for (const [id, startTime] of ids) {
+    const stmt = db.prepare('SELECT elapsed_s, heart_rate FROM records WHERE activity_id = ? ORDER BY record_index');
+    try {
+      stmt.bind([id]);
+      const records = [];
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        records.push({ elapsed_time: row.elapsed_s, heart_rate: row.heart_rate });
+      }
+      const peaks = calculatePeakHeartRates(records, [windowS]);
+      const bpm = peaks?.[0]?.bpm;
+      if (Number.isFinite(bpm) && (!best || bpm > best.bpm)) {
+        best = { activityId: Number(id), date: String(startTime).slice(0, 10), bpm: Math.round(bpm) };
+      }
+    } finally {
+      stmt.free();
+    }
+  }
+  return best;
+}
+
 async function autoCalculateHeartRateProfileFromDb(dbPath, message) {
   const athleteProfile = parseRequiredAthleteProfile(message);
   const SQL = await getSqlJs();
@@ -2216,8 +2254,13 @@ async function autoCalculateHeartRateProfileFromDb(dbPath, message) {
     `);
     stmt.step();
     const row = stmt.getAsObject();
-    const observedMaxHeartRate = Math.max(Number(row.max_session_hr) || 0, Number(row.max_record_hr) || 0);
     stmt.free();
+    // Observed max is a 15-second peak, not a single sample: one spurious beat cannot raise it.
+    const peak = observedPeakHeartRateFromDb(db, 15);
+    const observedMaxHeartRate = peak != null ? peak.bpm : Math.max(Number(row.max_session_hr) || 0, Number(row.max_record_hr) || 0);
+    const observedMaxSource = peak != null
+      ? { activityId: peak.activityId, date: peak.date, windowS: 15, bpm: peak.bpm }
+      : null;
     stmt = db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM activities) AS activity_count,
@@ -2299,6 +2342,10 @@ async function autoCalculateHeartRateProfileFromDb(dbPath, message) {
       observedMaxHeartRate,
     });
     suggestion.ftp = selectFtpEstimate(ftpCandidates);
+    suggestion.observedMaxSource = observedMaxSource;
+    if (observedMaxSource && suggestion.formulaMaxHeartRate && observedMaxSource.bpm - suggestion.formulaMaxHeartRate > 15) {
+      suggestion.observedMaxNotice = `Observed 15 s peak ${observedMaxSource.bpm} bpm is more than 15 bpm above the formula estimate (${suggestion.formulaMaxHeartRate}). Keep it only if that effort was real.`;
+    }
     suggestion.mmp = mmp;
     suggestion.ftpCandidates = ftpCandidates;
     suggestion.mmpStatus = {

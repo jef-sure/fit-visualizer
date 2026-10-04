@@ -4437,3 +4437,24 @@ test('settling window lands in the workout fields with the recomputed settled pa
   const clean = generateAnalysisPrompt({ sessions: [{ sport: 'cycling', total_ascent_m: 64, total_descent_m: 163 }], records }, { total_activities: 0 });
   assert.doesNotMatch(clean, /settled part/);
 });
+
+test('observed max HR is a 15-second peak with a persisted source and a prompt provenance line', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { applyHeartRateProfileUpsert, readHeartRateProfiles } = require('../heart-rate-profiles');
+    const source = { activityId: 123, date: '2026-08-14', windowS: 15, bpm: 171 };
+    applyHeartRateProfileUpsert(db, { effectiveDate: '2026-08-14', maxHeartRate: 171, thresholds: [null, null, null, null], lthr: null, observedMaxSource: source }, 'x');
+    const stored = JSON.parse(readHeartRateProfiles(db)[0].observed_max_source_json);
+    assert.deepEqual(stored, source);
+  } finally {
+    db.close();
+  }
+  const prompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [] }, { total_activities: 0 },
+    { maxHeartRate: 171, effectiveDate: '2026-08-14', observedMaxSource: { bpm: 171, date: '2026-08-14', windowS: 15 }, formulaMaxHeartRate: 172 }, null, [], [], 'en');
+  assert.match(prompt, /Max HR Source: observed 15 s window 171 bpm on 2026-08-14 \/ formula 172/);
+  const plain = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [] }, { total_activities: 0 },
+    { maxHeartRate: 172, effectiveDate: '2026-08-14', formulaMaxHeartRate: 172 }, null, [], [], 'en');
+  assert.match(plain, /Max HR Source: formula 172/);
+});

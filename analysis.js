@@ -715,9 +715,13 @@ function buildHeartRateProfileContext(heartRateConfig) {
       : Number.isFinite(Number(heartRateConfig?.restingHeartRate))
         ? `thresholds derived from Karvonen reserve (resting ${heartRateConfig.restingHeartRate} bpm); hrTSS threshold is estimated, not a tested LTHR`
         : 'thresholds derived at 60%, 70%, 80%, and 90% of max HR; hrTSS threshold is estimated, not a tested LTHR';
+  const maxSource = heartRateConfig?.observedMaxSource
+    ? `observed 15 s window ${heartRateConfig.observedMaxSource.bpm} bpm on ${heartRateConfig.observedMaxSource.date}${heartRateConfig.formulaMaxHeartRate ? ` / formula ${heartRateConfig.formulaMaxHeartRate}` : ''}`
+    : heartRateConfig?.formulaMaxHeartRate ? `formula ${heartRateConfig.formulaMaxHeartRate}` : null;
   return `**Heart Rate Profile Effective for This Workout:**\n${formatFieldsSkippingEmpty([
     ['Effective Date', heartRateConfig.effectiveDate || 'legacy setting'],
     ['Maximum HR', heartRateConfig.maxHeartRate, 'bpm'],
+    ['Max HR Source', maxSource],
     ['Zone 2-5 Starts', Array.isArray(heartRateConfig.thresholds)
       ? `${heartRateConfig.thresholds.join(', ')} bpm`
       : 'derived at 60%, 70%, 80%, and 90% of max HR'],

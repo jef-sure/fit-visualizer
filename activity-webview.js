@@ -632,6 +632,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           <span>${escapeHtml(ui.wheelCircumference)}</span>
           <input id="${mapId}WheelCircumference" type="number" min="1000" max="2500" step="0.1" value="${wheelCircumferenceValue}" placeholder="e.g. 2105">
         </label>
+        <input type="hidden" id="${mapId}ObservedMaxSource" value="">
         <button type="button" id="${mapId}AutoCalcZonesBtn">${escapeHtml(ui.autoCalculate)}</button>
         <button type="submit">${escapeHtml(ui.saveZones)}</button>
         <span id="${mapId}HrProfileStatus" class="manualDataStatus"></span>
@@ -923,10 +924,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           hrProfileStatus.textContent = msg.error;
           hrProfileStatus.classList.add('error');
         } else if (msg.type === 'heartRateProfileAuto') {
+          document.getElementById('${mapId}ObservedMaxSource').value = msg.suggestion.observedMaxSource ? JSON.stringify(msg.suggestion.observedMaxSource) : '';
           document.getElementById('${mapId}ProfileMaxHr').value = msg.suggestion.maxHeartRate;
           [2, 3, 4, 5].forEach((zone, index) => {
             document.getElementById('${mapId}Zone' + zone + 'Start').value = msg.suggestion.thresholds[index];
           });
+          if (msg.suggestion.observedMaxNotice) {
+            hrProfileStatus.textContent = msg.suggestion.observedMaxNotice;
+            hrProfileStatus.classList.remove('error');
+          }
           if (msg.suggestion.ftp > 0) {
             document.getElementById('${mapId}AthleteFtp').value = msg.suggestion.ftp;
           }
@@ -1035,6 +1041,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           maxHr: document.getElementById('${mapId}ProfileMaxHr').value,
           thresholds: [2, 3, 4, 5].map((zone) => document.getElementById('${mapId}Zone' + zone + 'Start').value),
           lthr: document.getElementById('${mapId}ProfileLthr').value,
+          observedMaxSource: document.getElementById('${mapId}ObservedMaxSource').value || null,
           sex: document.getElementById('${mapId}AthleteSex').value,
           age: document.getElementById('${mapId}AthleteAge').value,
           restingHr: document.getElementById('${mapId}AthleteRestingHr').value,
