@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.23.0 - 2026-10-04
+
+### Upgrade Notes
+
+- Run **FIT: Re-analyze Outdated Analyses** (analysis format 29). The derived-feature cache rebuilds itself in the background (it now stores per-ride checkpoints for the route section).
+
+### Added
+
+- **Route section detail**: the activity page now shows checkpoint splits against the median of the latest same-direction rides, the typical speed by route section, and a mini chart of the final climb time across rides.
+- **Route filter** in the activity list: a selector narrows the activity and comparison lists to one route, and the choice is remembered.
+
+### Changed
+
+- Long segments (10+ min) now report cadence and the temperature span; the temporal-halves line gains the temperature.
+- A climb of at least 3 min followed by a minute of continuous movement reports the post-climb HR drop (descriptive; suppressed on a stop or an HR gap).
+- The period block reports RPE against TRIMP when session notes carry RPE (descriptive, no correlation below six rides).
+
 ## 0.22.0 - 2026-10-04
 
 ### Upgrade Notes
