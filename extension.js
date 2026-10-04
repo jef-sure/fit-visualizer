@@ -36,6 +36,7 @@ const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRo
 const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
+const { computeDataQualityFlags } = require('./data-quality');
 const { computeSegmentStretches, describeRouteFeatures } = require('./route-features');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling, mirrorConsensusProfile } = require('./altitude-quality');
 const { buildRouteSignature } = require('./route-match');
@@ -736,7 +737,7 @@ async function resolveActiveDbPath(preferredDir) {
     activeResourcePaths.push(activeDocumentPath);
   }
 
-  const activeTabPath = vscode.window.tabGroups.activeTabGroup.activeTab?.input?.uri?.fsPath;
+  const activeTabPath = vscode.window.tabGroups?.activeTabGroup?.activeTab?.input?.uri?.fsPath;
   if (activeTabPath && !activeResourcePaths.includes(activeTabPath)) {
     activeResourcePaths.push(activeTabPath);
   }
@@ -2019,6 +2020,7 @@ async function reanalyzeOutdatedActivities() {
 
 async function prepareAnalysisData(dbPath, fitData, activityId) {
   const athleteProfile = await getAthleteProfile(dbPath, activityId);
+  const wheelRatio = asNumber((await getWheelCalibrationRecommendation(dbPath))?.ratio) || null;
   const sourceSession = fitData.sessions?.[0] || {};
   const session = {
     ...sourceSession,
@@ -2055,6 +2057,8 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
     },
   });
   const sessionClass = buildSessionClassForActivity(powerData.records, session, hrConfig, athleteProfile, segments);
+  // Measured facts about the recording: one place, computed in code (B1).
+  const qualityFlags = computeDataQualityFlags({ records: powerData.records, session, wheelRatio });
   // Route info and checkpoints are filled later by getTrainingContextFromDb (they need the
   // routes table and the same-sport history); analysisData carries the current-ride data.
   return {
@@ -2062,6 +2066,7 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
     records: powerData.records,
     segments,
     sessionClass,
+    qualityFlags,
     analysisHeartRateConfig: hrConfig,
     analysisQuality: {
       massSource: 'activity-specific mass when saved, otherwise current athlete profile; not measured by FIT',
@@ -2863,7 +2868,10 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     others: activities.map((activity) => ({ startTime: activity.startTime, utcOffsetS: activity.utcOffsetS })),
   });
   if (offsetChange) {
-    context.offsetChangeNote = `This device UTC offset (${formatOffsetLabel(offsetChange.utcOffsetS)}) differs from the median of ${offsetChange.neighbours} nearby same-file activities (${formatOffsetLabel(offsetChange.medianOffsetS)}): the device timezone setting probably changed, so local clock times and local dates around these rides are less reliable.`;
+    context.qualityFlags = [...(context.qualityFlags || []), {
+      code: 'OFFSET_CHANGED', severity: 'warn',
+      text: `device UTC offset (${formatOffsetLabel(offsetChange.utcOffsetS)}) differs from the median of ${offsetChange.neighbours} nearby same-file activities (${formatOffsetLabel(offsetChange.medianOffsetS)}); the device timezone setting probably changed, so local clock times and local dates around these rides are less reliable`,
+    }];
   }
   context.routeContext = currentRouteInfo
     ? buildRouteContext({ routeInfo: currentRouteInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected, readRouteNote(db, currentRouteInfo.routeId))
@@ -2878,6 +2886,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     records: currentRecords,
     described: routeProfileForStretches?.described || null,
   });
+  context.qualityFlags = currentData?.qualityFlags || [];
   context.altitudeQuality = buildAltitudeQuality({
     db, records: currentRecords, routeInfo: currentRouteInfo, activity: selected,
   });

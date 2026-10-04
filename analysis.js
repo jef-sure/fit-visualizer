@@ -3,6 +3,7 @@ const { calculatePeakHeartRates, computeHeartRateZones } = require('./heart-rate
 const { localClock, localDate } = require('./activity-time');
 const { rankModelsByCost } = require('./model-pricing');
 const { describeStretches } = require('./route-features');
+const { buildDataQualityFlagBlock } = require('./data-quality');
 const { SUMMARY_TAIL_INSTRUCTION, describeAnalysisForHistory } = require('./analysis-summary');
 const { buildSessionNotesBlock, describeNotesShort } = require('./activity-notes');
 
@@ -280,10 +281,12 @@ function buildRouteProfileBlock(routeProfile) {
   ], '\n');
 }
 
-function buildAltitudeQualityBlock(altitudeQuality) {
-  if (!altitudeQuality || !(altitudeQuality.flags?.length || altitudeQuality.routeLine)) return '';
+function buildAltitudeQualityBlock(altitudeQuality, qualityFlags = []) {
+  const otherFlags = buildDataQualityFlagBlock(qualityFlags);
+  if (!altitudeQuality || !(altitudeQuality.flags?.length || altitudeQuality.routeLine)) return otherFlags;
   const flags = (altitudeQuality.flags || []).map((flag) => `- ${flag.code}: ${flag.detail}`).join('\n');
-  return `**Altitude Quality (measured facts about this recording):**\n${joinNonEmpty([flags, altitudeQuality.routeLine], '\n')}\nUse these as the explanation for ascent/descent and first-segment grade discrepancies; the route consensus is the steadier figure for comparing days.`;
+  const altitudeBlock = `**Altitude Quality (measured facts about this recording):**\n${joinNonEmpty([flags, altitudeQuality.routeLine], '\n')}\nUse these as the explanation for ascent/descent and first-segment grade discrepancies; the route consensus is the steadier figure for comparing days.`;
+  return joinNonEmpty([altitudeBlock, otherFlags], '\n\n');
 }
 
 function buildTrainingHistoryContext(context) {
@@ -328,13 +331,12 @@ function buildTrainingHistoryContext(context) {
   return joinNonEmpty([
     `**Training Volume and Covered Intensity:**\nHistorical baseline anchored at ${context.windowEnd}: all periods end at or before the current activity start; the current activity is excluded from every historical total. These are rolling windows, not calendar weeks.\n${volume}\n${context.intensityNote}\n${context.coverageNote}`,
     `**Adaptive Observation Window:**\n${context.windowDays} days: ${context.windowStart.slice(0, 10)} to ${context.windowEnd.slice(0, 10)}; ${context.activities} same-sport activities. Window selection is not evidence of fitness.\n${describeTrend('Duration pattern', context.durationTrend)}\n${describeTrend('Distance pattern', context.distanceTrend)}\n${joinNonEmpty([interruptions, monotony], '\n')}`,
-    context.offsetChangeNote ? `**Device Timezone Consistency:**\n${context.offsetChangeNote}` : null,
     context.routeContext
       ? null
       : matches ? `**Candidate Segment Comparisons:**\n${matches}\nMatching uses ordered terrain, duration and distance, not equal HR/power. Similar structure does not establish identical route, intent, weather or training stimulus; consider intensity separately.` : '**Candidate Segment Comparisons:** No eligible matches; training-volume context remains available.',
     context.routeContext ? buildRouteContextBlock(context.routeContext) : null,
     context.routeProfile ? buildRouteProfileBlock(context.routeProfile) : null,
-    context.altitudeQuality ? buildAltitudeQualityBlock(context.altitudeQuality) : null,
+    buildAltitudeQualityBlock(context.altitudeQuality, context.qualityFlags),
     reports ? `**Dated User Context Across Activities:**\n${reports}\nMessage date and activity date are different. Reports may describe another effective period; do not apply later circumstances retrospectively without support.` : null,
   ], '\n\n');
 }
@@ -558,7 +560,7 @@ function describeLanguageModelError(vscode, error) {
 // Character budgets per block (reference: a ~1 h, 1 Hz ride). Matching is by heading prefix; the
 // log shows budget/actual and an overshoot is reported as a warning, never truncated.
 const PROMPT_BLOCK_BUDGETS = Object.freeze([
-  ['This Workout', 1500], ['Segment Breakdown', 1600], ['Same-Route Context', 1500], ['Route Profile', 1000], ['Heuristic Session Class', 400],
+  ['This Workout', 1500], ['Segment Breakdown', 1600], ['Same-Route Context', 1500], ['Route Profile', 1000], ['Altitude Quality', 1800], ['Heuristic Session Class', 400],
   ['Time in Heart-Rate Zones', 900], ['Peak Sustained', 900], ['Recent Activity History', 4500],
   ['Training Volume and Covered Intensity', 3200], ['Dated User Context', 3200], ['Principles', 4000],
   ['Questions for Analysis', 1800],
@@ -822,6 +824,7 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
     zoneContext,
     sessionClassContext,
     buildPeakHeartRateContext(fitData.records, progressSummary?.trainingContext),
+    buildAltitudeQualityBlock(null, fitData.qualityFlags),
     buildDataQualityContext(fitData, heartRateConfig),
     reportedHeartRateContext,
     historyContext,

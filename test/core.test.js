@@ -4378,3 +4378,46 @@ test('a stale derived-feature version triggers one silent background rebuild, a 
     db.close();
   }
 });
+
+test('data-quality flags detect HR dropout, late start, contact loss, hot device, elapsed mismatch and smart recording', () => {
+  const { DQ, buildDataQualityFlagBlock, computeDataQualityFlags } = require('../data-quality');
+  const ride = (overrides) => Array.from({ length: 900 }, (_, i) => ({
+    elapsed_time: i, distance: i * 0.006, heart_rate: 140, temperature_c: 22, position_lat: 52, position_long: 13, ...overrides?.(i),
+  }));
+  const codes = (records, extra) => computeDataQualityFlags({ records, ...extra }).map((flag) => flag.code);
+
+  assert.deepEqual(codes(ride()), [], 'a clean ride has no flags');
+
+  // Dropout: 100 s of missing HR in the middle.
+  assert.deepEqual(codes(ride((i) => (i >= 300 && i < 400 ? { heart_rate: null } : null))), ['HR_DROPOUT']);
+  // Late start: HR appears after 400 s.
+  assert.deepEqual(codes(ride((i) => (i < 400 ? { heart_rate: null } : null))), ['HR_LATE_START']);
+  // No HR at all.
+  assert.deepEqual(codes(ride(() => ({ heart_rate: null }))), ['HR_ABSENT']);
+  // Contact loss: three spikes of +25 bpm recovering in 3 s.
+  const spiky = ride((i) => ([100, 300, 600].includes(i) ? { heart_rate: 165 } : null));
+  assert.ok(codes(spiky).includes('HR_CONTACT_LOSS'));
+  // Hot device: max 41, avg 30.
+  assert.ok(codes(ride((i) => ({ temperature_c: i > 800 ? 41 : 30 }))).includes('TEMP_DEVICE_HOT'));
+  // Elapsed mismatch: device session left running.
+  assert.ok(codes(ride(), { session: { device_elapsed_s: 32000, total_elapsed_s: 3400 } }).includes('ELAPSED_MISMATCH'));
+  // Wheel-sensor scale error.
+  assert.ok(codes(ride(), { wheelRatio: 1.04 }).includes('SPEED_SENSOR_GPS_MISMATCH'));
+  // Smart recording: 2.5 s steps.
+  const sparse = Array.from({ length: 400 }, (_, i) => ({ elapsed_time: i * 2.5, distance: i * 0.015, heart_rate: 140, temperature_c: 22, position_lat: 52, position_long: 13 }));
+  assert.ok(codes(sparse).includes('SMART_RECORDING'));
+  // GPS gap.
+  assert.ok(codes(ride((i) => (i >= 200 && i < 280 ? { position_lat: null, position_long: null } : null))).includes('GPS_GAP'));
+  // Offset change note becomes a flag.
+  assert.ok(codes(ride(), { offsetChangeNote: 'device UTC offset differs from neighbours' }).includes('OFFSET_CHANGED'));
+
+  const block = buildDataQualityFlagBlock([{ code: 'HR_DROPOUT', severity: 'warn', text: '110 s without heart rate' }, { code: 'HR_ABSENT', severity: 'info', text: 'no HR' }]);
+  assert.match(block, /- HR_DROPOUT: 110 s without heart rate/);
+  assert.doesNotMatch(block, /HR_ABSENT/, 'info flags stay out of the prompt block');
+  assert.match(block, /Use each as the explanation where it changes a conclusion, once/);
+  assert.equal(buildDataQualityFlagBlock([]), '');
+
+  const prompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], qualityFlags: [{ code: 'HR_DROPOUT', severity: 'warn', text: '110 s without HR' }] },
+    { total_activities: 0, trainingContext: { ...buildTrainingContext([], '2026-08-25', 'cycling') } }, {}, null, [], [], 'en');
+  assert.match(prompt, /- HR_DROPOUT: 110 s without HR/);
+});
