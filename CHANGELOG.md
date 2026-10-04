@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.1 - 2026-10-04
+
+### Changed
+
+- Documentation: the AI-assisted analysis section of both READMEs now describes the current prompt (session notes, heuristic session class, same-route context with checkpoints and the route-typical pattern, derived route profile, altitude-quality flags, per-session intensity and structured AI summaries in history, the two-message layout with fifteen principles) instead of the pre-0.17 layout; the local-data section lists the derived tables and what survives a rebuild; `fitVisualizer.analysisModelId` is in the settings table. A test now checks that every contributed setting appears in both READMEs.
+
 ## 0.19.0 - 2026-10-03
 
 ### Upgrade Notes
