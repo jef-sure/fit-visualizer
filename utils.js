@@ -1222,7 +1222,7 @@ function buildActivitySegments(records, context = {}) {
 }
 
 // Segments follow how the effort felt, not the terrain: change points of heart rate and power,
-// each piece at least two minutes. The terrain only names a piece (climb, descent, flat). Returns
+// each piece at least a minute. The terrain only names a piece (climb, descent, flat). Returns
 // null when the ride has neither heart rate nor power to split on; the caller then uses the grade.
 function segmentByEffort(records, options = {}) {
   const stopped = new Array(records.length).fill(false);
@@ -1376,9 +1376,9 @@ function groupSimilarSegments(segments, options = {}) {
 // Not a cap to truncate at: exceeding it means the segmentation thresholds themselves misfired.
 function segmentLineBudget(durationSeconds, options = {}) {
   const hours = Math.max(0, asNumber(durationSeconds) || 0) / 3600;
-  const perHour = optionNumber(options, 'promptLinesPerHour', 24);
+  const perHour = optionNumber(options, 'promptLinesPerHour', 32);
   const minLines = optionNumber(options, 'promptMinLines', 12);
-  const hardCeiling = optionNumber(options, 'promptMaxLines', 240);
+  const hardCeiling = optionNumber(options, 'promptMaxLines', 320);
   return clamp(Math.round(hours * perHour), minLines, hardCeiling);
 }
 

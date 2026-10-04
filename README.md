@@ -154,7 +154,7 @@ Right-click a `.fit` file in the Explorer for two shortcuts to the commands abov
 
 ## Effort Segmentation
 
-Each ride is split into segments where the effort changes, plus stops. A segment is a stretch of roughly steady effort of at least two minutes: a new one starts when heart rate (about 5 bpm) or power (about 30 W, measured or estimated) settles at a different level and stays there. Terrain only names a segment (climb, descent, flat); one segment can hold a gentle rise and a gentle fall if the effort was the same. A typical ride gets around 15–20 segments per hour. Heart rate is read 20 s back, since it trails the effort that caused it. Rides without heart rate are split on power alone, and rides with neither fall back to splitting by grade. Segments show duration, distance, average grade, and an effort estimate:
+Each ride is split into segments where the effort changes, plus stops. A segment is a stretch of roughly steady effort of at least a minute: a new one starts when heart rate (about 5 bpm) or power (about 30 W, measured or estimated) settles at a different level and stays there. Terrain only names a segment (climb, descent, flat); one segment can hold a gentle rise and a gentle fall if the effort was the same. A typical ride gets around 20–25 segments per hour. Heart rate is read 20 s back, since it trails the effort that caused it. Rides without heart rate are split on power alone, and rides with neither fall back to splitting by grade. Segments show duration, distance, average grade, and an effort estimate:
 
 - **Measured power**, when present, remains the preferred effort signal.
 - **Climbs** may use virtual power when spatial grade coverage and the model's contribution checks support conditional relative comparison. Otherwise heart rate is preferred; without HR, a climb estimate may be shown for rough description only.
@@ -295,7 +295,7 @@ Most settings can be left at their defaults. Segmentation thresholds are mainly 
 | `fitVisualizer.segmentation.gradeHysteresisPct`  | `0.5`   | Margin for switching terrain type; used only for rides with neither heart rate nor power.                          |
 | `fitVisualizer.segmentation.minSegmentSeconds`   | `45`    | A shorter stretch of movement between two stops is treated as part of the stop.                                    |
 | `fitVisualizer.segmentation.technicalGradePct`   | `-8`    | Descent grade below which an erratic speed trace marks the segment as technical (no effort estimate).              |
-| `fitVisualizer.segmentation.effortMinSegmentSeconds` | `120` | Shortest stretch of steady effort that becomes a segment of its own. |
+| `fitVisualizer.segmentation.effortMinSegmentSeconds` | `60` | Shortest stretch of steady effort that becomes a segment of its own. |
 | `fitVisualizer.segmentation.effortHrStepBpm` | `5` | Heart-rate difference that counts as a different level of effort. Lower gives more segments. |
 | `fitVisualizer.segmentation.effortPowerStepWatts` | `30` | Power difference (measured or estimated) that counts as a different level of effort. Lower gives more segments. |
 | `fitVisualizer.segmentation.stopSpeedKmh`        | `1`     | Speed at/below which a record counts as stopped.                                                                   |

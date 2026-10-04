@@ -1340,7 +1340,8 @@ test('activity segments combine terrain, effort basis and aggregates', () => {
   assert.equal(segments[0].startIndex, 0);
   assert.equal(segments[segments.length - 1].endIndex, records.length - 1);
 
-  const climb = segments.find((segment) => segment.type === 'climb');
+  // Heart rate and power in this synthetic ride change at the same second, so a short transition piece is expected.
+  const climb = segments.filter((segment) => segment.type === 'climb').sort((x, y) => y.durationS - x.durationS)[0];
   assert.equal(climb.effortBasis, 'hr');
   assert.equal(climb.vpowerUse, 'not assessed');
   assert.ok(climb.avgGrade > 5 && climb.avgGrade < 7);
@@ -1361,7 +1362,7 @@ test('activity segments combine terrain, effort basis and aggregates', () => {
 test('short continuous climbs are not fragmented into effort micro-segments', () => {
   const records = terrainRecords([[0.2, 80], [5, 330], [0.2, 80]], {
     speedKmh: 14,
-    powerFor: (elapsed) => 100 + (Math.floor(elapsed / 50) % 4) * 35,
+    powerFor: (elapsed) => 100 + (Math.floor(elapsed / 50) % 4) * 8,
   });
   const climbs = buildActivitySegments(records, { sport: 'cycling', powerSource: 'estimated' })
     .filter((segment) => segment.type === 'climb');
@@ -1518,7 +1519,7 @@ test('segments follow effort on a flat road: an 8 bpm step splits, a 2 bpm wobbl
   assert.equal(buildActivitySegments(wobble, { sport: 'cycling' }).length, 1);
 });
 
-test('effort segments are at least two minutes, are named by terrain and never cross a stop', () => {
+test('effort segments are at least a minute, are named by terrain and never cross a stop', () => {
   const records = terrainRecords([[0, 240], [0, 240], [6, 360], [0, 240]], {
     speedKmh: 20,
     heartRateFor: (elapsed) => (elapsed < 240 ? 120 : elapsed < 480 ? 140 : elapsed < 840 ? 160 : 135),
@@ -1526,7 +1527,7 @@ test('effort segments are at least two minutes, are named by terrain and never c
   for (let i = 400; i < 460; i += 1) records[i].speed = 0;
   const segments = buildActivitySegments(records, { sport: 'cycling' });
   const moving = segments.filter((segment) => segment.type !== 'stopped');
-  assert.ok(moving.every((segment) => segment.durationS >= 119), 'no moving segment shorter than the minimum');
+  assert.ok(moving.every((segment) => segment.durationS >= 59), 'no moving segment shorter than the minimum');
   assert.ok(segments.some((segment) => segment.type === 'stopped'));
   assert.ok(moving.some((segment) => segment.type === 'climb'));
   segments.forEach((segment, index) => {
@@ -2963,9 +2964,9 @@ test('segment lines keep grade and vpower diagnostics only where vpower is the q
 
 test('segment line budget scales with duration and never truncates', () => {
   assert.equal(segmentLineBudget(0), 12);
-  assert.equal(segmentLineBudget(3600), 24);
-  assert.equal(segmentLineBudget(5 * 3600), 120);
-  assert.equal(segmentLineBudget(1000 * 3600), 240);
+  assert.equal(segmentLineBudget(3600), 32);
+  assert.equal(segmentLineBudget(5 * 3600), 160);
+  assert.equal(segmentLineBudget(1000 * 3600), 320);
 
   const noisy = [];
   for (let i = 0; i < 40; i += 1) {

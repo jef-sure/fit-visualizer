@@ -194,8 +194,8 @@
         },
         "fitVisualizer.segmentation.effortMinSegmentSeconds": {
           "type": "number",
-          "default": 120,
-          "minimum": 30,
+          "default": 60,
+          "minimum": 20,
           "maximum": 900,
           "description": "Shortest stretch of steady effort that becomes a segment of its own. Segments follow heart rate and power; the terrain only names them."
         },

@@ -14,8 +14,8 @@ const POWER_WINDOW_BINS = 5;
 const DEFAULTS = {
   hrStepBpm: 5,
   powerStepWatts: 30,
-  penalty: 6,
-  minSeconds: 120,
+  penalty: 9,
+  minSeconds: 60,
 };
 
 function finiteNumber(value) {

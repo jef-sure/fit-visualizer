@@ -248,6 +248,10 @@ const STRATEGIES = [
   { name: 'abs-both-fine', run: effortStrategy('both', { absScale: { hr: 5, pw: 30 }, fixedBeta: 6, minBins: 24 }) },
   { name: 'abs-both-pw60', run: effortStrategy('both', { absScale: { hr: 5, pw: 60 }, fixedBeta: 6, minBins: 24 }) },
   { name: 'abs-pw-fine', run: effortStrategy('pw', { absScale: { pw: 30 }, fixedBeta: 6, minBins: 24 }) },
+  { name: 'both-min60', run: effortStrategy('both', { absScale: { hr: 5, pw: 30 }, fixedBeta: 6, minBins: 12 }) },
+  { name: 'both-min60-b9', run: effortStrategy('both', { absScale: { hr: 5, pw: 30 }, fixedBeta: 9, minBins: 12 }) },
+  { name: 'both-min45-b9', run: effortStrategy('both', { absScale: { hr: 5, pw: 30 }, fixedBeta: 9, minBins: 9 }) },
+  { name: 'both-min30-b12', run: effortStrategy('both', { absScale: { hr: 5, pw: 30 }, fixedBeta: 12, minBins: 6 }) },
   { name: 'abs-hr-3bpm', run: effortStrategy('hr', { absScale: { hr: 3 }, fixedBeta: 12, minBins: 24 }) },
 ];
 
