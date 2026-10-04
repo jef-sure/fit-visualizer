@@ -4111,3 +4111,38 @@ test('every contributed setting appears in the settings table of both READMEs', 
     }
   }
 });
+
+test('prompt evaluator measures open questions, notes usage, direction facts and altitude coverage', () => {
+  const { aggregateChecks, checkAnalysisResponse } = require('../prompt-eval');
+  const prompt = (blocks, reversed) => `${blocks}${reversed ? ' (reversed)' : ''}`;
+  const tail = (open, advice) => `\n---\nSUMMARY\ntype: tempo\nfinding: f\nadvice_category: pacing\nadvice: ${advice}\nopen: ${open}\nrevised: none`;
+  const onRoute = prompt('**Route Profile:** km 4-10 typical 27.5 km/h');
+  const a = checkAnalysisResponse({ response: `Использовано направление маршрута.${tail('none', 'держите ровное усилие')}`, prompt: onRoute });
+  assert.equal(a.openPresent, false);
+  assert.equal(a.openAboutSlowdown, false);
+  assert.equal(a.asksForEffort, false);
+  assert.equal(a.hasRouteBlocks, true);
+  assert.equal(a.usesDirection, true);
+
+  const b = checkAnalysisResponse({ response: `Замедление на ровном участке.${tail('Что вызвало замедление после 10 км?', 'запишите RPE и условия на следующей поездке')}`, prompt: onRoute });
+  assert.equal(b.openAboutSlowdown, true);
+  assert.equal(b.asksForEffort, true);
+  assert.equal(b.usesDirection, false);
+
+  const withNotes = checkAnalysisResponse({ response: `Заявленное усилие RPE 7 учтено.${tail('none', 'ok')}`, prompt: prompt("**Athlete's Session Notes:** RPE 7/10") });
+  assert.equal(withNotes.hasNotesBlock, true);
+  assert.equal(withNotes.usesNotes, true);
+  assert.equal(checkAnalysisResponse({ response: `x${tail('none', 'запишите RPE')}`, prompt: onRoute }).hasNotesBlock, false);
+
+  const alt = checkAnalysisResponse({ response: `ok${tail('none', 'ok')}`, prompt: prompt('**Altitude Quality:**\n- ALT_SETTLING: x', true) });
+  assert.equal(alt.hasAltitudeBlock, true);
+  assert.equal(alt.reversedRide, true);
+  assert.equal(checkAnalysisResponse({ response: `ok${tail('none', 'ok')}`, prompt: 'Elevation Gain: 64 m (device reports 0/0 m; sources disagree)' }).deviceZeroZero, true);
+
+  const agg = aggregateChecks([a, b, withNotes, alt]);
+  assert.equal(agg.openAboutSlowdownCount, 1);
+  assert.equal(agg.asksForEffortCount, 1);
+  assert.equal(agg.usesNotesPctOfWithNotes, 100);
+  assert.equal(agg.usesDirectionPctOfRoute, 50);
+  assert.equal(agg.altitudeBlockPctOfReversed, 100);
+});

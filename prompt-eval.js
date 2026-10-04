@@ -54,8 +54,20 @@ function checkAnalysisResponse({ response, prompt, previousCategories = [], code
   const flagsMentioned = FLAG_KEYWORDS
     .filter((rule) => rule.pattern.test(prompt || ''))
     .map((rule) => rule.words.test(body));
+  const promptText = String(prompt || '');
+  const bodyLower = body.toLowerCase();
   return {
     validTail: Boolean(summary),
+    openPresent: Boolean(summary?.open),
+    openAboutSlowdown: Boolean(summary?.open) && /(ровн|flat|замедлен|slowdown|speed drop|после 10|после десят)/i.test(summary.open),
+    asksForEffort: /запиш|record|отметь|note down|enter your|fill in/i.test(String(summary?.advice || '')) && /rpe|усили|effort|услови|condition|ветер|wind/i.test(String(summary?.advice || '')),
+    hasNotesBlock: /Athlete's Session Notes/.test(promptText),
+    usesNotes: /Athlete's Session Notes/.test(promptText) && /(rpe|усили|заявлен|declared|услови)/i.test(body) && !/запиш.*(rpe|усили)/i.test(body),
+    usesDirection: /Route Profile|Same-Route/.test(promptText) && /(направлени|direction|typical for this direction|типичн[аояМ]* (для )?направлен)/i.test(body),
+    deviceZeroZero: /device reports 0\/0/.test(promptText),
+    hasAltitudeBlock: /^\*\*Altitude Quality/m.test(promptText),
+    hasRouteBlocks: /Route Profile|Same-Route/.test(promptText),
+    reversedRide: /\(reversed\)/.test(promptText),
     detectedClass,
     typeMatchesCode,
     categoryRepeat,
@@ -70,6 +82,11 @@ function checkAnalysisResponse({ response, prompt, previousCategories = [], code
 
 function aggregateChecks(results) {
   const count = results.length || 1;
+  // predicate returns true/false for covered items and null for items it does not cover.
+  const shareWhere = (predicate) => {
+    const covered = results.map(predicate).filter((value) => value !== null && value !== undefined);
+    return covered.length ? Math.round((100 * covered.filter(Boolean).length) / covered.length) : 0;
+  };
   const share = (predicate) => Math.round((100 * results.filter(predicate).length) / count);
   const mean = (selector) => Math.round(results.reduce((sum, item) => sum + selector(item), 0) / count);
   return {
@@ -77,10 +94,19 @@ function aggregateChecks(results) {
     validTailPct: share((item) => item.validTail),
     typeMismatchPct: share((item) => item.typeMatchesCode === false),
     categoryRepeatPct: share((item) => item.categoryRepeat),
-    withUnsupportedNumbersPct: share((item) => item.unsupportedNumbers.length > 0),
-    flagsMissedPct: share((item) => item.flagsMissed > 0),
-    meanChars: mean((item) => item.chars),
-    meanDefensivePhrases: Math.round((10 * results.reduce((sum, item) => sum + item.defensivePhrases, 0)) / count) / 10,
+    withUnsupportedNumbersPct: share((item) => (item.unsupportedNumbers || []).length > 0),
+    flagsMissedPct: share((item) => (item.flagsMissed || 0) > 0),
+    meanChars: mean((item) => item.chars || 0),
+    meanDefensivePhrases: Math.round((10 * results.reduce((sum, item) => sum + (item.defensivePhrases || 0), 0)) / count) / 10,
+    openPresentPct: share((item) => item.openPresent),
+    openAboutSlowdownCount: results.filter((item) => item.openAboutSlowdown).length,
+    asksForEffortCount: results.filter((item) => item.asksForEffort).length,
+    deviceZeroZeroCount: results.filter((item) => item.deviceZeroZero).length,
+    notesBlockCount: results.filter((item) => item.hasNotesBlock).length,
+    usesNotesPctOfWithNotes: shareWhere((item) => item.hasNotesBlock ? item.usesNotes : null),
+    usesDirectionPctOfRoute: shareWhere((item) => (item.hasRouteBlocks ? item.usesDirection : null)),
+    altitudeBlockPctOfReversed: shareWhere((item) => (item.reversedRide ? item.hasAltitudeBlock : null)),
+    altitudeBlockCount: results.filter((item) => item.hasAltitudeBlock).length,
   };
 }
 
@@ -90,6 +116,15 @@ function formatAggregate(aggregate, baseline = null) {
     ['categoryRepeatPct', 'advice category repeated 4x', '%'], ['withUnsupportedNumbersPct', 'answers with numbers not in prompt', '%'],
     ['flagsMissedPct', 'present quality flag not mentioned', '%'], ['meanChars', 'mean answer length', ' chars'],
     ['meanDefensivePhrases', 'defensive phrases per answer', ''],
+    ['openPresentPct', 'open question present', '%'],
+    ['openAboutSlowdownCount', 'open questions about the flat/slowdown', ' of N'],
+    ['asksForEffortCount', 'advices asking to record RPE/conditions', ' of N'],
+    ['deviceZeroZeroCount', 'prompts with device 0/0 ascent', ' of N'],
+    ['notesBlockCount', 'prompts with session notes', ' of N'],
+    ['usesNotesPctOfWithNotes', 'answers using declared notes', '% of with-notes'],
+    ['usesDirectionPctOfRoute', 'answers using route direction facts', '% of on-route'],
+    ['altitudeBlockCount', 'prompts with altitude block', ' of N'],
+    ['altitudeBlockPctOfReversed', 'altitude block on reversed rides', '% of reversed'],
   ];
   return rows.map(([key, label, unit]) => {
     const delta = baseline && baseline[key] != null && key !== 'runs' ? ` (${aggregate[key] - baseline[key] >= 0 ? '+' : ''}${Math.round((aggregate[key] - baseline[key]) * 10) / 10})` : '';
