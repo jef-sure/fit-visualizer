@@ -618,6 +618,29 @@ test('segment map and chart hover tooltips reuse existing details without unavai
   assert.match(webviewSource, /showSegmentTooltip\(evt, local\);/);
 });
 
+test('a climb segment whose vPower estimate was downgraded to heart rate shows why, not a silent blank', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const records = straightGpsRecords(180, 15);
+  const segments = [
+    { index: 0, type: 'climb', effortBasis: 'vpower', startElapsed: 0, endElapsed: 59, durationS: 59,
+      avgGrade: 6.6, avgPower: 208, avgHr: 149, vpowerUse: 'conditional relative comparison' },
+    { index: 1, type: 'climb', effortBasis: 'hr', startElapsed: 59, endElapsed: 172, durationS: 113,
+      avgGrade: 6.6, avgPower: 172, avgHr: 156, vpowerUse: 'rough description only' },
+  ];
+  const html = renderActivityContentHtml({}, {}, { records, sessions: [], laps: [] }, null, 'test-nonce', false, null, {}, null, [], null, UI_STRINGS, GLOSSARY, false, 'en', segments, null);
+
+  // The first segment's own vPower is shown, same as before.
+  assert.match(html, /vPower 208 W/);
+  // The second segment, same grade, does not get a quietly empty Effort cell: it says vPower
+  // was computed but not usable here, with the estimate quoted in the hover title.
+  assert.match(html, /<span class="term" title="[^"]*≈172 W[^"]*">vPower n\/a<\/span>/);
+
+  // The map/chart hover tooltip explains the same thing for the same segment.
+  const mapFormatter = html.match(/window\.formatSegmentDetails = function formatSegmentDetails\(segment\) \{([\s\S]*?)\n      \};/)?.[1] || '';
+  assert.match(mapFormatter, /vpowerUse && segment\.vpowerUse !== 'not assessed'/);
+  assert.match(mapFormatter, /vpowerNotUsedBadge/);
+});
+
 test('FIT parser lap lists are retained only from its documented data.laps field', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'fit-files.js'), 'utf8');
   const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
@@ -4133,9 +4156,12 @@ test('activity page shows an editable route card only for a repeated route and w
   const html = render({ routeId: 2, name: 'Home loop', note: 'climb <b>late</b>', rideCount: 36, relation: 'reversed',
     lengthKm: 20.4, ascentM: 117, descentM: 118, climbs: [{ fromKm: 19.8, toKm: 20.4, gainM: 35, avgGradePct: 5.6 }] });
   assert.match(html, />Route<\/h2>/);
-  assert.match(html, /36 rides on this route; this ride goes in the opposite direction/);
-  assert.match(html, /Length 20\.4 km, ascent about 117 m, descent about 118 m/);
-  assert.match(html, /km 19\.8-20\.4 \+35 m \(5\.6%\)/);
+  assert.match(html, /36 rides on this route/);
+  assert.match(html, />opposite direction</);
+  assert.match(html, /class="routeFactsGrid"/);
+  assert.match(html, /Length<\/div><div class="v">20\.4 km/);
+  assert.match(html, /Ascent<\/div><div class="v">~117 m/);
+  assert.match(html, /km 19\.8-20\.4 · \+35 m · 5\.6%/);
   assert.match(html, /value="Home loop"/);
   assert.match(html, /climb &lt;b&gt;late&lt;\/b&gt;<\/textarea>/, 'the note is escaped');
   assert.match(html, /type: 'updateRoute'[\s\S]*routeId: 2,/);

@@ -1,10 +1,30 @@
 # Changelog
 
+## 0.26.3 - 2026-10-04
+
+### Fixed
+
+- A climb segment whose virtual-power estimate was downgraded to "rough description only" (a motion-estimate check failed, even at the same grade as a neighbouring segment) used to leave the Effort cell quietly blank. It now says **vPower n/a**, with the estimate and the reason in the hover title, in both the segment table and the map/chart hover tooltip.
+
+### Changed
+
+- **Route card redesigned.** "Rides on this route" and direction are now a badge, length/ascent/descent are metric tiles matching the rest of the page, and climbs are pill badges instead of a run-on sentence.
+
+## 0.26.2 - 2026-10-04
+
+### Fixed
+
+- BYOK and other non-copilot models can be chosen for analysis. The model picker (analysis card and FIT: Select Analysis Model) lists every model the editor offers, and a picked or pinned model id is resolved across vendors; before, everything filtered by the configured vendor and such models never appeared.
+
 ## 0.26.1 - 2026-10-04
 
 ### Upgrade Notes
 
 - Install and open the extension; a progress notification shows the background rebuild of segments and checkpoints. Then run **FIT: Re-analyze Outdated Analyses** if you upgraded from before format 33.
+
+### Fixed
+
+- The automatic background rebuild of derived features now shows the same progress notification as the manual one ("FIT Visualizer: rebuilding derived features", N/M); before, it ran invisibly and there was no way to tell old segments from new.
 
 ## 0.26.0 - 2026-10-04
 
@@ -20,11 +40,6 @@
 - A typical ride now has 20–25 segments per hour instead of about 5, so the prompt's segment-line guideline is 32 per hour. Only alternating work/rest patterns (three or more repeats) are collapsed into one line; a run of same-kind segments is no longer merged, because the new segmentation separated them on purpose.
 - The prompt's character budget for the segment block grows from 1600 to 4000 for the same reason.
 - Settings: `effortMinSegmentSeconds` (60), `effortHrStepBpm` (5) and `effortPowerStepWatts` (30) replace `effortWindowSeconds`, `minEffortMacroSeconds`, `effortMergeTolerancePct` and `effortCostThreshold`.
-
-### Fixed
-
-- BYOK and other non-copilot models can be chosen for analysis. The model picker (analysis card and FIT: Select Analysis Model) lists every model the editor offers, and a picked or pinned model id is resolved across vendors; before, everything filtered by the configured vendor and such models never appeared.
-- The automatic background rebuild of derived features now shows the same progress notification as the manual one ("FIT Visualizer: rebuilding derived features", N/M); before, it ran invisibly and there was no way to tell old segments from new.
 
 ### Added
 

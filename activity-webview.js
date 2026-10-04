@@ -350,15 +350,22 @@ function renderGroupedSegmentRows(rows, ui) {
     const terrain = segment.technical ? ui.technical : (ui[segment.type] || ui.segment);
     const elevation = segment.type === 'climb' && Number(segment.elevGainM) > 0
       ? displayNumber(segment.elevGainM, ' m', 0, '+') : '';
-    return `<tr><td>${escapeHtml(row.number)}</td><td>${escapeHtml(row.time)}</td><td>${escapeHtml(rangeDistance(segment))}</td><td>${escapeHtml(terrain)}</td><td>${escapeHtml(displayNumber(segment.avgGrade, '%', 1))}</td><td>${escapeHtml(displaySegmentEffort(segment, ui))}</td><td>${escapeHtml(displayNumber(segment.avgHr, ' bpm', 0))}</td><td>${escapeHtml(displayNumber(segment.avgSpeedKmh, ' km/h', 1))}</td><td>${escapeHtml(elevation)}</td></tr>`;
+    return `<tr><td>${escapeHtml(row.number)}</td><td>${escapeHtml(row.time)}</td><td>${escapeHtml(rangeDistance(segment))}</td><td>${escapeHtml(terrain)}</td><td>${escapeHtml(displayNumber(segment.avgGrade, '%', 1))}</td><td>${displaySegmentEffort(segment, ui)}</td><td>${escapeHtml(displayNumber(segment.avgHr, ' bpm', 0))}</td><td>${escapeHtml(displayNumber(segment.avgSpeedKmh, ' km/h', 1))}</td><td>${escapeHtml(elevation)}</td></tr>`;
   }).join('');
   return `<div class="activityTableWrap" data-activity-table="segments"><table class="activityTable"><thead><tr>${headings.map((heading) => `<th>${escapeHtml(heading)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function displaySegmentEffort(segment, ui) {
   if (segment.type === 'descent' || segment.type === 'stopped' || !Number.isFinite(Number(segment.avgPower))) return '';
-  if (segment.effortBasis === 'power') return `${ui.power} ${Math.round(Number(segment.avgPower))} W`;
-  if (segment.effortBasis === 'vpower') return `${ui.virtualPower} ${Math.round(Number(segment.avgPower))} W`;
+  if (segment.effortBasis === 'power') return escapeHtml(`${ui.power} ${Math.round(Number(segment.avgPower))} W`);
+  if (segment.effortBasis === 'vpower') return escapeHtml(`${ui.virtualPower} ${Math.round(Number(segment.avgPower))} W`);
+  // A climb's motion-estimate was computed but did not clear the checks for a comparable number
+  // (coverage, gravity share, a capped or accelerating sample); say so instead of a silent blank,
+  // so a neighbouring segment at the same grade showing vPower does not look like a mistake.
+  if (segment.type === 'climb' && segment.vpowerUse && segment.vpowerUse !== 'not assessed') {
+    const title = formatUi(ui.vpowerNotUsedTitle, Math.round(Number(segment.avgPower)));
+    return `<span class="term" title="${escapeHtml(title)}">${escapeHtml(ui.vpowerNotUsedBadge)}</span>`;
+  }
   return '';
 }
 
@@ -472,13 +479,24 @@ function renderSessionNotesCard(notes, ui, mapId, inferred = null) {
 function renderRouteCard(route, ui, mapId) {
   const direction = route.relation === 'reversed' ? ui.routeDirectionReversed
     : route.relation === 'partial' ? ui.routeDirectionPartial : ui.routeDirectionSame;
-  const facts = Number.isFinite(route.lengthKm)
-    ? formatUi(ui.routeFacts, route.lengthKm, route.ascentM ?? '?', route.descentM ?? '?') : '';
-  const climbs = route.climbs?.length
-    ? formatUi(ui.routeClimbs, route.climbs.map((climb) => `km ${climb.fromKm}-${climb.toKm} +${climb.gainM} m (${climb.avgGradePct}%)`).join('; ')) : '';
+  const known = Number.isFinite(route.lengthKm);
+  const facts = [
+    { k: ui.routeLengthLabel, v: known ? formatUi(ui.routeLengthValue, route.lengthKm) : null },
+    { k: ui.routeAscentLabel, v: route.ascentM != null ? formatUi(ui.routeAscentValue, route.ascentM) : null },
+    { k: ui.routeDescentLabel, v: route.descentM != null ? formatUi(ui.routeDescentValue, route.descentM) : null },
+  ].filter((fact) => fact.v);
+  const climbs = (route.climbs || []).map((climb) => formatUi(ui.routeClimbBadge,
+    climb.fromKm, climb.toKm, climb.gainM, climb.avgGradePct));
+  const climbLine = climbs.length
+    ? `<div class="routeClimbs"><span class="routeClimbsLabel">${escapeHtml(ui.routeClimbs)}</span>${climbs.map((climb) => `<span class="routeClimbBadge">${escapeHtml(climb)}</span>`).join('')}</div>` : '';
   return `<section class="chart manualData">
       <h2>${escapeHtml(ui.routeSection)}</h2>
-      <div class="muted">${escapeHtml(formatUi(ui.routeRides, route.rideCount, direction))}${facts ? `<br>${escapeHtml(facts)}` : ''}${climbs ? `<br>${escapeHtml(climbs)}` : ''}</div>
+      <div class="routeHead">
+        <span class="routeRidesCount">${escapeHtml(formatUi(ui.routeRides, route.rideCount))}</span>
+        <span class="routeDirectionBadge">${escapeHtml(direction)}</span>
+      </div>
+      ${facts.length ? `<div class="routeFactsGrid">${facts.map((fact) => `<div class="metric"><div class="k">${escapeHtml(fact.k)}</div><div class="v">${escapeHtml(fact.v)}</div></div>`).join('')}</div>` : ''}
+      ${climbLine}
       <form id="${mapId}RouteForm" class="manualDataForm">
         <label>
           <span>${escapeHtml(ui.routeNameLabel)}</span>
@@ -1362,7 +1380,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         if (Number.isFinite(Number(segment.avgGrade))) fields.push(escapeSegmentHtml(ui.grade) + ': ' + Number(segment.avgGrade).toFixed(1) + '%');
         if (Number.isFinite(Number(segment.avgSpeedKmh))) fields.push(escapeSegmentHtml(ui.speed) + ': ' + Number(segment.avgSpeedKmh).toFixed(1) + ' km/h');
         if (Number.isFinite(Number(segment.avgHr))) fields.push(escapeSegmentHtml(ui.heartRate) + ': ' + Math.round(Number(segment.avgHr)) + ' bpm');
-        if (Number.isFinite(Number(segment.avgPower))) fields.push(escapeSegmentHtml(ui.effort) + ': ' + Math.round(Number(segment.avgPower)) + ' W');
+        if (Number.isFinite(Number(segment.avgPower))) {
+          if (segment.effortBasis === 'power' || segment.effortBasis === 'vpower') {
+            fields.push(escapeSegmentHtml(ui.effort) + ': ' + Math.round(Number(segment.avgPower)) + ' W');
+          } else if (segment.type === 'climb' && segment.vpowerUse && segment.vpowerUse !== 'not assessed') {
+            // A motion-estimate exists for this climb but did not clear the checks for a
+            // comparable number; say so, instead of silently quoting heart rate with no power line.
+            fields.push(escapeSegmentHtml(ui.vpowerNotUsedBadge) + ' (\u2248' + Math.round(Number(segment.avgPower)) + ' W)');
+          }
+        }
         if (Number.isFinite(Number(segment.elevGainM)) && Number(segment.elevGainM) > 0) fields.push(escapeSegmentHtml(ui.elevation) + ': +' + Math.round(Number(segment.elevGainM)) + ' m');
         if (segment.technical && type !== ui.technical) fields.push(escapeSegmentHtml(ui.technical));
         return fields.join('<br>');
@@ -2072,6 +2098,13 @@ function sharedCss() {
     .metric { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:10px 12px; }
     .metric .k { color:var(--muted); font-size:0.82rem; text-transform:uppercase; letter-spacing:0.08em; }
     .term { text-decoration:underline dotted; text-underline-offset:3px; cursor:help; }
+    .routeHead { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+    .routeRidesCount { color:var(--ink); font-size:1.05rem; font-weight:600; }
+    .routeDirectionBadge { border:1px solid var(--input-border); border-radius:999px; padding:2px 10px; font-size:0.8rem; color:var(--muted); background:var(--input-bg); }
+    .routeFactsGrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; margin-bottom:10px; }
+    .routeClimbs { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+    .routeClimbsLabel { color:var(--muted); font-size:0.85rem; }
+    .routeClimbBadge { border:1px solid color-mix(in srgb,#d35400 45%,var(--border)); background:color-mix(in srgb,#d35400 14%,var(--card)); color:var(--ink); border-radius:6px; padding:2px 8px; font-size:0.85rem; white-space:nowrap; }
     .metric .v { font-size:1.3rem; margin-top:3px; font-weight:bold; color:var(--accent); }
     .chart { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:12px; position:relative; }
     /* Traps Leaflet's internal z-index layers (up to 1000) inside the map card. */
