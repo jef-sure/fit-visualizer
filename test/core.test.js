@@ -4099,3 +4099,15 @@ test('activity page renders session notes with the saved values and escapes the 
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /'updateRoute', 'updateActivityNotes',/, 'activity id is validated for note saves');
 });
+
+test('every contributed setting appears in the settings table of both READMEs', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const contributed = Object.keys(manifest.contributes.configuration.properties)
+    .filter((key) => key.startsWith('fitVisualizer.'));
+  for (const readme of ['README.md', 'README.ru.md']) {
+    const text = fs.readFileSync(path.join(__dirname, '..', readme), 'utf8');
+    for (const key of contributed) {
+      assert.ok(text.includes(`\`${key}\``), `${readme} settings table is missing ${key}`);
+    }
+  }
+});
