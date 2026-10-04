@@ -4575,3 +4575,39 @@ test('log retention compresses past-retention files and deletes only past 3x ret
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('manual activity writes session notes', async () => {
+  const SQL = await initSqlJs({
+    locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm'),
+  });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const activityId = createManualActivity(db, {
+      startTime: '2026-09-01T12:00:00.000Z',
+      sport: 'cycling',
+      durationS: 3600,
+      distanceKm: 20,
+      avgHr: 140,
+      maxHr: 165,
+      elevGainM: 250,
+    }, { rpe: 7, purpose: 'commute', feeling: 'tired', conditions: ['headwind'], note: 'into the wind' });
+
+    const row = db.exec(`SELECT rpe, purpose, feeling, conditions_json, note FROM activity_notes WHERE activity_id = ${activityId}`)[0].values[0];
+    assert.deepEqual(row, [7, 'commute', 'tired', JSON.stringify(['headwind']), 'into the wind']);
+
+    // An all-empty notes object writes nothing.
+    const secondId = createManualActivity(db, {
+      startTime: '2026-09-02T12:00:00.000Z',
+      sport: 'running',
+      durationS: 1800,
+      distanceKm: 5,
+      avgHr: null,
+      maxHr: null,
+      elevGainM: null,
+    }, { rpe: null, purpose: null, feeling: null, conditions: [], note: null });
+    assert.equal(db.exec(`SELECT COUNT(*) FROM activity_notes WHERE activity_id = ${secondId}`)[0].values[0][0], 0);
+  } finally {
+    db.close();
+  }
+});

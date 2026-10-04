@@ -1,12 +1,14 @@
 const { randomUUID } = require('node:crypto');
+const { saveActivityNotes } = require('./activity-notes');
 
 /**
  * Create a manual activity (without FIT records) from user input.
  * @param {sql.Database} db
  * @param {Object} activity - { startTime, sport, durationS, distanceKm, avgHr, maxHr, elevGainM }
+ * @param {Object} [notes] - optional session notes { rpe, purpose, feeling, conditions, note }
  * @returns {number} activityId
  */
-function createManualActivity(db, activity) {
+function createManualActivity(db, activity, notes = null) {
   const {
     startTime,
     sport,
@@ -85,7 +87,11 @@ function createManualActivity(db, activity) {
   }
   const row = idStmt.getAsObject();
   idStmt.free();
-  return Number(row.id);
+  const activityId = Number(row.id);
+  if (notes) {
+    saveActivityNotes(db, activityId, notes);
+  }
+  return activityId;
 }
 
 module.exports = { createManualActivity };

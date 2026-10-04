@@ -35,7 +35,7 @@ const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
 const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
-const { inferNotesPreFill, readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
+const { CONDITIONS, FEELINGS, PURPOSES, inferNotesPreFill, readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
 const { computeDataQualityFlags } = require('./data-quality');
 const { computeSegmentStretches, describeRouteFeatures } = require('./route-features');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling, mirrorConsensusProfile } = require('./altitude-quality');
@@ -722,6 +722,24 @@ async function addAndBrowseManualActivity() {
     placeHolder: '0',
   });
 
+  // Session notes: the same five fields as the activity page, all optional.
+  const rpeStr = await vscode.window.showInputBox({
+    prompt: 'Perceived effort RPE (1-10, optional)',
+    placeHolder: '7',
+    validateInput: (value) => (value && !/^([1-9]|10)$/.test(value.trim())
+      ? 'Enter a whole number from 1 to 10.' : null),
+  });
+  const rpe = rpeStr ? Number(rpeStr.trim()) : null;
+  const purpose = await vscode.window.showQuickPick(PURPOSES, { placeHolder: 'Purpose (optional)', ignoreFocusOut: true });
+  const feeling = await vscode.window.showQuickPick(FEELINGS, { placeHolder: 'Feeling (optional)', ignoreFocusOut: true });
+  const conditions = await vscode.window.showQuickPick(CONDITIONS, {
+    placeHolder: 'Conditions (optional)',
+    canPickMany: true,
+    ignoreFocusOut: true,
+  });
+  const note = await vscode.window.showInputBox({ prompt: 'Free note (optional)' });
+  const notes = { rpe, purpose, feeling, conditions: conditions || [], note: note || null };
+
   // Parse and validate
   const distanceKm = parseFloat(distanceStr);
   const durationS = parseInt(durationStr, 10);
@@ -750,7 +768,7 @@ async function addAndBrowseManualActivity() {
       avgHr: Number.isFinite(avgHr) ? avgHr : null,
       maxHr: Number.isFinite(maxHr) ? maxHr : null,
       elevGainM: Number.isFinite(elevGainM) ? elevGainM : null,
-    });
+    }, notes);
     await persistDatabase(db, dbPath);
 
     await rememberDatabasePath(dbPath);
