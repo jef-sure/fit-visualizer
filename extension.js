@@ -148,6 +148,9 @@ function reportAnalysisWarning(message, severity = 'info') {
 }
 
 function enqueueLlmTask(task) {
+  // One serial queue for everything that persists the database: analyses, comparisons, chat
+  // turns and the derived-feature rebuild. The file is a whole sql.js export, so two writers
+  // running at once would overwrite each other's rows.
   const result = llmTaskQueue.then(task, task);
   llmTaskQueue = result.then(() => undefined, () => undefined);
   return result;
@@ -183,6 +186,7 @@ async function tidyHeartRateProfiles() {
   if (!dbPath) {
     return;
   }
+  await awaitDerivedFeatureRebuild();
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   let rows;
@@ -226,6 +230,14 @@ async function tidyHeartRateProfiles() {
 // silently in the background — the user never runs a command for it. Runs only for the remembered
 // database (the one this workspace actually uses) and only when a rebuild is actually needed.
 let derivedFeatureAutoRebuildStarted = false;
+// The rebuild currently running (or null). Writers outside the serial task queue — the webview's
+// save handlers and indexing — wait on it instead of racing its final whole-file write.
+let pendingDerivedRebuild = null;
+
+function awaitDerivedFeatureRebuild() {
+  return pendingDerivedRebuild ? pendingDerivedRebuild.catch(() => undefined) : Promise.resolve();
+}
+
 function scheduleDerivedFeatureAutoRebuild() {
   if (derivedFeatureAutoRebuildStarted) return;
   derivedFeatureAutoRebuildStarted = true;
@@ -236,7 +248,21 @@ function scheduleDerivedFeatureAutoRebuild() {
   }, 1500);
 }
 
-async function rebuildDerivedFeatures({ silent = false, skipStaleCheck = false, reason } = {}) {
+// The rebuild runs inside the same serial queue as analyses, so it never overlaps a stored
+// analysis; while it runs, pendingDerivedRebuild lets the other writers wait for it.
+function rebuildDerivedFeatures(options = {}) {
+  return enqueueLlmTask(async () => {
+    const run = rebuildDerivedFeaturesNow(options);
+    pendingDerivedRebuild = run;
+    try {
+      return await run;
+    } finally {
+      if (pendingDerivedRebuild === run) pendingDerivedRebuild = null;
+    }
+  });
+}
+
+async function rebuildDerivedFeaturesNow({ silent = false, skipStaleCheck = false, reason } = {}) {
   const dbPath = silent ? await resolveActiveDbPath() : (await resolveActiveDbPath() || await selectDatabaseFolder());
   if (!dbPath) {
     return;
@@ -535,6 +561,9 @@ async function pickSingleFitFile() {
 }
 
 async function indexFitUris(fitUris, dbPath, heading) {
+  // Indexing rewrites the activity rows; wait for a background derived-feature rebuild so its
+  // final write cannot land on top of the freshly indexed file.
+  await awaitDerivedFeatureRebuild();
   const output = vscode.window.createOutputChannel('FIT Visualizer: DB Index');
   output.clear();
   output.show(true);
@@ -761,6 +790,7 @@ async function addAndBrowseManualActivity() {
 
   let db;
   try {
+    await awaitDerivedFeatureRebuild();
     const SQL = await getSqlJs();
     db = await openDatabase(SQL, dbPath);
     const activityId = createManualActivity(db, {
@@ -1015,6 +1045,9 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
   }
 
   panel.webview.onDidReceiveMessage(async (msg) => {
+    // Saves from the page (notes, route, HR profile, manual HR) persist the file directly; a
+    // render right after start should also show the rebuilt data rather than the stale rows.
+    await awaitDerivedFeatureRebuild();
     // Every branch that names an activity expects a positive integer id; anything else
     // (or a missing compId where one is required) is rejected up front instead of
     // turning into NaN lookups deep inside the DB layer.

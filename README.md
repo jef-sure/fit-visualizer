@@ -17,7 +17,7 @@ New users can skip this section. If you already have rides in your local history
 | **Saved AI analyses** — the text the model wrote for each ride | **FIT: Re-analyze Outdated Analyses** | After almost every update: the analysis prompt changes often, and the activity page marks older analyses as *analyzed with an older version*. One Copilot request per outdated ride; current analyses are left alone. |
 | **Indexed activity data** — the figures read from the FIT files into the local database | **FIT: Index All Files** | Only when a release changes *what is read from the file*. The changelog says so explicitly under *Upgrade Notes*. Last time: 0.20.0 (device ascent/descent was stored 1000× too small). If you indexed with 0.20.0 or later, you never need this. |
 
-Derived data (segments, zones, route profiles, checkpoints) is rebuilt automatically in the background when its format changes — no command needed.
+Derived data (segments, zones, route profiles, checkpoints) needs no command: it is rebuilt in the background on the first start after an update that changes its format, and anything still stale is recomputed on the fly when an analysis needs it. If you start a re-analysis while that background rebuild is running, the re-analysis simply waits for it to finish first.
 
 Re-indexing is local and does not change the original FIT files. Re-analysis is optional, requires GitHub Copilot, sends activity and discussion context to the model, and may consume your Copilot allowance.
 

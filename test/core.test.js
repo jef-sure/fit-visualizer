@@ -189,7 +189,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, needsDerivedFeatureRebuild, getRouteUiData, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, needsDerivedFeatureRebuild, getRouteUiData, enqueueLlmTask, awaitDerivedFeatureRebuild, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -4868,4 +4868,38 @@ test('prompt evaluator counts only real flag lines and accepts integrated wordin
   const hrPrompt = '**Data Quality Flags:**\n- HR_CONTACT_LOSS: 5 sharp heart-rate jumps';
   assert.equal(checkAnalysisResponse({ response: `Скачки связаны с потерей контакта ремня.${tail}`, prompt: hrPrompt }).flagsMissed, 0);
   assert.equal(checkAnalysisResponse({ response: `Хорошая поездка.${tail}`, prompt: hrPrompt }).flagsMissed, 1);
+});
+
+test('derived-feature rebuild is serialized with analyses and awaited by the other writers', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  // The rebuild is an item of the same serial queue as analyses/chat/comparisons.
+  assert.match(source, /function rebuildDerivedFeatures\(options = \{\}\) \{\s*return enqueueLlmTask\(async \(\) => \{/);
+  // Writers outside that queue wait for a running rebuild before touching the file.
+  for (const site of ['async function indexFitUris', 'panel.webview.onDidReceiveMessage(async (msg) => {', 'async function tidyHeartRateProfiles', 'async function addAndBrowseManualActivity']) {
+    const start = source.indexOf(site);
+    assert.ok(start >= 0, site);
+    const end = source.indexOf('\nasync function ', start + 1);
+    assert.ok(source.slice(start, end > 0 ? end : undefined).includes('await awaitDerivedFeatureRebuild();'), `${site} waits for the rebuild`);
+  }
+
+  // Behaviour: a writer that awaits the pending rebuild runs only after it settles; with no
+  // rebuild pending it runs at once; the serial queue keeps order.
+  const internals = loadExtensionInternalsForTest();
+  const order = [];
+  let release;
+  internals.setPendingRebuildForTest(new Promise((resolve) => { release = () => { order.push('rebuild'); resolve(); }; }));
+  const writer = internals.awaitDerivedFeatureRebuild().then(() => order.push('writer'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, []);
+  release();
+  await writer;
+  assert.deepEqual(order, ['rebuild', 'writer']);
+  internals.setPendingRebuildForTest(null);
+  await internals.awaitDerivedFeatureRebuild();
+
+  const seen = [];
+  const first = internals.enqueueLlmTask(() => new Promise((resolve) => setTimeout(() => { seen.push(1); resolve(); }, 10)));
+  const second = internals.enqueueLlmTask(async () => { seen.push(2); });
+  await Promise.all([first, second]);
+  assert.deepEqual(seen, [1, 2]);
 });
