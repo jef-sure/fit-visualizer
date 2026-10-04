@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.22.0 - 2026-10-04
+
+### Upgrade Notes
+
+- Run **FIT: Re-analyze Outdated Analyses** (analysis format 28). Rebuilding derived features and re-indexing are not required.
+
+### Added
+
+- **Model signature and picker**: the analysis card shows "Analyzed by `<modelId>` · format `<N>` · `<date>`", and the answering model id is stored with the analysis. A new **FIT: Select Analysis Model** command lists the models the current vendor offers (plus a default/cheapest entry) and writes `fitVisualizer.analysisModelId`.
+- **Session notes in the manual-activity form**: **FIT: Add Manual Activity** now asks for the same five optional notes as the activity page (RPE, purpose, feeling, conditions, note), stored in `activity_notes`.
+
+### Changed
+
+- **Chat and comparison follow the coaching principles**: both prompts now include the numbered principles, the session notes (and AI-inferred notes) of the activities, data-quality flags, and the same-route/route-profile context. The comparison states the route relation (same route, same/reversed direction, or different) and shows an aligned checkpoint table only on the same route; different routes drop checkpoints. The chat no longer appends a SUMMARY tail and explains in-segment slowdowns from the route-stretch breakdown first.
+- **LLM log retention compresses instead of deleting**: a log past its retention keeps its metric fields (response, promptBlocks, overBudget, modelId, analysisVersion) and drops only the prompt; only after three times the retention is the whole file removed, so `check.js` history survives while space is reclaimed.
+
 ## 0.21.0 - 2026-10-04
 
 ### Upgrade Notes
