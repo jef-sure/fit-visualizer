@@ -4647,3 +4647,44 @@ test('chat and comparison prompts carry principles, notes and route relation (C5
   assert.doesNotMatch(diff, /Checkpoints \(This Workout \/ Compared Activity\)/);
   assert.doesNotMatch(diff, /Route relation: same route/);
 });
+
+test('long segments carry temperature and cadence, and climbs report a clean post-climb HR drop (E1, E2)', () => {
+  // A 12-minute climb (endIndex 719) then a minute of level moving with a falling HR.
+  const records = [];
+  for (let i = 0; i < 780; i += 1) {
+    records.push({
+      elapsed_time: i,
+      speed: 20,
+      distance: (20 / 3600) * i,
+      heart_rate: i < 720 ? 170 : 170 - Math.floor((i - 720) / 6),
+      temperature: 24 + Math.floor(i / 360),
+      cadence: 88,
+      altitude: (i < 720 ? i : 720) * 0.02 / 1000,
+    });
+  }
+  const segments = [
+    { index: 0, type: 'climb', effortBasis: 'hr', startElapsed: 0, endElapsed: 720, durationS: 720, avgGrade: 6, avgHr: 170, elevGainM: 360, startIndex: 0, endIndex: 719, hrCoveragePct: 100, distanceKm: 4, avgSpeedKmh: 20, avgCadence: 88, tempStart: 24, tempEnd: 25 },
+  ];
+  const prompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records, segments }, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.match(prompt, /post-climb HR drop 60 s: −\d+ bpm \(descriptive\)/);
+  assert.match(prompt, /cadence 88 rpm/);
+  assert.match(prompt, /temp 24→25 °C/);
+
+  // A climb followed by a stop (speed <= 5) yields no drop.
+  const stopped = segments.map((segment) => ({ ...segment }));
+  const stoppedRecords = records.map((r, i) => (i >= 720 ? { ...r, speed: 0 } : r));
+  const stoppedPrompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: stoppedRecords, segments: stopped }, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.doesNotMatch(stoppedPrompt, /post-climb HR drop/);
+});
+
+test('period block reports RPE against load when notes are present (E3)', () => {
+  const activities = [
+    { activityId: 1, startTime: '2026-08-01', sport: 'cycling', durationS: 3600, distanceKm: 20, trimp: 80, notes: { rpe: 6 } },
+    { activityId: 2, startTime: '2026-08-05', sport: 'cycling', durationS: 3600, distanceKm: 21, trimp: 100, notes: { rpe: 8 } },
+    { activityId: 3, startTime: '2026-08-10', sport: 'cycling', durationS: 3600, distanceKm: 22, trimp: 120, notes: { rpe: 9 } },
+  ];
+  const context = buildTrainingContext(activities, '2026-08-15', 'cycling');
+  const { buildTrainingHistoryContext } = require('../analysis');
+  const text = buildTrainingHistoryContext(context);
+  assert.match(text, /RPE recorded for 3\/3 rides; median RPE 8 at median TRIMP 100; rides with RPE ≥ 8: 2 \(TRIMP 100, 120\)/);
+});

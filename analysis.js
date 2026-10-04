@@ -1,4 +1,4 @@
-const { formatHms, groupSimilarSegments, segmentLineBudget, collapseShortStops } = require('./utils');
+const { asNumber, formatHms, groupSimilarSegments, segmentLineBudget, collapseShortStops } = require('./utils');
 const { calculatePeakHeartRates, computeHeartRateZones } = require('./heart-rate');
 const { localClock, localDate } = require('./activity-time');
 const { computeElevationGainLoss } = require('./chart-data');
@@ -53,7 +53,30 @@ function segmentEffortText(segment) {
   return null;
 }
 
-function describeSegment(segment) {
+// The heart-rate drop in the 60 s after a climb, only when it is unambiguous: the climb lasts at
+// least 3 min, the following minute is continuous movement above 5 km/h with no gap, and HR is
+// covered for the whole window. A missing or positive change yields null (nothing is reported).
+function postClimbHrDrop(segment, records) {
+  if (!records || segment.type !== 'climb' || !(segment.durationS >= 180) || segment.endIndex == null) return null;
+  const climbEndHr = asNumber(records[segment.endIndex]?.heart_rate);
+  if (!(climbEndHr > 0)) return null;
+  const endTime = asNumber(records[segment.endIndex]?.elapsed_time) + 60;
+  const window = [];
+  for (let index = segment.endIndex + 1; index < records.length; index += 1) {
+    const record = records[index];
+    if (asNumber(record.elapsed_time) > endTime) break;
+    if (!(asNumber(record.speed) > 5) || !(asNumber(record.heart_rate) > 0)) return null;
+    window.push(record);
+  }
+  if (window.length < 2) return null;
+  const afterHr = asNumber(window[window.length - 1].heart_rate);
+  if (!(afterHr > 0)) return null;
+  const drop = Math.round(climbEndHr - afterHr);
+  if (drop < 0) return null;
+  return `post-climb HR drop 60 s: −${drop} bpm (descriptive)`;
+}
+
+function describeSegment(segment, records) {
   if (segment.type === 'stopped') {
     return joinNonEmpty(['stopped', segment.distanceKm != null ? `${segment.distanceKm} km` : null]);
   }
@@ -61,10 +84,14 @@ function describeSegment(segment) {
   return joinNonEmpty([
     segment.type,
     segment.technical ? 'technical, no reliable effort estimate' : null,
+    postClimbHrDrop(segment, records),
     segment.avgGrade != null ? `avg grade ${segment.avgGrade}%` : null,
     segmentEffortText(segment),
     segment.avgHr != null && segment.effortBasis !== 'hr' ? `avg HR ${segment.avgHr}` : null,
     segment.hrDriftPct != null ? `HR drift ${segment.hrDriftPct > 0 ? '+' : ''}${segment.hrDriftPct}%` : null,
+    segment.avgCadence != null && segment.durationS >= 600 ? `cadence ${segment.avgCadence} rpm` : null,
+    segment.durationS >= 600 && segment.tempStart != null && segment.tempEnd != null
+      ? `temp ${segment.tempStart}→${segment.tempEnd} °C` : null,
     segment.avgSpeedKmh != null ? `${segment.avgSpeedKmh} km/h` : null,
     segment.distanceKm != null ? `${segment.distanceKm} km` : null,
     segment.type === 'climb' && segment.elevGainM ? `+${segment.elevGainM} m` : null,
@@ -89,6 +116,8 @@ function describeSegment(segment) {
           ? `HR ${segment.dynamics.firstHalfHr}->${segment.dynamics.secondHalfHr} bpm` : null,
         segment.effortBasis === 'power' && segment.dynamics.firstHalfPower != null && segment.dynamics.secondHalfPower != null
           ? `measured power ${segment.dynamics.firstHalfPower}->${segment.dynamics.secondHalfPower} W` : null,
+        segment.tempStart != null && segment.tempEnd != null
+          ? `temp ${segment.tempStart}->${segment.tempEnd} °C` : null,
       ], '; ') + ' (temporal halves; descriptive, not a fitness/recovery test)' : null,
   ]);
 }
@@ -128,6 +157,7 @@ function buildSegmentContext(segments, options = {}) {
   if (!list.length) {
     return { text: '', lines: 0, maxLines: 0, exceeded: false, displayRows: [] };
   }
+  const records = Array.isArray(options.records) ? options.records : null;
 
   const notableStopSeconds = Number(options.notableStopSeconds) || 300;
   const shortStops = list.filter((segment) => segment.type === 'stopped' && segment.durationS < notableStopSeconds);
@@ -139,7 +169,7 @@ function buildSegmentContext(segments, options = {}) {
     const first = members[0];
     const last = members[members.length - 1];
     const span = `${formatHms(first.startElapsed)}-${formatHms(last.endElapsed)}`;
-    const body = row.kind === 'repeat' ? describeRepeat(row) : describeSegment(first);
+    const body = row.kind === 'repeat' ? describeRepeat(row) : describeSegment(first, records);
     return { time: `${span} (${formatClock(last.endElapsed - first.startElapsed)})`, details: body, members };
   });
 
@@ -301,6 +331,7 @@ function buildTrainingHistoryContext(context) {
       `${formatHms(Math.round(row.durationS))} recorded timer time (${row.durationKnownActivities}/${row.activities} durations known)`,
       `${row.distanceKm.toFixed(1)} km`, `${row.activeDays} recorded active days`,
       row.trimpActivities ? `TRIMP sum ${Math.round(row.trimpSum)} (${row.trimpActivities}/${row.activities} activities with HR-based load)` : null,
+      row.rpeCount ? `RPE recorded for ${row.rpeCount}/${row.activities} rides${row.medianRpe != null ? `; median RPE ${row.medianRpe}${row.medianTrimpOfRpeRides != null ? ` at median TRIMP ${Math.round(row.medianTrimpOfRpeRides)}` : ''}` : ''}${row.highRpeRides?.length ? `; rides with RPE ≥ 8: ${row.highRpeRides.length} (TRIMP ${row.highRpeRides.join(', ')})` : ''} (descriptive, no correlation at n < 6)` : null,
       row.classMix && Object.keys(row.classMix).length
         ? `session classes: ${Object.entries(row.classMix).map(([label, count]) => `${label} ${count}`).join(', ')}` : null,
       row.zonedActivities ? `${row.zonedActivities}/${row.activities} activities with covered HR zones; covered time ${formatHms(Math.round(row.coveredHrSeconds))}; zone 1-5 seconds ${row.zoneSeconds.map(Math.round).join(', ')}; ${intensityDistribution(row.zoneSeconds)}`
@@ -830,7 +861,7 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
     : '';
   const zoneContext = buildZoneContext(fitData.records, heartRateConfig);
   const sessionClassContext = buildSessionClassContext(fitData.sessionClass, heartRateConfig);
-  const segmentContext = buildSegmentContext(fitData.segments).text;
+  const segmentContext = buildSegmentContext(fitData.segments, { records: fitData.records }).text;
   const historyContext = buildRecentHistoryContext(recentHistory);
   const hasSegments = Boolean(segmentContext);
   const hasRouteStretches = Boolean(fitData.segments?.some((segment) => segment.routeStretches?.length));
@@ -955,7 +986,7 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
   const session = fitData.sessions?.[0] || {};
   const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records, fitData.altitudeSettlingWindow);
   const safeHistory = formatConversation(history);
-  const segmentContext = buildSegmentContext(fitData.segments).text;
+  const segmentContext = buildSegmentContext(fitData.segments, { records: fitData.records }).text;
 
   const routeContext = progressSummary?.trainingContext?.routeContext;
   const routeProfile = progressSummary?.trainingContext?.routeProfile;
@@ -1014,8 +1045,8 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
   const comparedSession = comparedFitData.sessions?.[0] || {};
   const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records);
   const { text: comparedWorkoutFields, powerSource: comparedPowerSource } = buildWorkoutFields(comparedSession, comparedFitData.records);
-  const segmentContext = buildSegmentContext(collapseShortStops(fitData.segments)).text;
-  const comparedSegmentContext = buildSegmentContext(collapseShortStops(comparedFitData.segments)).text;
+  const segmentContext = buildSegmentContext(collapseShortStops(fitData.segments), { records: fitData.records }).text;
+  const comparedSegmentContext = buildSegmentContext(collapseShortStops(comparedFitData.segments), { records: comparedFitData.records }).text;
   const hasSegments = Boolean(segmentContext) || Boolean(comparedSegmentContext);
 
   // Route relation and (only on the same route) an aligned checkpoint table. A different route

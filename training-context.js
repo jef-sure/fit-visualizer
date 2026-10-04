@@ -68,6 +68,16 @@ function buildTrainingContext(activities, referenceTime, currentSport, currentSe
           coveredHrSeconds += activity.zones.totalSeconds;
           activity.zones.zones.forEach((zone, index) => { zoneSeconds[index] += zone.seconds; });
         }
+        // RPE vs load: the athlete's own effort number against TRIMP for the same rides. Descriptive
+        // only; no correlation is drawn at n < 6.
+        const rpeRides = rows
+          .map((activity) => ({ rpe: asNumber(activity.notes?.rpe), trimp: asNumber(activity.trimp) }))
+          .filter((entry) => Number.isFinite(entry.rpe) && entry.rpe > 0);
+        const medianOf = (values) => {
+          const sorted = [...values].sort((left, right) => left - right);
+          return sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
+        };
+        const rpeWithLoad = rpeRides.filter((entry) => Number.isFinite(entry.trimp) && entry.trimp > 0);
         return { sport, activities: rows.length,
           durationS: rows.reduce((sum, activity) => sum + (asNumber(activity.durationS) > 0 ? Number(activity.durationS) : 0), 0),
           durationKnownActivities: rows.filter((activity) => asNumber(activity.durationS) > 0).length,
@@ -75,6 +85,10 @@ function buildTrainingContext(activities, referenceTime, currentSport, currentSe
           activeDays: new Set(rows.map((activity) => localDate(activity.startTime, activity.utcOffsetS))).size,
           trimpSum: rows.reduce((sum, activity) => sum + (asNumber(activity.trimp) > 0 ? Number(activity.trimp) : 0), 0),
           trimpActivities: rows.filter((activity) => asNumber(activity.trimp) > 0).length,
+          rpeCount: rpeRides.length,
+          medianRpe: medianOf(rpeRides.map((entry) => entry.rpe)),
+          medianTrimpOfRpeRides: medianOf(rpeWithLoad.map((entry) => entry.trimp)),
+          highRpeRides: rpeRides.filter((entry) => entry.rpe >= 8).map((entry) => Math.round(entry.trimp) || null).filter((value) => value != null),
           classMix: countSessionClasses(rows),
           zonedActivities, coveredHrSeconds, zoneSeconds };
       }) };

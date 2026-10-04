@@ -1057,9 +1057,12 @@ function summarizeSegmentRange(records, range, shared, options) {
   const segmentGrades = [];
   const gradeSamples = [];
   const estimates = [];
+  const cadences = [];
   let elevGainM = 0;
   let highConfidence = 0;
   let confidenceSamples = 0;
+  let tempStart = null;
+  let tempEnd = null;
 
   for (let index = startIndex; index <= endIndex; index += 1) {
     const record = records[index] || {};
@@ -1067,11 +1070,18 @@ function summarizeSegmentRange(records, range, shared, options) {
     const heartRate = asNumber(record.heart_rate);
     const power = asNumber(record.power);
     const grade = asNumber(shared.grades[index]);
+    const cadence = asNumber(record.cadence);
+    const temperature = asNumber(record.temperature);
 
     if (Number.isFinite(speed)) speeds.push(speed);
     if (Number.isFinite(heartRate) && heartRate > 0) heartRates.push(heartRate);
     if (Number.isFinite(power) && power >= 0) powers.push(power);
     if (Number.isFinite(grade)) segmentGrades.push(grade);
+    if (Number.isFinite(cadence) && cadence > 0) cadences.push(cadence);
+    if (Number.isFinite(temperature) && temperature !== 0) {
+      if (tempStart == null) tempStart = temperature;
+      tempEnd = temperature;
+    }
     if (shared.gradeSamples[index]) gradeSamples.push(shared.gradeSamples[index]);
     if (record._powerEstimate) estimates.push(record._powerEstimate);
 
@@ -1146,6 +1156,9 @@ function summarizeSegmentRange(records, range, shared, options) {
     avgSpeedKmh: moving && Number.isFinite(avgSpeedKmh) ? roundTo(avgSpeedKmh, 1) : null,
     avgHr: heartRates.length ? roundTo(average(heartRates), 0) : null,
     avgPower: moving && powers.length ? roundTo(average(powers), 0) : null,
+    avgCadence: cadences.length ? roundTo(average(cadences), 0) : null,
+    tempStart: tempStart != null ? roundTo(tempStart, 0) : null,
+    tempEnd: tempEnd != null ? roundTo(tempEnd, 0) : null,
     hasHeartRate: heartRates.length > 0,
     hasPower: powers.length > 0,
     hrCoveragePct: coveragePct((record) => asNumber(record.heart_rate) > 0),
@@ -1435,6 +1448,8 @@ function collapseShortStops(segments, options = {}) {
         avgSpeedKmh: weightedAverage(before.avgSpeedKmh, after.avgSpeedKmh, weightBefore, weightAfter),
         avgHr: weightedAverage(before.avgHr, after.avgHr, weightBefore, weightAfter),
         avgPower: weightedAverage(before.avgPower, after.avgPower, weightBefore, weightAfter),
+        avgCadence: weightedAverage(before.avgCadence, after.avgCadence, weightBefore, weightAfter),
+        tempEnd: after.tempEnd != null ? after.tempEnd : before.tempEnd,
         hrCoveragePct: combinedCoverage('hrCoveragePct'),
         powerCoveragePct: combinedCoverage('powerCoveragePct'),
         gradeCoveragePct: combinedCoverage('gradeCoveragePct'),
