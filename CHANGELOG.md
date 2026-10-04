@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.6 - 2026-10-04
+
+### Changed
+
+- **AI comparison and follow-up chat follow the same model policy as the analysis** (picked model, else the pinned one, else the cheapest) and both get their own model dropdown next to the trigger button. Before, they silently took the vendor's first-listed model, which in practice meant the most expensive one for every comparison.
+
 ## 0.26.5 - 2026-10-04
 
 ### Fixed

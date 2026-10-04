@@ -626,11 +626,25 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
   // The trigger targets whichever activity is picked in "Compare with" right now; the label
   // switches to "Compare Again" if that pair already has a saved comparison in the list above.
+  const modelPickerModels = Array.isArray(modelPicker?.models) ? modelPicker.models : [];
+  // Models of other vendors (BYOK providers) are marked, so the picker reads as a choice of
+  // providers, not a flat list of near-identical names.
+  const modelLabel = (model) => model.vendor && model.vendor !== modelPicker?.vendor
+    ? `${model.name} (${model.vendor})` : model.name;
+  const usedModelId = analysis?.modelId && modelPickerModels.some((model) => model.id === analysis.modelId) ? analysis.modelId : '';
+  const modelOptions = [
+    `<option value=""${usedModelId ? '' : ' selected'}>${escapeHtml(formatUi(ui.defaultModel, modelPicker?.defaultName || ui.cheapestModel))}</option>`,
+    ...modelPickerModels.map((model) => `<option value="${escapeHtml(model.id)}"${model.id === usedModelId ? ' selected' : ''}>${escapeHtml(modelLabel(model))}</option>`),
+  ].join('');
+
   const comparedId = Number(comparedActivityId);
   const canCompare = Number.isFinite(comparedId) && comparedId > 0;
   const alreadyCompared = canCompare && comparisonEntriesSafe.some((entry) => entry.comparedActivityId === comparedId);
   const compareTriggerHtml = canCompare
-    ? `<button id="compareBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(alreadyCompared ? ui.compareAgain : ui.compareWithAI)}</button>`
+    ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <button id="compareBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(alreadyCompared ? ui.compareAgain : ui.compareWithAI)}</button>
+        <select id="compareModelSel" class="actSelector" style="width:auto;min-width:160px;border:1px solid var(--input-border);">${modelOptions}</select>
+      </div>`
     : '';
 
   const comparisonBlock = (comparisonEntriesSafe.length || canCompare) ? `
@@ -647,16 +661,6 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   // The analysis-model picker. It shows the model that produced the analysis on screen (when it
   // is still offered) and otherwise the default, named by the model it actually resolves to. It
   // only prepares a choice: the analysis runs when the athlete presses the Analyze button.
-  const modelPickerModels = Array.isArray(modelPicker?.models) ? modelPicker.models : [];
-  // Models of other vendors (BYOK providers) are marked, so the picker reads as a choice of
-  // providers, not a flat list of near-identical names.
-  const modelLabel = (model) => model.vendor && model.vendor !== modelPicker?.vendor
-    ? `${model.name} (${model.vendor})` : model.name;
-  const usedModelId = analysis?.modelId && modelPickerModels.some((model) => model.id === analysis.modelId) ? analysis.modelId : '';
-  const modelOptions = [
-    `<option value=""${usedModelId ? '' : ' selected'}>${escapeHtml(formatUi(ui.defaultModel, modelPicker?.defaultName || ui.cheapestModel))}</option>`,
-    ...modelPickerModels.map((model) => `<option value="${escapeHtml(model.id)}"${model.id === usedModelId ? ' selected' : ''}>${escapeHtml(modelLabel(model))}</option>`),
-  ].join('');
 
   return `<main class="wrap">
     <section class="hero">
@@ -844,6 +848,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <div style="display:flex;gap:8px;margin-top:8px;align-items:flex-start;">
           <textarea id="analysisChatInput" rows="3" placeholder="${escapeHtml(ui.followUpPlaceholder)}" style="flex:1;min-height:62px;resize:vertical;border:1px solid var(--input-border);border-radius:6px;padding:8px;background:var(--input-bg);color:var(--input-fg);"></textarea>
           <button id="analysisChatSendBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.send)}</button>
+        </div>
+        <div style="margin-top:6px;">
+          <select id="chatModelSel" class="actSelector" style="width:auto;min-width:160px;border:1px solid var(--input-border);">${modelOptions}</select>
         </div>
         <div id="analysisChatStatus" style="margin-top:6px;font-size:0.85rem;color:var(--muted);"></div>
       </div>
@@ -1270,7 +1277,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         compareBtn.disabled = true;
         compareBtn.textContent = ui.comparing;
         if (comparisonStatus) comparisonStatus.textContent = '';
-        vscode.postMessage({ type: 'compareActivitiesAI', id: window.currentActivityId, compId: compareActivityId, force: alreadyCompared });
+        const compareModelSel = document.getElementById('compareModelSel');
+          vscode.postMessage({ type: 'compareActivitiesAI', id: window.currentActivityId, compId: compareActivityId, force: alreadyCompared, modelId: compareModelSel ? compareModelSel.value : '' });
       });
 
       // Event delegation: comparison cards (and their Remove buttons) are re-rendered as a group,
@@ -1320,10 +1328,12 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         chatMessages = [...chatMessages, { role: 'user', content: text }];
         renderChatMessages();
         analysisChatInput.value = '';
+        const chatModelSel = document.getElementById('chatModelSel');
         vscode.postMessage({
           type: 'analysisChatTurn',
           id: window.currentActivityId,
           text,
+          modelId: chatModelSel ? chatModelSel.value : '',
         });
       }
 

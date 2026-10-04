@@ -1196,7 +1196,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
         if (!userText) {
           throw new Error('Enter a question for AI chat.');
         }
-        const nextChat = await appendActivityChatTurn(dbPath, requestedActivityId, userText);
+        const nextChat = await appendActivityChatTurn(dbPath, requestedActivityId, userText, msg.modelId || null);
         panel.webview.postMessage({ type: 'analysisChatState', id: requestedActivityId, messages: nextChat });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -1206,7 +1206,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       try {
         const requestedActivityId = Number(msg.id);
         const comparedActivityId = Number(msg.compId);
-        const comparison = await generateActivityComparison(dbPath, requestedActivityId, comparedActivityId, msg.force);
+        const comparison = await generateActivityComparison(dbPath, requestedActivityId, comparedActivityId, msg.force, msg.modelId || null);
         panel.webview.postMessage({ type: 'comparisonResult', id: requestedActivityId, compId: comparedActivityId, comparison });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -3365,11 +3365,11 @@ async function removeActivityComparisonFromDb(dbPath, activityId, comparedActivi
   }
 }
 
-async function generateActivityComparison(dbPath, activityId, comparedActivityId, force = false) {
-  return enqueueLlmTask(() => runActivityComparison(dbPath, activityId, comparedActivityId, force));
+async function generateActivityComparison(dbPath, activityId, comparedActivityId, force = false, modelOverride = null) {
+  return enqueueLlmTask(() => runActivityComparison(dbPath, activityId, comparedActivityId, force, modelOverride));
 }
 
-async function runActivityComparison(dbPath, activityId, comparedActivityId, force) {
+async function runActivityComparison(dbPath, activityId, comparedActivityId, force, modelOverride = null) {
   const numId = Number(activityId);
   const compNumId = Number(comparedActivityId);
   if (!Number.isFinite(numId) || numId <= 0 || !Number.isFinite(compNumId) || compNumId <= 0) {
@@ -3403,8 +3403,13 @@ async function runActivityComparison(dbPath, activityId, comparedActivityId, for
   ]);
 
   const prompt = generateComparisonPrompt(analysisData, comparedData, vscode.env.language);
+  // Comparison follows the same model policy as the analysis: the picked model, else the
+  // pinned one, else the cheapest. Before, it silently took the vendor's first-listed model.
   const comparison = await requestCopilotAnalysis(vscode, prompt, {
     vendor: getLanguageModelVendor(),
+    preferCheapModel: getPreferCheapAnalysisModel(),
+    modelId: modelOverride || getAnalysisModelId(),
+    cheapModelMarkers: getCheapModelMarkers(),
     onCompleted: (result) => logLlmRequest(dbPath, {
       activityId: numId,
       kind: 'comparison',
@@ -3480,18 +3485,18 @@ async function storeAnalysisChatInDb(dbPath, activityId, messages) {
   }
 }
 
-async function appendActivityChatTurn(dbPath, activityId, userText) {
+async function appendActivityChatTurn(dbPath, activityId, userText, modelOverride = null) {
   return enqueueLlmTask(async () => {
     const existing = await getAnalysisChatFromDb(dbPath, activityId);
     const withUser = appendChatTurn(existing, 'user', userText);
-    const assistantReply = await runActivityChatReply(dbPath, activityId, withUser, userText);
+    const assistantReply = await runActivityChatReply(dbPath, activityId, withUser, userText, modelOverride);
     const nextChat = appendChatTurn(withUser, 'assistant', assistantReply);
     await storeAnalysisChatInDb(dbPath, activityId, nextChat);
     return nextChat;
   });
 }
 
-async function runActivityChatReply(dbPath, activityId, history, userQuestion) {
+async function runActivityChatReply(dbPath, activityId, history, userQuestion, modelOverride = null) {
   const current = await loadFitDataFromDb(dbPath, activityId);
   if (!current) {
     throw new Error(`Activity ${activityId} not found in database`);
@@ -3509,8 +3514,12 @@ async function runActivityChatReply(dbPath, activityId, history, userQuestion) {
   const prompt = generateAnalysisChatPrompt(
     analysisData, summary, hrConfig, baseAnalysis, safeHistory, userQuestion, vscode.env.language
   );
+  // Chat follows the same model policy as the analysis (picked, else pinned, else cheapest).
   return requestCopilotAnalysis(vscode, prompt, {
     vendor: getLanguageModelVendor(),
+    preferCheapModel: getPreferCheapAnalysisModel(),
+    modelId: modelOverride || getAnalysisModelId(),
+    cheapModelMarkers: getCheapModelMarkers(),
     onCompleted: (result) => logLlmRequest(dbPath, { activityId: Number(activityId), kind: 'chat', ...result }),
   });
 }
