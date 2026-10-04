@@ -226,6 +226,19 @@ function computeLoadRhythm(activities, referenceTime, currentSport) {
     ? loadRhythm(acute, chronic, monotony.monotony, prevRatioLow) : null;
 }
 
+// Per-ride rhythm history for the card's trend strip. `loads` holds every earlier ride
+// ({ startTime, sport, utcOffsetS, trimp }); each point is the acute:chronic ratio for that ride's
+// own date, so the last six values read as a short history when the user switches activities.
+function computeLoadRhythmSeries(loads, currentStartTime, sport) {
+  const startTimes = [...new Set([...(loads || []).map((row) => row.startTime), currentStartTime])]
+    .filter((time) => Number.isFinite(new Date(time).getTime()))
+    .sort((a, b) => new Date(a) - new Date(b));
+  return startTimes.slice(-6).map((time) => {
+    const rhythm = computeLoadRhythm(loads, time, sport);
+    return { date: time, value: rhythm ? Math.round(rhythm.ratio * 100) : null, current: time === currentStartTime };
+  });
+}
+
 function attachActivityZones(activity, records, heartRateConfig) {
   return { ...activity,
     zones: Number.isFinite(heartRateConfig?.maxHeartRate)
@@ -233,4 +246,4 @@ function attachActivityZones(activity, records, heartRateConfig) {
     peakHr: calculatePeakHeartRates(records) };
 }
 
-module.exports = { attachActivityZones, buildTrainingContext, compareSegmentStructures, computeLoadRhythm };
+module.exports = { attachActivityZones, buildTrainingContext, compareSegmentStructures, computeLoadRhythm, computeLoadRhythmSeries };

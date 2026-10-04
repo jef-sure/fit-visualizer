@@ -4079,17 +4079,26 @@ test('trend indicators compute verdicts at their thresholds and hide without com
 
 test('the route-card trend pair matches the prompt indicators and hides without enough priors', () => {
   const { computeRouteTrends } = require('../trend-metrics');
-  const priors = [26, 27, 25, 28, 26, 27].map((first) => ({
+  const priors = [26, 27, 25, 28, 26, 27].map((first, index) => ({
     checkpoints: splitCheckpoints(first, first - 4),
     segments: [],
+    startTime: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
   }));
   const current = splitCheckpoints(27, 22);
-  const trends = computeRouteTrends(current, [], priors);
+  const currentStartTime = new Date(Date.UTC(2026, 0, 10)).toISOString();
+  const trends = computeRouteTrends(current, [], currentStartTime, priors);
   assert.ok(trends.efficiency, 'aligned grid marks yield a shared checkpoint and an efficiency verdict');
   assert.equal(trends.recovery, null, 'no climb segments -> no recovery indicator');
+  assert.equal(trends.efficiencyHistory.length, 6, 'history caps at 5 priors plus the current ride');
+  assert.ok(trends.efficiencyHistory.at(-1).current, 'the current ride is the last, highlighted point');
+  assert.ok(trends.efficiencyHistory.every((point) => Number.isFinite(point.value) && point.date), 'every point has a value and date');
   // Fewer than 5 priors hide the efficiency indicator even when the mark aligns.
-  assert.equal(computeRouteTrends(current, [], priors.slice(0, 4)).efficiency, null);
-  assert.deepEqual(computeRouteTrends(current, [], []), { efficiency: null, recovery: null });
+  assert.equal(computeRouteTrends(current, [], currentStartTime, priors.slice(0, 4)).efficiency, null);
+  const empty = computeRouteTrends(current, [], currentStartTime, []);
+  assert.equal(empty.efficiency, null);
+  assert.equal(empty.recovery, null);
+  assert.deepEqual(empty.efficiencyHistory, []);
+  assert.deepEqual(empty.recoveryHistory, []);
 });
 
 test('the route-card rhythm is derived from the same load windows as the prompt', () => {

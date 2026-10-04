@@ -479,6 +479,25 @@ function renderSessionNotesCard(notes, ui, mapId, inferred = null) {
 
 // Part I, UI: one row per computed trend - value, median of 5, an arrow, and the code verdict
 // phrase. No causes, no "health": those are the model's job, guided by the same numbers.
+function renderHistory(series, formatValue) {
+  const points = (series || []).filter((point) => Number.isFinite(Number(point?.value)));
+  if (points.length < 2) return '';
+  const values = points.map((point) => Number(point.value));
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const cols = points.map((point) => {
+    const height = Math.max(10, Math.round(100 * (Number(point.value) - min) / span));
+    const date = String(point.date || '').slice(5, 10).split('-').reverse().join('.');
+    return `<div class="routeTrendHistoryCol${point.current ? ' current' : ''}">
+      <div class="routeTrendHistoryVal">${escapeHtml(formatValue(point.value))}</div>
+      <div class="routeTrendHistoryBar"><div class="bar" style="height:${height}%"></div></div>
+      <div class="routeTrendHistoryDate">${escapeHtml(date)}</div>
+    </div>`;
+  }).join('');
+  return `<div class="routeTrendHistory">${cols}</div>`;
+}
+
 function renderTrendCards(trends, ui) {
   const cards = [];
   if (trends.efficiency) {
@@ -487,7 +506,8 @@ function renderTrendCards(trends, ui) {
     const pct = `${e.deltaPct > 0 ? '+' : e.deltaPct < 0 ? '−' : ''}${Math.abs(e.deltaPct)}%`;
     cards.push({ title: ui.trendEfficiencyLabel,
       verdict: dir === 'down' ? ui.trendEfficiencyBetter : dir === 'up' ? ui.trendEfficiencyWorse : ui.trendUsual,
-      detail: formatUi(ui.trendEfficiencyDetail, pct, e.km) });
+      detail: formatUi(ui.trendEfficiencyDetail, pct, e.km),
+      history: renderHistory(trends.efficiencyHistory, (value) => `${(value / 1000).toFixed(1)}k`) });
   }
   if (trends.rhythm) {
     const r = trends.rhythm;
@@ -495,15 +515,17 @@ function renderTrendCards(trends, ui) {
       verdict: r.verdict === 'steady' ? ui.trendSteady : r.verdict === 'above-habit' ? ui.trendAboveHabit
         : r.verdict === 'spike-monotonous' ? ui.trendSpikeMonotonous
           : r.verdict === 'below-habit-weeks' ? ui.trendBelowHabitWeeks : ui.trendBelowHabit,
-      detail: formatUi(ui.trendRhythmDetail, Math.round(r.ratio * 100)) });
+      detail: formatUi(ui.trendRhythmDetail, Math.round(r.ratio * 100)),
+      history: renderHistory(trends.rhythmHistory, (value) => `${Math.round(value)}%`) });
   }
   if (trends.recovery) {
     const c = trends.recovery;
     cards.push({ title: ui.trendRecoveryLabel,
       verdict: c.verdict === 'usual' ? ui.trendUsual : c.verdict === 'faster' ? ui.trendHrFaster : ui.trendHrSlower,
-      detail: formatUi(ui.trendRecoveryDetail, c.drop, c.medianDrop) });
+      detail: formatUi(ui.trendRecoveryDetail, c.drop, c.medianDrop),
+      history: renderHistory(trends.recoveryHistory, (value) => `${Math.round(value)}`) });
   }
-  return `<div class="routeTrends">${cards.map((card) => `<div class="routeTrendCard"><div class="routeTrendTitle">${escapeHtml(card.title)}</div><div class="routeTrendVerdict">${escapeHtml(card.verdict)}</div><div class="routeTrendDetail">${escapeHtml(card.detail)}</div></div>`).join('')}</div>`;
+  return `<div class="routeTrends">${cards.map((card) => `<div class="routeTrendCard"><div class="routeTrendTitle">${escapeHtml(card.title)}</div><div class="routeTrendVerdict">${escapeHtml(card.verdict)}</div><div class="routeTrendDetail">${escapeHtml(card.detail)}</div>${card.history}</div>`).join('')}</div>`;
 }
 
 function renderRouteCard(route, ui, mapId) {
@@ -2165,6 +2187,14 @@ function sharedCss() {
     .routeTrendTitle { color:var(--muted); font-size:0.9rem; }
     .routeTrendVerdict { font-size:1.15rem; font-weight:700; color:var(--accent); margin-top:3px; }
     .routeTrendDetail { font-size:0.92rem; line-height:1.5; color:var(--ink); margin-top:6px; }
+    .routeTrendHistory { display:flex; align-items:flex-end; gap:8px; margin-top:12px; padding-top:10px; border-top:1px solid var(--border); }
+    .routeTrendHistoryCol { flex:1 1 0; display:flex; flex-direction:column; align-items:center; gap:4px; min-width:0; }
+    .routeTrendHistoryVal { font-size:0.78rem; color:var(--muted); white-space:nowrap; }
+    .routeTrendHistoryBar { width:100%; max-width:34px; height:44px; display:flex; align-items:flex-end; background:color-mix(in srgb,var(--border) 35%,transparent); border-radius:4px; overflow:hidden; }
+    .routeTrendHistoryBar .bar { width:100%; background:color-mix(in srgb,var(--muted) 55%,transparent); border-radius:4px 4px 0 0; }
+    .routeTrendHistoryCol.current .routeTrendHistoryBar .bar { background:var(--accent); }
+    .routeTrendHistoryCol.current .routeTrendHistoryVal { color:var(--accent); font-weight:700; }
+    .routeTrendHistoryDate { font-size:0.72rem; color:var(--muted); }
     .routeClimbs { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
     .routeClimbsLabel { color:var(--muted); font-size:0.85rem; }
     .routeClimbBadge { border:1px solid color-mix(in srgb,#d35400 45%,var(--border)); background:color-mix(in srgb,#d35400 14%,var(--card)); color:var(--ink); border-radius:6px; padding:2px 8px; font-size:0.85rem; white-space:nowrap; }

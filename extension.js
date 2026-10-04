@@ -7,7 +7,7 @@ const { formatUi, localizeUi } = require('./ui-strings');
 const { buildCartesianGeometry, buildDistanceMarkers, buildTicks, formatTick, padRange, padYAxisRange } = require('./chart-geometry');
 const { computeElevationGainLoss, computeRouteDistanceKm, computeStats, extractGpsPoints, extractXYPoints } = require('./chart-data');
 const { buildSummary } = require('./activity-summary');
-const { attachActivityZones, buildTrainingContext, computeLoadRhythm } = require('./training-context');
+const { attachActivityZones, buildTrainingContext, computeLoadRhythm, computeLoadRhythmSeries } = require('./training-context');
 const { buildGpsRoute: buildGpsRouteFromModule, buildLineChart: buildLineChartFromModule } = require('./chart-model');
 const { createChartSvgRenderer } = require('./chart-svg');
 const {
@@ -359,9 +359,11 @@ function computeTrendsForCard(db, activityId) {
     FROM activities a
     LEFT JOIN activity_features af ON af.activity_id = a.id
     WHERE datetime(a.start_time) < datetime(?)`, [selected.start_time]);
-  const rhythm = computeLoadRhythm(loadRows.map((row) => ({
+  const loads = loadRows.map((row) => ({
     startTime: row.start_time, sport: row.sport, utcOffsetS: row.utc_offset_s, trimp: row.trimp,
-  })), selected.start_time, selected.sport);
+  }));
+  const rhythm = computeLoadRhythm(loads, selected.start_time, selected.sport);
+  const rhythmHistory = computeLoadRhythmSeries(loads, selected.start_time, selected.sport);
   // The efficiency/recovery indicators need a full same/reversed route; other rides show no route
   // trends but can still show rhythm.
   let trends = { efficiency: null, recovery: null };
@@ -397,11 +399,13 @@ function computeTrendsForCard(db, activityId) {
       JOIN activities a ON a.id = ar.activity_id
       WHERE ar.route_id = ? AND ar.relation LIKE (? || '%') AND datetime(a.start_time) < datetime(?)
       ORDER BY datetime(a.start_time) ASC, a.id ASC`, [assignment.routeId, relation, selected.start_time]);
-    const priorSameRoute = priorRows.map((row) => readFeatures(row.activity_id, row.start_time));
-    trends = computeRouteTrends(current.checkpoints, current.segments, priorSameRoute, PRIOR_RIDES_FOR_TRENDS);
+    const priorSameRoute = priorRows.map((row) => ({
+      startTime: row.start_time, ...readFeatures(row.activity_id, row.start_time),
+    }));
+    trends = computeRouteTrends(current.checkpoints, current.segments, selected.start_time, priorSameRoute, PRIOR_RIDES_FOR_TRENDS);
   }
   if (!trends.efficiency && !trends.recovery && !rhythm) return null;
-  return { ...trends, rhythm };
+  return { ...trends, rhythm, rhythmHistory };
 }
 
 async function getRouteCard(dbPath, activityId) {
@@ -3411,7 +3415,7 @@ function buildRouteContext(currentData, activities, selected, routeNote = null) 
 
   // Part I: three computed trend indicators. Only where comparable data exists; nulls mean the
   // indicator is not shown and never reaches the prompt.
-  const trends = computeRouteTrends(currentData.checkpoints, currentData.segments, priorSameRoute, PRIOR_RIDES_FOR_TRENDS);
+  const trends = computeRouteTrends(currentData.checkpoints, currentData.segments, selected.start_time, priorSameRoute, PRIOR_RIDES_FOR_TRENDS);
   const regular = pattern && pattern.slowerCount / pattern.priorCount >= 0.6;
   const patternLine = pattern
     ? `Route-typical pattern (${pattern.priorCount} earlier rides): after km ${pattern.splitKm} the average speed is at least 3% below the first part in ${pattern.slowerCount} of ${pattern.priorCount} rides (median ${pattern.medianChangePct >= 0 ? '+' : ''}${pattern.medianChangePct}%). This ride: ${pattern.currentChangePct >= 0 ? '+' : ''}${pattern.currentChangePct}% (a bigger drop than in ${pattern.currentDropsMoreThanCount} of ${pattern.priorCount} earlier rides).${regular ? ' A pattern this regular belongs to the route, not to the day: discuss only how this ride differs from it.' : ''}`

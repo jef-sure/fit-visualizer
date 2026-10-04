@@ -89,7 +89,7 @@ function postClimbRecovery(currentDrop, priorDrops, climbPeakHr = null) {
 // The two route-dependent indicators (efficiency, recovery) as a pair. Shared by the analysis
 // prompt and the lightweight route-card path so both report the same numbers. Each priorSameRoute
 // entry carries `checkpoints` and `segments` for earlier rides of the same route and direction.
-function computeRouteTrends(currentCheckpoints, currentSegments, priorSameRoute, minPriorRides = PRIOR_RIDES) {
+function computeRouteTrends(currentCheckpoints, currentSegments, currentStartTime, priorSameRoute, minPriorRides = PRIOR_RIDES) {
   // Marks sit at each ride's own segment boundaries, so exact km values differ ride to ride;
   // place identity is approximated by km within 150 m (route length differences are tiny here).
   // The indicator uses the current ride's LAST mark that at least minPriorRides priors reach.
@@ -110,23 +110,50 @@ function computeRouteTrends(currentCheckpoints, currentSegments, priorSameRoute,
   const pickPrior = (checkpoints) => (checkpoints || [])
     .reduce((best, cp) => (Number.isFinite(cp.km) && Math.abs(cp.km - markKm) <= 0.2
       && (!best || Math.abs(cp.km - markKm) < Math.abs(best.km - markKm)) ? cp : best), null);
-  return {
-    efficiency: lastMark
-      ? routeEfficiency(lastMark,
-          priorSameRoute.map((activity) => pickPrior(activity.checkpoints)).filter(Boolean))
-      : null,
-    recovery: (() => {
-      const climbs = (currentSegments || []).filter((segment) => segment.type === 'climb');
-      const finalClimb = climbs.at(-1);
-      if (!finalClimb || !(finalClimb.durationS >= 180) || finalClimb.postClimbHrDropBpm == null) return null;
-      const priorDrops = priorSameRoute
-        .map((activity) => (activity.segments || [])
-          .filter((segment) => segment.type === 'climb' && segment.durationS >= 180)
-          .map((segment) => segment.postClimbHrDropBpm))
-        .flat().filter((drop) => Number.isFinite(drop));
-      return postClimbRecovery(finalClimb.postClimbHrDropBpm, priorDrops, finalClimb.avgHr);
-    })(),
+  const efficiency = lastMark
+    ? routeEfficiency(lastMark,
+        priorSameRoute.map((activity) => pickPrior(activity.checkpoints)).filter(Boolean))
+    : null;
+  const recovery = (() => {
+    const climbs = (currentSegments || []).filter((segment) => segment.type === 'climb');
+    const finalClimb = climbs.at(-1);
+    if (!finalClimb || !(finalClimb.durationS >= 180) || finalClimb.postClimbHrDropBpm == null) return null;
+    const priorDrops = priorSameRoute
+      .map((activity) => (activity.segments || [])
+        .filter((segment) => segment.type === 'climb' && segment.durationS >= 180)
+        .map((segment) => segment.postClimbHrDropBpm))
+      .flat().filter((drop) => Number.isFinite(drop));
+    return postClimbRecovery(finalClimb.postClimbHrDropBpm, priorDrops, finalClimb.avgHr);
+  })();
+  // Per-ride values for the card's history strip (oldest first, current last). Each entry is
+  // { date, value, current? } so the UI can draw a small trend and highlight this ride.
+  const effort = (cp) => (Number.isFinite(Number(cp?.elapsedS)) && Number.isFinite(Number(cp?.avgHr))
+    && Number(cp.elapsedS) > 0 && Number(cp.avgHr) > 0
+    ? Math.round(Number(cp.elapsedS) * Number(cp.avgHr)) : null);
+  const efficiencyHistory = markKm == null ? [] : [
+    ...priorSameRoute.map((activity) => {
+      const value = effort(pickPrior(activity.checkpoints));
+      return value == null ? null : { date: activity.startTime, value };
+    }).filter(Boolean),
+    ...(effort(lastMark) == null ? [] : [{ date: currentStartTime, value: effort(lastMark), current: true }]),
+  ];
+  const climbDrop = (segments) => {
+    const climbs = (segments || []).filter((segment) => segment.type === 'climb' && segment.durationS >= 180);
+    const last = climbs.at(-1);
+    return (last && Number.isFinite(Number(last.postClimbHrDropBpm)) && last.postClimbHrDropBpm != null)
+      ? Number(last.postClimbHrDropBpm) : null;
   };
+  const currentDrop = climbDrop(currentSegments);
+  const recoveryHistory = [
+    ...priorSameRoute.map((activity) => {
+      const value = climbDrop(activity.segments);
+      return value == null ? null : { date: activity.startTime, value };
+    }).filter(Boolean),
+    ...(currentDrop == null ? [] : [{ date: currentStartTime, value: currentDrop, current: true }]),
+  ];
+  return { efficiency, recovery,
+    efficiencyHistory: efficiencyHistory.slice(-6),
+    recoveryHistory: recoveryHistory.slice(-6) };
 }
 
 // One short localized phrase per indicator; no hypotheses about causes. The wording never says

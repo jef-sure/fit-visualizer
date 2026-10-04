@@ -259,7 +259,7 @@
   "Less effort than usual": "Меньше усилий, чем обычно",
   "More effort than usual": "Больше усилий, чем обычно",
   "Training load this week": "Нагрузка за неделю",
-  "As usual": "Как обычно",
+  "Within your normal range": "В пределах нормы",
   "More than usual": "Больше обычного",
   "Less than usual": "Меньше обычного",
   "Less than usual for a second week": "Ниже обычного вторую неделю подряд",
@@ -269,6 +269,6 @@
   "Slower than usual": "Медленнее обычного",
   "As usual": "Как обычно",
   "{0} — time multiplied by heart rate to km {1}, against the median of your 5 previous rides on this route.": "{0} — время, умноженное на пульс, до км {1}, против медианы ваших 5 прошлых заездов по этому маршруту.",
-  "{0}% of a usual week — heart-rate load over the 7 days before this ride against the 28-day average.": "{0}% от обычной недели — нагрузка по пульсу за 7 дней перед этим заездом против среднего за 28 дней.",
+  "{0}% of a usual week — heart-rate load for the 7 days before this ride against your 28-day average; a normal week is 80–130%.": "{0}% от обычной недели — нагрузка по пульсу за 7 дней перед этим заездом против среднего за 28 дней; норма — 80–130%.",
   "The heart rate fell {0} bpm in the 60 s after the final climb; the median of your 5 previous rides is {1} bpm.": "Пульс упал на {0} уд/мин за 60 с после последнего подъёма; медиана ваших 5 прошлых заездов — {1} уд/мин."
 }

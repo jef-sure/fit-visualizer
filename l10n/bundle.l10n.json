@@ -259,7 +259,7 @@
   "Less effort than usual": "Less effort than usual",
   "More effort than usual": "More effort than usual",
   "Training load this week": "Training load this week",
-  "As usual": "As usual",
+  "Within your normal range": "Within your normal range",
   "More than usual": "More than usual",
   "Less than usual": "Less than usual",
   "Less than usual for a second week": "Less than usual for a second week",
@@ -269,6 +269,6 @@
   "Slower than usual": "Slower than usual",
   "As usual": "As usual",
   "{0} — time multiplied by heart rate to km {1}, against the median of your 5 previous rides on this route.": "{0} — time multiplied by heart rate to km {1}, against the median of your 5 previous rides on this route.",
-  "{0}% of a usual week — heart-rate load over the 7 days before this ride against the 28-day average.": "{0}% of a usual week — heart-rate load over the 7 days before this ride against the 28-day average.",
+  "{0}% of a usual week — heart-rate load for the 7 days before this ride against your 28-day average; a normal week is 80–130%.": "{0}% of a usual week — heart-rate load for the 7 days before this ride against your 28-day average; a normal week is 80–130%.",
   "The heart rate fell {0} bpm in the 60 s after the final climb; the median of your 5 previous rides is {1} bpm.": "The heart rate fell {0} bpm in the 60 s after the final climb; the median of your 5 previous rides is {1} bpm."
 }
