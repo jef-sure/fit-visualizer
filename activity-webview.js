@@ -496,7 +496,7 @@ function renderRouteCard(route, ui, mapId) {
         <span class="routeDirectionBadge">${escapeHtml(direction)}</span>
       </div>
       ${route.relation === 'partial' && route.rideDistanceKm != null && route.lengthKm != null
-        ? `<div class="routePartial">${escapeHtml(formatUi(ui.routePartialLine, Math.round(route.rideDistanceKm * 10) / 10, Math.round(route.lengthKm * 10) / 10))}</div>`
+        ? `<div class="routePartial">${escapeHtml(formatUi(ui.routePartialLine, Math.round(route.rideDistanceKm * 10) / 10, Math.round(route.lengthKm * 10) / 10, route.coveragePct ?? null))}</div>`
         : route.relation === 'partial' && route.relationDetail
           ? `<div class="routePartial">${escapeHtml(route.relationDetail)}</div>` : ''}
       ${facts.length ? `<div class="routeFactsGrid">${facts.map((fact) => `<div class="metric"><div class="k">${escapeHtml(fact.k)}</div><div class="v">${escapeHtml(fact.v)}</div></div>`).join('')}</div>` : ''}

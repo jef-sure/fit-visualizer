@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- The route card on a partial ride now says it plainly: "This ride: 33.7 km, only part of it on this 20.9 km route; the facts below describe the route" — instead of showing the route's 20.4 km as if the ride had covered it. Full same-direction/reversed rides are unaffected; the card's numbers are route facts by design and stay the same across rides of one route.
+- The route card on a partial ride states the relationship explicitly: "This ride: 33.7 km — a different and longer route of its own; 69% of it follows this 20.9 km route. The facts below describe the 20.9 km route, not this ride." A partial ride is its own route (longer, with its own climbs and roads through towns); the percentage is how much of its track coincides with the known route. Full same-direction/reversed rides are unaffected.
 
 ## 0.26.8 - 2026-10-04
 

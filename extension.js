@@ -337,9 +337,10 @@ async function getRouteCard(dbPath, activityId) {
     } finally {
       distStmt.free();
     }
+    const coverageMatch = /(\d+)% of this track follows/.exec(card.relationDetail || '');
     return {
       routeId: card.routeId, name: card.name, note: card.note, rideCount: card.rideCount, relation: card.relation,
-      relationDetail: card.relationDetail ?? null, rideDistanceKm,
+      relationDetail: card.relationDetail ?? null, rideDistanceKm, coveragePct: coverageMatch ? Number(coverageMatch[1]) : null,
       lengthKm: card.features?.lengthKm ?? null, ascentM: card.features?.ascentM ?? null, descentM: card.features?.descentM ?? null,
       climbs: described?.climbs ?? [],
     };
