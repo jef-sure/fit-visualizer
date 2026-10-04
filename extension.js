@@ -2890,6 +2890,9 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   context.altitudeQuality = buildAltitudeQuality({
     db, records: currentRecords, routeInfo: currentRouteInfo, activity: selected,
   });
+  // The workout fields read the settling window, so it must land on the analysis data after it
+  // is computed here and before the prompt is built.
+  if (context.altitudeQuality?.settlingWindow && currentData) currentData.altitudeSettlingWindow = context.altitudeQuality.settlingWindow;
   const conversations = readRows(`SELECT a.start_time, aac.chat_json
     FROM activities a JOIN activity_analysis_chat aac ON aac.activity_id = a.id
     WHERE datetime(a.start_time) < datetime(?) ORDER BY datetime(a.start_time) DESC LIMIT 24`, [selected.start_time]);
@@ -2954,6 +2957,7 @@ function buildAltitudeQuality({ db, records, routeInfo, activity }) {
   if (!ride) return null;
   let flags = computeAltitudeFlags(ride);
   let routeLine = null;
+  let settlingWindow = null;
   const reversed = routeInfo?.relation === 'reversed';
   const profile = routeInfo?.routeId && ['same', 'reversed'].includes(routeInfo.relation)
     ? ensureRouteElevationProfile(db, routeInfo.routeId) : null;
@@ -2964,6 +2968,7 @@ function buildAltitudeQuality({ db, records, routeInfo, activity }) {
     if (settling) {
       flags = flags.filter((flag) => flag.code !== 'ALT_SETTLING');
       flags.push({ code: 'ALT_SETTLING', detail: settling.detail });
+      settlingWindow = { startDeltaM: settling.startDeltaM, settleSeconds: settling.settleSeconds };
     }
     const computed = [asNumber(activity.total_ascent_m), asNumber(activity.total_descent_m)];
     const device = [asNumber(activity.device_ascent_m), asNumber(activity.device_descent_m)];
@@ -2973,7 +2978,7 @@ function buildAltitudeQuality({ db, records, routeInfo, activity }) {
       + `${computed.every(Number.isFinite) ? `; this ride computed ${Math.round(computed[0])}/${Math.round(computed[1])} m` : ''}`
       + `${device.every(Number.isFinite) ? `, device ${Math.round(device[0])}/${Math.round(device[1])} m` : ''}.`;
   }
-  return flags.length || routeLine ? { flags, routeLine } : null;
+  return flags.length || routeLine ? { flags, routeLine, settlingWindow } : null;
 }
 
 // Same-route comparisons the code can state as fact: checkpoint splits against the median of

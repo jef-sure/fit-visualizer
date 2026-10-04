@@ -4421,3 +4421,19 @@ test('data-quality flags detect HR dropout, late start, contact loss, hot device
     { total_activities: 0, trainingContext: { ...buildTrainingContext([], '2026-08-25', 'cycling') } }, {}, null, [], [], 'en');
   assert.match(prompt, /- HR_DROPOUT: 110 s without HR/);
 });
+
+test('settling window lands in the workout fields with the recomputed settled part', () => {
+  const records = [];
+  for (let i = 0; i < 2400; i += 1) {
+    const drift = -80 * Math.max(0, 1 - i / 600);
+    records.push({ elapsed_time: i, distance: i * 0.006, altitude: (100 + 30 * Math.sin(i / 900) + drift) / 1000 });
+  }
+  const prompt = generateAnalysisPrompt({
+    sessions: [{ sport: 'cycling', start_time: '2026-08-19T17:06:08Z', total_ascent_m: 64, total_descent_m: 163, device_ascent_m: 128, device_descent_m: 128 }],
+    records, altitudeSettlingWindow: { startDeltaM: -80, settleSeconds: 600 },
+  }, { total_activities: 0 });
+  assert.match(prompt, /Elevation Gain: 64 m \(settled part: \d+\/\d+ m; see ALT_SETTLING\)/);
+  assert.match(prompt, /Elevation Loss: 163 m \(same notes\)/);
+  const clean = generateAnalysisPrompt({ sessions: [{ sport: 'cycling', total_ascent_m: 64, total_descent_m: 163 }], records }, { total_activities: 0 });
+  assert.doesNotMatch(clean, /settled part/);
+});

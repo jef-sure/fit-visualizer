@@ -1,6 +1,7 @@
 const { formatHms, groupSimilarSegments, segmentLineBudget, collapseShortStops } = require('./utils');
 const { calculatePeakHeartRates, computeHeartRateZones } = require('./heart-rate');
 const { localClock, localDate } = require('./activity-time');
+const { computeElevationGainLoss } = require('./chart-data');
 const { rankModelsByCost } = require('./model-pricing');
 const { describeStretches } = require('./route-features');
 const { buildDataQualityFlagBlock } = require('./data-quality');
@@ -618,7 +619,7 @@ function responseLanguageInstruction(locale, isChat = false) {
   return `Respond in ${language}.${currentQuestionRule} Historical user reports, archived questions, previous AI responses, quoted text and the English wording of this prompt must not change the response language. Translate technical terms from this prompt (for example elapsed time, rolling window, pacing) into the response language; keep only standard abbreviations such as HR zones, VAM or VO2max.`;
 }
 
-function buildWorkoutFields(session, records) {
+function buildWorkoutFields(session, records, altitudeSettlingWindow = null) {
   const activityDateTime = formatActivityDateTime(session.start_time);
   const powerSource = session.power_source === 'estimated'
     ? 'estimated from motion data'
@@ -642,8 +643,24 @@ function buildWorkoutFields(session, records) {
   const descentM = Number(session.total_descent_m);
   const deviceAscentM = Number(session.device_ascent_m);
   const deviceDescentM = Number(session.device_descent_m);
-  const ascentText = formatPositive(ascentM, 0);
-  const descentText = formatPositive(descentM, 0);
+  const settling = altitudeSettlingWindow;
+  // With barometer settling the start drift is not terrain: show the full computed figure and the
+  // figure recomputed from the settled moment; the route consensus (in the flags block) is the
+  // steadier reference for comparing days.
+  let ascentText = formatPositive(ascentM, 0);
+  let descentText = formatPositive(descentM, 0);
+  let settlingNote = null;
+  if (settling?.settleSeconds > 0 && Array.isArray(records) && records.length > 2) {
+    const cutoff = Number(records[0]?.elapsed_time) + settling.settleSeconds;
+    const trimmed = records.filter((record) => Number(record?.elapsed_time) >= cutoff)
+      .map((record) => Number(record?.altitude))
+      .filter(Number.isFinite)
+      .map((value) => value * 1000);
+    if (trimmed.length > 10) {
+      const trimmedElevation = computeElevationGainLoss(trimmed);
+      settlingNote = `settled part: ${formatPositive(trimmedElevation.gain, 0)}/${formatPositive(trimmedElevation.loss, 0)} m; see ALT_SETTLING`;
+    }
+  }
   // A stored 0/0 means the device wrote no ascent figure, not a flat ride: it is not a
   // disagreeing source. (Same rule as the altitude-quality block.)
   const deviceWroteAscent = deviceAscentM > 0 || deviceDescentM > 0;
@@ -679,8 +696,8 @@ function buildWorkoutFields(session, records) {
     ['Estimated threshold HR used for hrTSS', formatPositive(session.lactate_threshold_hr, 0), 'bpm'],
     ['Avg Heart Rate', formatPositive(session.avg_hr, 0), 'bpm'],
     ['Max Heart Rate', formatPositive(session.max_hr, 0), 'bpm'],
-    ['Elevation Gain', ascentText ? `${ascentText} m${elevationNote ? ` (${elevationNote})` : ''}` : null],
-    ['Elevation Loss', descentText ? `${descentText} m${elevationNote ? ` (same note)` : ''}` : null],
+    ['Elevation Gain', ascentText ? `${ascentText} m${settlingNote ? ` (${settlingNote})` : ''}${elevationNote ? ` (${elevationNote})` : ''}` : null],
+    ['Elevation Loss', descentText ? `${descentText} m${settlingNote || elevationNote ? ' (same notes)' : ''}` : null],
     ['Power source', powerSource],
   ]);
   return { text, powerSource };
@@ -753,7 +770,7 @@ const ANALYSIS_PRINCIPLES = Object.freeze([
 
 function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, previousAnalysis, followUpHistory, recentHistory, locale) {
   const session = fitData.sessions?.[0] || {};
-  const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records);
+  const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records, fitData.altitudeSettlingWindow);
   const priorActivityCount = Number(progressSummary?.total_activities || 0);
   const hasBaseline = priorActivityCount > 0;
   const hasTrendEvidence = priorActivityCount >= 8;
@@ -898,7 +915,7 @@ function generateAnalysisPrompt(...args) {
 
 function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, baseAnalysis, history, userQuestion, locale) {
   const session = fitData.sessions?.[0] || {};
-  const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records);
+  const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records, fitData.altitudeSettlingWindow);
   const safeHistory = formatConversation(history);
   const segmentContext = buildSegmentContext(fitData.segments).text;
 
