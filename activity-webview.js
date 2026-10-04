@@ -484,26 +484,26 @@ function renderTrendCards(trends, ui) {
   if (trends.efficiency) {
     const e = trends.efficiency;
     const dir = Math.abs(e.deltaPct) < 3 ? 'flat' : e.deltaPct < 0 ? 'down' : 'up';
-    cards.push({ k: ui.trendEfficiencyLabel,
-      v: formatUi(ui.trendEfficiencyValue, `${e.deltaPct > 0 ? '+' : e.deltaPct < 0 ? '−' : ''}${Math.abs(e.deltaPct)}%`),
-      phrase: dir === 'down' ? ui.trendEfficiencyBetter : dir === 'up' ? ui.trendEfficiencyWorse : ui.trendUsual,
-      hint: formatUi(ui.trendEfficiencyHint, e.km) });
+    const pct = `${e.deltaPct > 0 ? '+' : e.deltaPct < 0 ? '−' : ''}${Math.abs(e.deltaPct)}%`;
+    cards.push({ title: ui.trendEfficiencyLabel,
+      verdict: dir === 'down' ? ui.trendEfficiencyBetter : dir === 'up' ? ui.trendEfficiencyWorse : ui.trendUsual,
+      detail: formatUi(ui.trendEfficiencyDetail, pct, e.km) });
   }
   if (trends.rhythm) {
     const r = trends.rhythm;
-    cards.push({ k: ui.trendRhythmLabel, v: formatUi(ui.trendRhythmValue, Math.round(r.ratio * 100)),
-      phrase: r.verdict === 'steady' ? ui.trendSteady : r.verdict === 'above-habit' ? ui.trendAboveHabit
+    cards.push({ title: ui.trendRhythmLabel,
+      verdict: r.verdict === 'steady' ? ui.trendSteady : r.verdict === 'above-habit' ? ui.trendAboveHabit
         : r.verdict === 'spike-monotonous' ? ui.trendSpikeMonotonous
           : r.verdict === 'below-habit-weeks' ? ui.trendBelowHabitWeeks : ui.trendBelowHabit,
-      hint: ui.trendRhythmHint });
+      detail: formatUi(ui.trendRhythmDetail, Math.round(r.ratio * 100)) });
   }
   if (trends.recovery) {
     const c = trends.recovery;
-    cards.push({ k: ui.trendRecoveryLabel, v: formatUi(ui.trendRecoveryValue, c.drop),
-      phrase: c.verdict === 'usual' ? ui.trendUsual : c.verdict === 'faster' ? ui.trendHrFaster : ui.trendHrSlower,
-      hint: formatUi(ui.trendRecoveryHint, c.medianDrop) });
+    cards.push({ title: ui.trendRecoveryLabel,
+      verdict: c.verdict === 'usual' ? ui.trendUsual : c.verdict === 'faster' ? ui.trendHrFaster : ui.trendHrSlower,
+      detail: formatUi(ui.trendRecoveryDetail, c.drop, c.medianDrop) });
   }
-  return `<div class="routeTrendsHeading">${escapeHtml(ui.routeTrendsHeading)}</div><div class="routeTrends">${cards.map((card) => `<div class="routeTrendCard"><div class="routeTrendTitle">${escapeHtml(card.k)}</div><div class="routeTrendValue">${escapeHtml(card.v)}</div><div class="routeTrendPhrase">${escapeHtml(card.phrase)}</div><div class="routeTrendHint">${escapeHtml(card.hint)}</div></div>`).join('')}</div>`;
+  return `<div class="routeTrends">${cards.map((card) => `<div class="routeTrendCard"><div class="routeTrendTitle">${escapeHtml(card.title)}</div><div class="routeTrendVerdict">${escapeHtml(card.verdict)}</div><div class="routeTrendDetail">${escapeHtml(card.detail)}</div></div>`).join('')}</div>`;
 }
 
 function renderRouteCard(route, ui, mapId) {
@@ -2160,13 +2160,11 @@ function sharedCss() {
     .routeDirectionBadge { border:1px solid var(--input-border); border-radius:999px; padding:2px 10px; font-size:0.8rem; color:var(--muted); background:var(--input-bg); }
     .routeFactsGrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,170px)); gap:8px; margin-bottom:10px; }
     .routePartial { color:var(--muted); font-size:0.85rem; margin:-4px 0 10px 0; }
-    .routeTrendsHeading { color:var(--ink); font-size:1rem; font-weight:600; margin:12px 0 8px; }
-    .routeTrends { display:grid; gap:10px; margin-bottom:14px; max-width:760px; }
+    .routeTrends { display:grid; gap:10px; margin:12px 0 14px; max-width:760px; }
     .routeTrendCard { background:color-mix(in srgb,var(--card) 70%,var(--bg)); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
-    .routeTrendTitle { color:var(--muted); font-size:0.95rem; }
-    .routeTrendValue { font-size:1.4rem; font-weight:700; color:var(--accent); margin-top:4px; }
-    .routeTrendPhrase { font-size:1.05rem; color:var(--ink); margin-top:2px; }
-    .routeTrendHint { font-size:0.95rem; line-height:1.5; color:var(--muted); margin-top:8px; }
+    .routeTrendTitle { color:var(--muted); font-size:0.9rem; }
+    .routeTrendVerdict { font-size:1.15rem; font-weight:700; color:var(--ink); margin-top:3px; }
+    .routeTrendDetail { font-size:0.85rem; line-height:1.45; color:var(--muted); margin-top:5px; }
     .routeClimbs { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
     .routeClimbsLabel { color:var(--muted); font-size:0.85rem; }
     .routeClimbBadge { border:1px solid color-mix(in srgb,#d35400 45%,var(--border)); background:color-mix(in srgb,#d35400 14%,var(--card)); color:var(--ink); border-radius:6px; padding:2px 8px; font-size:0.85rem; white-space:nowrap; }
