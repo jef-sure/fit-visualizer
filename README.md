@@ -4,64 +4,13 @@
 
 **A FIT file viewer that doesn't stop at viewing.**
 
+> A thousand years from now, perhaps they will dig up a gum wrapper and the shards of coins… — (c) Mumiy Troll
+
 Open a `.fit` file from your bike computer or sports watch right in VS Code and see the ride: speed, heart rate and elevation charts, the route on a map, and the ride split into climbs, descents, flats and stops. Every ride you open goes into a local history, so the next one can be compared with what came before — and if you use GitHub Copilot, you can talk it through in plain language.
 
 ## Upgrading
 
-### To 0.22.0
-
-Run **FIT: Re-analyze Outdated Analyses** (analysis format 28). Rebuilding derived features and re-indexing are not required.
-
-### To 0.21.0
-
-Run **FIT: Re-analyze Outdated Analyses** (analysis format 27). Rebuilding derived features and re-indexing are not required. The new two-level **Session Notes** (the model infers a purpose and conditions, you correct them on the activity page) take effect the next time each ride is analyzed.
-
-### To 0.20.0
-
-1. The derived-feature cache and routes rebuild themselves in the background on the first start after updating.
-2. Run **FIT: Re-analyze Outdated Analyses** (analysis format 26).
-3. Optional: run **FIT: Index All Files** to restore the device ascent/descent figures (earlier versions stored them scaled by 1000).
-
-### To 0.19.0
-
-Run **FIT: Re-analyze Outdated Analyses** (analysis format 25). Optional: fill in the new **Session Notes** (RPE, purpose, conditions) on the activity page first; notes are used the next time that ride is analyzed.
-
-### To 0.18.1
-
-Run **FIT: Re-analyze Outdated Analyses** (analysis format 24). Re-indexing is not required.
-
-### To 0.18.0
-
-Run **FIT: Re-analyze Outdated Analyses** (analysis format 23).
-
-### To 0.17.1
-
-Run **FIT: Re-analyze Outdated Analyses** (analysis format 22). Re-indexing is not required.
-
-### To 0.17.0
-
-1. Run **FIT: Re-analyze Outdated Analyses** to refresh saved AI analyses (analysis format 21). Re-indexing is not required.
-
-### To 0.16.0
-
-1. Run **FIT: Re-analyze Outdated Analyses** to refresh saved AI analyses (analysis format 20). Re-indexing is not required.
-
-### To 0.15.0
-
-1. Run **FIT: Index All Files** to extract the new device fields (timezone offset, device ascent/descent, session timing). **Index New Files** does not refresh existing activities.
-2. Run **FIT: Re-analyze Outdated Analyses** to refresh saved AI analyses (analysis format 19).
-
-### To 0.14.1
-
-1. Run **FIT: Re-analyze Outdated Analyses** to refresh saved AI analyses (analysis format 18). Re-indexing is not required for this update.
-2. Optional: run **FIT: Tidy Heart-Rate Profiles** to collapse duplicate dated profiles created by earlier saves.
-
-### To 0.14.0
-
-**Existing users: re-index your FIT files and re-run AI analysis after updating.** Grade, segments, heart-rate load and the AI context have changed; stored values and older analyses are not refreshed automatically.
-
-1. Open the folder containing your original `.fit` files and run **FIT: Index All Files** from the Command Palette (`Ctrl+Shift+P`). **Index New Files** does not refresh existing activities.
-2. Once indexing finishes, run **FIT: Re-analyze Outdated Analyses** to refresh outdated AI analyses and create any missing ones using the new calculations and context. One confirmation shows the total number of Copilot requests; current analyses are left unchanged.
+Run **FIT: Re-analyze Outdated Analyses** after an update (analysis format 28). Rebuilding derived features and re-indexing are not required; one-off re-indexing steps for specific old releases are noted in the changelog.
 
 Re-indexing is local and does not change the original FIT files. Re-analysis is optional, requires GitHub Copilot, sends activity and discussion context to the model, and may consume your Copilot allowance.
 
