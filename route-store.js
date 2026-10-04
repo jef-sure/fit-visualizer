@@ -23,6 +23,13 @@ function assignRoute(db, { activityId, signature, createdAt }) {
     const canonical = parseCanonical(route.canonical_signature);
     if (!canonical) continue;
     const match = matchRoutes(signature, canonical);
+    // A longer ride that only partly follows a shorter route is its own route: longer, with its
+    // own climbs and its own roads. Joining it to the shorter one would forever present the short
+    // route's facts as if the long ride had ridden them (and the long route would never form).
+    // Partial applies only when this ride is the shorter one - a loop cut short, a late start.
+    if (match.type === 'partial' && signature.distanceKm > canonical.distanceKm * 1.05) {
+      continue;
+    }
     if (['same', 'reversed', 'partial'].includes(match.type)) {
       db.run('INSERT OR REPLACE INTO activity_routes (activity_id, route_id, relation) VALUES (?, ?, ?)',
         [activityId, route.id, `${match.type} (${match.detail})`]);

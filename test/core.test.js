@@ -3458,6 +3458,27 @@ test('ride-to-route assignment creates a route once and attaches later rides wit
     assert.equal(second.routeId, first.routeId);
     assert.equal(second.rideCount, 2);
     assert.equal(readRoutes(db).length, 1);
+
+    // A longer ride that only partly follows the loop is its own route, not a member of the
+    // shorter one: 69% coverage of a 20.9 km loop from a 33 km ride must not join the loop.
+    const bigLoop = [];
+    for (let i = 0; i <= 300; i += 1) {
+      const d = i / 300;
+      const share = Math.floor(d * 300) / 300;
+      const src = loop[Math.round(share * 199)];
+      // First 70% of the track rides the loop; the rest departs onto its own roads.
+      const departs = d > 0.7 ? (d - 0.7) * 0.3 : 0;
+      bigLoop.push({ position_lat: src.position_lat + departs, position_long: src.position_long + departs, distance: d * 33 });
+    }
+    db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (3, ?, ?, ?, ?)', ['c', 'c', '2026-08-03T10:00:00Z', 'fit']);
+    const big = assignRoute(db, { activityId: 3, signature: buildRouteSignature(bigLoop), createdAt: '2026-08-03T10:00:00Z' });
+    assert.notEqual(big.routeId, first.routeId, 'the longer ride forms its own route');
+    assert.equal(big.relation, 'same', 'it defines that route');
+    // A short ride over part of the loop is still a partial of it.
+    db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (4, ?, ?, ?, ?)', ['d', 'd', '2026-08-04T10:00:00Z', 'fit']);
+    const cutShort = loop.slice(0, 140).map((p, i) => ({ ...p, distance: (i / 200) * 10 }));
+    const short = assignRoute(db, { activityId: 4, signature: buildRouteSignature(cutShort), createdAt: '2026-08-04T10:00:00Z' });
+    assert.equal(short.relation, 'partial', 'the shorter ride stays a partial of the loop');
   } finally {
     db.close();
   }
@@ -4554,7 +4575,7 @@ test('a stale derived-feature version triggers one background rebuild with progr
   assert.match(source, /if \(\(silent \|\| background\) && !skipStaleCheck && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
   assert.match(source, /reason: 'auto'/);
   assert.match(source, /WHERE features_version != \$\{FEATURES_VERSION\}/);
-  assert.equal(require('../activity-features').FEATURES_VERSION, 5, 'the version bump is what makes existing caches stale');
+  assert.equal(require('../activity-features').FEATURES_VERSION, 6, 'the version bump is what makes existing caches stale');
 
   const { needsDerivedFeatureRebuild } = loadExtensionInternalsForTest();
   const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
