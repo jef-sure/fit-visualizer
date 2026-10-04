@@ -477,14 +477,23 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
     ? options.maxRetries
     : 1;
   const vendor = String(options.vendor || '').trim() || 'copilot';
-  const models = await vscode.lm.selectChatModels({ vendor });
+  const wantedId = String(options.modelId || '').trim();
+  // A pinned or picked model id may belong to another vendor (BYOK providers register under
+  // their own ids), so an explicit id searches every model the editor offers.
+  const models = wantedId
+    ? (await vscode.lm.selectChatModels()).filter((model) => model.id === wantedId || model.name === wantedId)
+    : await vscode.lm.selectChatModels({ vendor });
   if (!models.length) {
-    throw new Error(vendor === 'copilot'
-      ? 'Copilot Chat is not installed or you are not signed in.'
-      : `No language models are available for vendor "${vendor}".`);
+    throw new Error(wantedId
+      ? `Configured analysis model "${wantedId}" is not available. Clear fitVisualizer.analysisModelId or pick an available model.`
+      : vendor === 'copilot'
+        ? 'Copilot Chat is not installed or you are not signed in.'
+        : `No language models are available for vendor "${vendor}".`);
   }
 
-  const chosenModel = await selectPreferredModel(vscode, vendor, models, options);
+  // When an explicit id was requested the list already holds only that model (searched across
+  // vendors); selectPreferredModel then just confirms the exact match.
+  const chosenModel = await selectPreferredModel(vscode, wantedId ? '' : vendor, models, options);
   // Copilot may hand out different models over time, so the log has to record which one answered.
   const modelId = chosenModel.id || chosenModel.family || 'unknown';
   // A prompt may be several User messages (instructions first, data last); logs keep the joined text.
@@ -547,7 +556,7 @@ async function selectPreferredModel(vscode, vendor, models, options) {
     if (exact) {
       return exact;
     }
-    throw new Error(`Configured analysis model "${wantedId}" is not available for vendor "${vendor}". Clear fitVisualizer.analysisModelId or pick an available model.`);
+    throw new Error(`Analysis model "${wantedId}" is not available. Clear fitVisualizer.analysisModelId or pick an available model.`);
   }
   if (!options.preferCheapModel) {
     return models[0];

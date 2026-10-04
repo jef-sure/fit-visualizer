@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- BYOK and other non-copilot models can be chosen for analysis. The model picker (analysis card and FIT: Select Analysis Model) lists every model the editor offers, and a picked or pinned model id is resolved across vendors; before, everything filtered by the configured vendor and such models never appeared.
 - The automatic background rebuild of derived features now shows the same progress notification as the manual one ("FIT Visualizer: rebuilding derived features", N/M); before, it ran invisibly and there was no way to tell old segments from new.
 
 ### Added

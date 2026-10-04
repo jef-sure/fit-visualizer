@@ -464,16 +464,21 @@ async function updateModelPriceTable() {
 // "Default" entry names a real model instead of a rule.
 async function getModelPickerData() {
   const vendor = getLanguageModelVendor();
-  let models = [];
+  let raw = [];
   try {
-    models = await vscode.lm.selectChatModels({ vendor });
+    // BYOK and other providers register under their own vendor ids; the picker lists every model
+    // the editor offers, not only the configured vendor's, and the analysis resolves the full id.
+    raw = await vscode.lm.selectChatModels();
   } catch {
-    models = [];
+    raw = [];
   }
+  const models = Array.isArray(raw) ? raw : [];
+  // The default (no explicit choice) still resolves within the configured vendor.
+  const vendorModels = models.filter((model) => !model.vendor || model.vendor === vendor);
   let defaultName = null;
-  if (models.length) {
+  if (vendorModels.length) {
     try {
-      const resolved = await selectPreferredModel(vscode, vendor, models, {
+      const resolved = await selectPreferredModel(vscode, vendor, vendorModels, {
         modelId: getAnalysisModelId(),
         preferCheapModel: getPreferCheapAnalysisModel(),
         cheapModelMarkers: getCheapModelMarkers(),
@@ -484,21 +489,21 @@ async function getModelPickerData() {
     }
   }
   return {
-    models: models.map((model) => ({ id: model.id, name: model.name || model.id })),
+    vendor,
+    models: models.map((model) => ({ id: model.id, name: model.name || model.id, vendor: model.vendor })),
     defaultName: defaultName || (getPreferCheapAnalysisModel() ? vscode.l10n.t('cheapest model') : vscode.l10n.t('first listed model')),
   };
 }
 
 async function selectAnalysisModel() {
-  const vendor = getLanguageModelVendor();
   let models = [];
   try {
-    models = await vscode.lm.selectChatModels({ vendor });
+    models = await vscode.lm.selectChatModels();
   } catch {
     models = [];
   }
   if (!models.length) {
-    vscode.window.showWarningMessage(vscode.l10n.t('No language models are available for vendor "{0}".', vendor));
+    vscode.window.showWarningMessage(vscode.l10n.t('No language models are available.'));
     return;
   }
   const current = getAnalysisModelId();

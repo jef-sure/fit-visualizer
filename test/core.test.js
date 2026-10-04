@@ -2328,6 +2328,33 @@ test('Copilot analysis selects a model and joins streamed text', async () => {
   assert.deepEqual(requests, [[{ role: 'user', content: 'Analyze this' }]]);
 });
 
+test('a pinned or picked model id is searched across vendors, so BYOK models work', async () => {
+  const selectors = [];
+  const vscode = {
+    lm: {
+      selectChatModels: async (selector) => {
+        selectors.push(selector ?? null);
+        if (selector == null) {
+          return [
+            { id: 'copilot-sonnet', vendor: 'copilot', name: 'Copilot Sonnet', sendRequest: async () => ({ text: asyncChunks(['copilot']) }) },
+            { id: 'glm-5.3', vendor: 'customendpoint', name: 'GLM 5.3', sendRequest: async () => ({ text: asyncChunks(['byok']) }) },
+          ];
+        }
+        return [{ id: 'copilot-sonnet', vendor: 'copilot', name: 'Copilot Sonnet', sendRequest: async () => ({ text: asyncChunks(['copilot']) }) }];
+      },
+    },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+
+  const answer = await requestCopilotAnalysis(vscode, 'test', { vendor: 'copilot', modelId: 'glm-5.3' });
+  assert.equal(answer, 'byok', 'the BYOK model answers');
+  assert.deepEqual(selectors, [null], 'an explicit id searches every vendor');
+  await assert.rejects(
+    requestCopilotAnalysis(vscode, 'test', { vendor: 'copilot', modelId: 'missing-model' }),
+    /"missing-model" is not available/
+  );
+});
+
 test('Copilot analysis accepts a configured language-model vendor and defaults blank values', async () => {
   const selectors = [];
   const vscode = {

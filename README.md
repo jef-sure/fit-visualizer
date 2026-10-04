@@ -214,7 +214,7 @@ Derived workload metrics that cannot be calculated from the available data are o
 
 Prompts and responses are logged locally (see **Settings**) so you can review exactly what was sent and received.
 
-By default, analysis uses the VS Code copilot language-model vendor. The vendor can be changed with fitVisualizer.lmVendor when another compatible provider is registered in VS Code.
+By default, analysis uses the VS Code copilot language-model vendor. The model picker (in the analysis card and in **FIT: Select Analysis Model**) lists every model the editor offers, including BYOK providers registered under their own vendor ids; picking one sends its full id, so the re-analyze command works through them when Copilot limits run out. The vendor setting fitVisualizer.lmVendor only decides which models count as "default".
 
 Analysis and follow-up responses default to the language of the VS Code interface. Only the current chat question can change the reply language; earlier messages, archived questions and previous AI replies cannot.
 

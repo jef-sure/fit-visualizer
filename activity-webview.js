@@ -630,10 +630,14 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   // is still offered) and otherwise the default, named by the model it actually resolves to. It
   // only prepares a choice: the analysis runs when the athlete presses the Analyze button.
   const modelPickerModels = Array.isArray(modelPicker?.models) ? modelPicker.models : [];
+  // Models of other vendors (BYOK providers) are marked, so the picker reads as a choice of
+  // providers, not a flat list of near-identical names.
+  const modelLabel = (model) => model.vendor && model.vendor !== modelPicker?.vendor
+    ? `${model.name} (${model.vendor})` : model.name;
   const usedModelId = analysis?.modelId && modelPickerModels.some((model) => model.id === analysis.modelId) ? analysis.modelId : '';
   const modelOptions = [
     `<option value=""${usedModelId ? '' : ' selected'}>${escapeHtml(formatUi(ui.defaultModel, modelPicker?.defaultName || ui.cheapestModel))}</option>`,
-    ...modelPickerModels.map((model) => `<option value="${escapeHtml(model.id)}"${model.id === usedModelId ? ' selected' : ''}>${escapeHtml(model.name)}</option>`),
+    ...modelPickerModels.map((model) => `<option value="${escapeHtml(model.id)}"${model.id === usedModelId ? ' selected' : ''}>${escapeHtml(modelLabel(model))}</option>`),
   ].join('');
 
   return `<main class="wrap">
