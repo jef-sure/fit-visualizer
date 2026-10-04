@@ -240,7 +240,8 @@
   "Analyzed by {0} · format {1} · {2}": "Проанализировано {0} · формат {1} · {2}",
   "Model": "Модель",
   "{0} rides on this route": "Заездов на этом маршруте: {0}",
-  "this direction": "в направлении первого заезда",
+  "This ride compared with your usual": "Этот заезд в сравнении с вашим обычным",
+  "same direction as the first ride": "в том же направлении, что первый заезд",
   "opposite direction": "в обратном направлении",
   "part of the route": "по части маршрута",
   "Length": "Длина",
@@ -268,6 +269,6 @@
   "HR drops slower than usual": "пульс опускается медленнее обычного",
   "as usual": "как обычно",
   "time × HR at km {0}, vs median of 5 prior rides; lower is better": "время × пульс на км {0}, против медианы 5 прошлых заездов; меньше — лучше",
-  "7-day TRIMP ÷ 28-day weekly average": "TRIMP за 7 дней ÷ недельный средний за 28 дней",
+  "of your usual weekly load: 7-day TRIMP vs the 28-day weekly average (not specific to this route)": "от вашей обычной недельной нагрузки: TRIMP за 7 дней против среднего недельного за 28 дней (к маршруту не относится)",
   "bpm drop in 60 s after the final climb, vs median −{0} of 5 prior rides": "падение пульса за 60 с после финального подъёма, против медианы −{0} из 5 прошлых"
 }

@@ -492,7 +492,7 @@ function renderTrendCards(trends, ui) {
   if (trends.rhythm) {
     const r = trends.rhythm;
     const dir = r.verdict === 'steady' ? 'flat' : r.verdict === 'below-habit' || r.verdict === 'below-habit-weeks' ? 'down' : 'up';
-    cards.push({ k: ui.trendRhythmLabel, v: String(r.ratio), arrow: arrow(dir),
+    cards.push({ k: ui.trendRhythmLabel, v: `${Math.round(r.ratio * 100)}%`, arrow: arrow(dir),
       phrase: r.verdict === 'steady' ? ui.trendSteady : r.verdict === 'above-habit' ? ui.trendAboveHabit
         : r.verdict === 'spike-monotonous' ? ui.trendSpikeMonotonous
           : r.verdict === 'below-habit-weeks' ? ui.trendBelowHabitWeeks : ui.trendBelowHabit,
@@ -505,7 +505,7 @@ function renderTrendCards(trends, ui) {
       phrase: c.verdict === 'usual' ? ui.trendUsual : c.verdict === 'faster' ? ui.trendHrFaster : ui.trendHrSlower,
       hint: formatUi(ui.trendRecoveryHint, c.medianDrop) });
   }
-  return `<div class="routeTrends">${cards.map((card) => `<div class="routeTrendCard"><div class="k">${escapeHtml(card.k)}</div><div class="v">${escapeHtml(card.arrow)} ${escapeHtml(card.v)}</div><div class="routeTrendPhrase">${escapeHtml(card.phrase)}</div><div class="routeTrendHint">${escapeHtml(card.hint)}</div></div>`).join('')}</div>`;
+  return `<div class="routeTrendsHeading">${escapeHtml(ui.routeTrendsHeading)}</div><div class="routeTrends">${cards.map((card) => `<div class="routeTrendCard"><div class="k">${escapeHtml(card.k)}</div><div class="v">${escapeHtml(card.arrow)} ${escapeHtml(card.v)}</div><div class="routeTrendPhrase">${escapeHtml(card.phrase)}</div><div class="routeTrendHint">${escapeHtml(card.hint)}</div></div>`).join('')}</div>`;
 }
 
 function renderRouteCard(route, ui, mapId) {
@@ -2158,11 +2158,12 @@ function sharedCss() {
     .metric .k { color:var(--muted); font-size:0.82rem; text-transform:uppercase; letter-spacing:0.08em; }
     .term { text-decoration:underline dotted; text-underline-offset:3px; cursor:help; }
     .routeHead { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
-    .routeRidesCount { color:var(--ink); font-size:1.05rem; font-weight:600; }
+    .routeRidesCount { color:var(--ink); font-size:0.95rem; }
     .routeDirectionBadge { border:1px solid var(--input-border); border-radius:999px; padding:2px 10px; font-size:0.8rem; color:var(--muted); background:var(--input-bg); }
-    .routeFactsGrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; margin-bottom:10px; }
+    .routeFactsGrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,170px)); gap:8px; margin-bottom:10px; }
     .routePartial { color:var(--muted); font-size:0.85rem; margin:-4px 0 10px 0; }
-    .routeTrends { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; margin-bottom:10px; }
+    .routeTrendsHeading { color:var(--muted); font-size:0.85rem; margin:4px 0 6px; }
+    .routeTrends { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,280px)); gap:8px; margin-bottom:12px; }
     .routeTrendCard { background:color-mix(in srgb,var(--card) 70%,var(--bg)); border:1px solid var(--border); border-radius:10px; padding:8px 10px; }
     .routeTrendCard .k { color:var(--muted); font-size:0.75rem; text-transform:uppercase; letter-spacing:0.06em; }
     .routeTrendCard .v { font-size:1.15rem; font-weight:700; color:var(--accent); margin-top:2px; }
