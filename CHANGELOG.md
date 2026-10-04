@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.21.0 - 2026-10-04
+
+### Upgrade Notes
+
+- Run **FIT: Re-analyze Outdated Analyses** (analysis format 27). Rebuilding derived features and re-indexing are not required.
+
+### Added
+
+- **Data-quality flags** ([data-quality.js](./data-quality.js)): one place that turns measured recording quirks into `warn`/`info` flags — heart-rate dropout, late start, contact loss, absent HR, a hot device (temperature is device, not air), elapsed mismatch, timezone/offset change, speed-sensor/GPS mismatch, smart recording and GPS gaps. Warn flags reach the prompt as a single short block with the rule to use each once where it changes a conclusion; the activity page shows all of them as chips.
+- **Barometer-settling figures**: when the altitude flag `ALT_SETTLING` is set, the workout fields add the ascent/descent recomputed from the settled moment with a reference to the flag, instead of the drift-skewed opening.
+- **Observed max HR with provenance**: auto-calculated max HR now uses the highest 15-second rolling average across rides and records where it came from (activity, date, window). The prompt states the source (`Max HR Source: observed 15 s window 171 bpm on 2026-08-14 / formula 172`), and the profile form flags an observed peak more than 15 bpm above the formula.
+- **Session class and data-quality chips** on the activity page, with the class evidence in a tooltip.
+
+### Changed
+
+- **Two-level session notes**: the SUMMARY tail now also produces `purpose` and `conditions` that the model infers from the ride's data, and the Session Notes form pre-fills with them, marked as AI-inferred. A user-declared value always wins field by field (a declared purpose suppresses the inferred purpose, declared conditions suppress the inferred conditions); saving any note makes it the user's own. The prompt shows both sources separately.
+- The **Same-Route Context** budget is raised to 2200 characters (checkpoint rows now carry prior best and prior median HR).
+
 ## 0.20.2 - 2026-10-04
 
 ### Removed

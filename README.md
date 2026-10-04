@@ -8,6 +8,10 @@ Open a `.fit` file from your bike computer or sports watch right in VS Code and 
 
 ## Upgrading
 
+### To 0.21.0
+
+Run **FIT: Re-analyze Outdated Analyses** (analysis format 27). Rebuilding derived features and re-indexing are not required. The new two-level **Session Notes** (the model infers a purpose and conditions, you correct them on the activity page) take effect the next time each ride is analyzed.
+
 ### To 0.20.0
 
 1. The derived-feature cache and routes rebuild themselves in the background on the first start after updating.
