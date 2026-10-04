@@ -153,6 +153,7 @@ function enqueueLlmTask(task) {
 function activate(context) {
   extensionContextRef = context;
   restoreModelPriceCache(context.globalState.get(MODEL_PRICE_CACHE_KEY));
+  scheduleDerivedFeatureAutoRebuild();
   context.subscriptions.push(...registerCommands(context, {
     addAndBrowseManualActivity,
     escapeHtml,
@@ -217,41 +218,77 @@ async function tidyHeartRateProfiles() {
   vscode.window.showInformationMessage(`Removed ${redundant.length} duplicate heart-rate profile${redundant.length > 1 ? 's' : ''}.`);
 }
 
-async function rebuildDerivedFeatures() {
-  const dbPath = await resolveActiveDbPath() || await selectDatabaseFolder();
+
+// After an update that changes the derived-feature version, the cache and routes are rebuilt once,
+// silently in the background — the user never runs a command for it. Runs only for the remembered
+// database (the one this workspace actually uses) and only when a rebuild is actually needed.
+let derivedFeatureAutoRebuildStarted = false;
+function scheduleDerivedFeatureAutoRebuild() {
+  if (derivedFeatureAutoRebuildStarted) return;
+  derivedFeatureAutoRebuildStarted = true;
+  setTimeout(() => {
+    rebuildDerivedFeatures({ silent: true }).catch(() => {
+      // A failed background rebuild leaves the lazy path in charge; nothing to report.
+    });
+  }, 1500);
+}
+
+async function rebuildDerivedFeatures({ silent = false } = {}) {
+  const dbPath = silent ? await resolveActiveDbPath() : (await resolveActiveDbPath() || await selectDatabaseFolder());
   if (!dbPath) {
     return;
   }
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
+    if (silent && !needsDerivedFeatureRebuild(db)) {
+      return;
+    }
     // Routes are re-derived in chronological order so the earliest ride defines each route.
     db.run('DELETE FROM activity_features');
     db.run('DELETE FROM activity_routes');
     db.run('DELETE FROM routes');
     const ordered = (db.exec("SELECT id FROM activities WHERE source != 'manual' ORDER BY datetime(start_time), id")[0]?.values || [])
       .map((value) => Number(value[0]));
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: 'FIT Visualizer: rebuilding derived features', cancellable: false },
-      async (progress) => {
-        let done = 0;
-        for (const id of ordered) {
-          try {
-            ensureFeaturesForActivity(db, id);
-          } catch {
-            // A single broken activity must not abort the rebuild.
-          }
-          done += 1;
-          progress.report({ message: `${done}/${ordered.length}` });
-          await new Promise((resolve) => setImmediate(resolve));
+    const rebuild = async (report) => {
+      let done = 0;
+      for (const id of ordered) {
+        try {
+          ensureFeaturesForActivity(db, id);
+        } catch {
+          // A single broken activity must not abort the rebuild.
         }
+        done += 1;
+        report?.(`${done}/${ordered.length}`);
+        // Yield so a background rebuild does not block the extension host.
+        await new Promise((resolve) => setImmediate(resolve));
       }
-    );
+    };
+    if (silent) {
+      await rebuild();
+    } else {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'FIT Visualizer: rebuilding derived features', cancellable: false },
+        (_progress, token) => rebuild((message) => { if (!token.isCancellationRequested) _progress.report({ message }); })
+      );
+    }
     await persistDatabase(db, dbPath);
-    vscode.window.showInformationMessage(`Derived features rebuilt for ${ordered.length} activities.`);
+    if (!silent) {
+      vscode.window.showInformationMessage(`Derived features rebuilt for ${ordered.length} activities.`);
+    }
   } finally {
     db.close();
   }
+}
+
+// A rebuild is needed when any stored feature row predates the current derived-feature version
+// (or routes exist without assignments). Fresh databases skip it entirely.
+function needsDerivedFeatureRebuild(db) {
+  const activities = Number(db.exec("SELECT COUNT(*) FROM activities WHERE source != 'manual'")[0]?.values?.[0]?.[0] || 0);
+  if (!activities) return false;
+  const stale = Number(db.exec(`SELECT COUNT(*) FROM activity_features WHERE features_version != ${FEATURES_VERSION}`)[0]?.values?.[0]?.[0] || 0);
+  const fresh = Number(db.exec(`SELECT COUNT(*) FROM activity_features WHERE features_version = ${FEATURES_VERSION}`)[0]?.values?.[0]?.[0] || 0);
+  return stale > 0 || fresh < activities;
 }
 
 async function getRouteCard(dbPath, activityId) {

@@ -183,7 +183,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, needsDerivedFeatureRebuild, setContext: (context) => { extensionContextRef = context; } };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -4352,4 +4352,28 @@ test('asking to record notes is suppressed when recent analyses already suggeste
   assert.doesNotMatch(withNotes, /No session notes/);
   const tail = /open: <one question whose answer would change the advice[^>]*usually none>/.exec(require('../analysis-summary').SUMMARY_TAIL_INSTRUCTION);
   assert.ok(tail, 'the tail instruction encourages none');
+});
+
+test('a stale derived-feature version triggers one silent background rebuild, a fresh one does not', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /scheduleDerivedFeatureAutoRebuild\(\);/);
+  assert.match(source, /if \(silent && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
+  assert.match(source, /WHERE features_version != \$\{FEATURES_VERSION\}/);
+  assert.equal(require('../activity-features').FEATURES_VERSION, 2, 'the version bump is what makes existing caches stale');
+
+  const { needsDerivedFeatureRebuild } = loadExtensionInternalsForTest();
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    assert.equal(needsDerivedFeatureRebuild(db), false, 'empty database needs nothing');
+    db.run("INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (1, 'a', 'a', '2026-08-01T10:00:00Z', 'fit')");
+    assert.equal(needsDerivedFeatureRebuild(db), true, 'an activity without feature rows is not covered');
+    db.run(`INSERT INTO activity_features (activity_id, features_version, feature_cache_key) VALUES (1, ${require('../activity-features').FEATURES_VERSION}, 'k')`);
+    assert.equal(needsDerivedFeatureRebuild(db), false, 'a fresh row for every activity needs nothing');
+    db.run('UPDATE activity_features SET features_version = 1');
+    assert.equal(needsDerivedFeatureRebuild(db), true, 'a stale version triggers the rebuild');
+  } finally {
+    db.close();
+  }
 });

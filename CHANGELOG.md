@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.20.1 - 2026-10-04
+
+### Changed
+
+- **Derived features rebuild themselves**: after an update that changes the derived-feature version, the cache and routes are rebuilt once, silently in the background when the extension starts (the derived-feature version bump to 2 makes the previous cache stale). The **FIT: Rebuild Derived Features** command remains for manual use, but upgrades no longer ask you to run it.
+
 ## 0.20.0 - 2026-10-04
 
 ### Upgrade Notes
