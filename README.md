@@ -10,7 +10,7 @@ Open a `.fit` file from your bike computer or sports watch right in VS Code and 
 
 ## Upgrading
 
-Run **FIT: Re-analyze Outdated Analyses** after an update (analysis format 29). Derived features rebuild themselves in the background; re-indexing is not required. One-off re-indexing steps for specific old releases are noted in the changelog.
+Run **FIT: Re-analyze Outdated Analyses** after an update (analysis format 30). Derived features rebuild themselves in the background; re-indexing is not required. One-off re-indexing steps for specific old releases are noted in the changelog.
 
 Re-indexing is local and does not change the original FIT files. Re-analysis is optional, requires GitHub Copilot, sends activity and discussion context to the model, and may consume your Copilot allowance.
 

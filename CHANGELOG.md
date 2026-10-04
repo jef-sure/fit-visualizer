@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.24.0 - 2026-10-04
+
+### Upgrade Notes
+
+- Run **FIT: Re-analyze Outdated Analyses** (analysis format 30). Derived features rebuild themselves in the background; re-indexing is not required.
+
+### Added
+
+- **Sport profiles**: running, hiking, walking and swimming now get their own units and vocabulary in the analysis. Running and walking show pace in min/km and cadence in steps/min, swimming shows min/100 m, and hiking keeps km/h with ascent/descent as the point of the ride. Power metrics are cycling-only and are hidden for the other sports, and each non-cycling sport gets a short cue in the prompt (for example, swimming mentions min/100 m and SWOLF).
+
 ## 0.23.0 - 2026-10-04
 
 ### Upgrade Notes
