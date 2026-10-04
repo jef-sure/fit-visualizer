@@ -189,7 +189,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, needsDerivedFeatureRebuild, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, needsDerivedFeatureRebuild, getRouteUiData, setContext: (context) => { extensionContextRef = context; } };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -4365,7 +4365,7 @@ test('a stale derived-feature version triggers one silent background rebuild, a 
   assert.match(source, /scheduleDerivedFeatureAutoRebuild\(\);/);
   assert.match(source, /if \(silent && !skipStaleCheck && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
   assert.match(source, /WHERE features_version != \$\{FEATURES_VERSION\}/);
-  assert.equal(require('../activity-features').FEATURES_VERSION, 2, 'the version bump is what makes existing caches stale');
+  assert.equal(require('../activity-features').FEATURES_VERSION, 3, 'the version bump is what makes existing caches stale');
 
   const { needsDerivedFeatureRebuild } = loadExtensionInternalsForTest();
   const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
@@ -4716,4 +4716,50 @@ test('activity list filters by route and persists the selected route (D3)', () =
   assert.match(filtered, /<option value="2" data-route="Loop"/);
   assert.doesNotMatch(filtered, /<option value="3"/); // the unrouted ride is filtered out
   assert.match(filtered, /setRouteFilter/);
+});
+
+test('route section renders checkpoint splits, section speeds and the climb history chart (D2)', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const records = straightGpsRecords(4, 18);
+  const routeCard = {
+    routeId: 1, name: 'Loop', note: '', rideCount: 6, relation: 'same',
+    lengthKm: 33, ascentM: 110, descentM: 110, climbs: [{ fromKm: 28, toKm: 32, gainM: 90, avgGradePct: 4.5 }],
+  };
+  const routeUi = {
+    relation: 'same',
+    checkpoints: [
+      { km: 10, elapsedS: 1500, priorMedianS: 1560, priorBestS: 1460, priorRides: 5 },
+      { km: 20, elapsedS: 3060, priorMedianS: 3200, priorBestS: 3010, priorRides: 5 },
+    ],
+    sections: [{ fromKm: 0, toKm: 5, gradePct: 0.3, speedKmh: 27.5 }, { fromKm: 5, toKm: 10, gradePct: 1.2, speedKmh: 24.1 }],
+    finalClimbHistory: [
+      { date: '2026-08-01', durationS: 540 },
+      { date: '2026-08-15', durationS: 520 },
+      { date: 'current', durationS: 510 },
+    ],
+    priorRideCount: 5,
+  };
+  const html = renderActivityContentHtml({}, {}, { records, sessions: [], laps: [] }, null, 'n', false, null, {},
+    null, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 28, [], null, false, 'osm', routeCard, [], routeUi);
+  assert.match(html, /Checkpoints vs the median of the latest 5 same-direction rides/);
+  assert.match(html, /25:00/); // 1500 s this ride
+  assert.match(html, /26:00/); // 1560 s median
+  assert.match(html, /Typical speed by section/);
+  assert.match(html, /27\.5 km\/h/);
+  assert.match(html, /Final climb time by ride/);
+  assert.match(html, /<polyline class="lineA"/);
+  assert.match(html, /now/); // the current ride is labelled
+});
+
+test('activity_features stores checkpoints for the route UI', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    db.run('CREATE TABLE activity_features (activity_id INTEGER PRIMARY KEY, segments_json TEXT, checkpoints_json TEXT)');
+    ensureDatabaseSchema(db);
+    const cols = db.exec('PRAGMA table_info(activity_features)')[0].values.map((row) => row[1]);
+    assert.equal(cols.includes('checkpoints_json'), true);
+  } finally {
+    db.close();
+  }
 });

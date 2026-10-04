@@ -33,7 +33,7 @@ const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, loc
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
-const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
+const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readAssignment, readRouteAssignments, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { CONDITIONS, FEELINGS, PURPOSES, inferNotesPreFill, readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
 const { computeDataQualityFlags } = require('./data-quality');
@@ -386,21 +386,23 @@ function ensureFeaturesForActivity(db, activityId) {
   const timerS = asNumber(row.total_timer_s);
   const sessionClass = buildSessionClassForActivity(power.records, { total_timer_s: timerS }, hrConfig, profile, segments);
   assignRoute(db, { activityId: row.id, signature: buildRouteSignature(records), createdAt: row.start_time });
+  const checkpoints = computeCheckpoints(records);
   db.run(`
     INSERT INTO activity_features (
       activity_id, features_version, settings_hash, hr_profile_key, athlete_key, feature_cache_key, computed_at,
-      segments_json, zones_json, peak_hr_json, session_class_json, trimp, hr_tss, elapsed_coverage_pct
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      segments_json, zones_json, peak_hr_json, session_class_json, checkpoints_json, trimp, hr_tss, elapsed_coverage_pct
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(activity_id) DO UPDATE SET
       features_version=excluded.features_version, settings_hash=excluded.settings_hash,
       hr_profile_key=excluded.hr_profile_key, athlete_key=excluded.athlete_key,
       feature_cache_key=excluded.feature_cache_key, computed_at=excluded.computed_at,
       segments_json=excluded.segments_json, zones_json=excluded.zones_json,
       peak_hr_json=excluded.peak_hr_json, session_class_json=excluded.session_class_json,
+      checkpoints_json=excluded.checkpoints_json,
       trimp=excluded.trimp, hr_tss=excluded.hr_tss, elapsed_coverage_pct=excluded.elapsed_coverage_pct
   `, [row.id, FEATURES_VERSION, settingsHash, hrProfileKey(hrConfig), athleteKey(profile), key, new Date().toISOString(),
     JSON.stringify(segments.map((segment) => ({ ...segment, routePoints: undefined }))),
-    JSON.stringify(zones), JSON.stringify(peakHr), JSON.stringify(sessionClass),
+    JSON.stringify(zones), JSON.stringify(peakHr), JSON.stringify(sessionClass), JSON.stringify(checkpoints),
     summary.trimp ?? null, summary.hrTss ?? null,
     zones?.enabled && timerS > 0 ? 100 * zones.totalSeconds / timerS : null]);
 }
@@ -986,6 +988,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
     const comparisons = selId ? await getActivityComparisonsForActivity(dbPath, selId) : [];
     const routeCard = selId ? await getRouteCard(dbPath, selId) : null;
+    const routeUi = selId ? await getRouteUiData(dbPath, selId) : null;
     // The Session Notes form pre-fills with what the model inferred for this ride; fields the
     // user has already declared are merged field by field in the webview.
     if (data) data.inferredNotes = inferNotesPreFill(data.inferredNotes);
@@ -1001,7 +1004,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     );
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard, [], context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard, [], context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null, routeUi
     );
     translationJustGenerated = false;
     if (selId) {
@@ -2845,19 +2848,21 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     db.run(`
       INSERT INTO activity_features (
         activity_id, features_version, settings_hash, hr_profile_key, athlete_key, feature_cache_key, computed_at,
-        segments_json, zones_json, peak_hr_json, session_class_json, trimp, hr_tss, elapsed_coverage_pct
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        segments_json, zones_json, peak_hr_json, session_class_json, checkpoints_json, trimp, hr_tss, elapsed_coverage_pct
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(activity_id) DO UPDATE SET
         features_version=excluded.features_version, settings_hash=excluded.settings_hash,
         hr_profile_key=excluded.hr_profile_key, athlete_key=excluded.athlete_key,
         feature_cache_key=excluded.feature_cache_key, computed_at=excluded.computed_at,
         segments_json=excluded.segments_json, zones_json=excluded.zones_json,
         peak_hr_json=excluded.peak_hr_json, session_class_json=excluded.session_class_json,
+        checkpoints_json=excluded.checkpoints_json,
         trimp=excluded.trimp, hr_tss=excluded.hr_tss, elapsed_coverage_pct=excluded.elapsed_coverage_pct
     `, [id, payload.featuresVersion, payload.settingsHash, payload.hrProfileKey, payload.athleteKey,
       payload.featureCacheKey, new Date().toISOString(),
       JSON.stringify(payload.segments ?? []), JSON.stringify(payload.zones ?? null),
       JSON.stringify(payload.peakHr ?? []), JSON.stringify(payload.sessionClass ?? null),
+      JSON.stringify(payload.checkpoints ?? []),
       payload.trimp ?? null, payload.hrTss ?? null, payload.elapsedCoveragePct ?? null]);
   };
   const buildDetail = (row) => {
@@ -2904,6 +2909,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
         zones: safeParseJson(existing.zones_json, null),
         peakHr: safeParseJson(existing.peak_hr_json, []),
         sessionClass: safeParseJson(existing.session_class_json, null),
+        checkpoints: safeParseJson(existing.checkpoints_json, []),
         trimp: existing.trimp, hrTss: existing.hr_tss,
         elapsedCoveragePct: existing.elapsed_coverage_pct, hrConfig, powerSource: 'cached',
       };
@@ -2924,12 +2930,12 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       featuresVersion: FEATURES_VERSION, settingsHash, hrProfileKey: hrProfileKey(hrConfig), athleteKey: athleteKey(profile),
       featureCacheKey: key,
       segments: detail.segments.map((segment) => ({ ...segment, routePoints: undefined })),
-      zones, peakHr, sessionClass,
+      zones, peakHr, sessionClass, checkpoints: detail.checkpoints,
       trimp: summary.trimp, hrTss: summary.hrTss,
       elapsedCoveragePct: zones?.enabled && timerS > 0 ? 100 * zones.totalSeconds / timerS : null,
     };
     storeFeatureRow(row.id, payload);
-    return { segments: payload.segments, zones, peakHr, sessionClass,
+    return { segments: payload.segments, zones, peakHr, sessionClass, checkpoints: detail.checkpoints,
       trimp: summary.trimp, hrTss: summary.hrTss,
       elapsedCoveragePct: payload.elapsedCoveragePct, hrConfig, powerSource: detail.powerSource };
   };
@@ -3160,6 +3166,68 @@ function buildRouteContext(currentData, activities, selected, routeNote = null) 
     climbLine,
     note: `Route identity from GPS geometry (${routeInfo.relation === 'reversed' ? 'ridden in the opposite direction to the route\'s first ride; compared only with rides in this direction' : 'same direction as the route\'s first ride'}); ${priorSameRoute.length} earlier rides in this direction in the analysis window. Checkpoint medians are descriptive splits of prior rides, not controlled time trials.`,
   };
+}
+
+// Checkpoint splits, the per-section route profile and the final-climb history for the Route
+// section on the activity page. The current ride's figures come from its stored features; prior
+// rides are the same-direction rides on the same route, oldest first.
+async function getRouteUiData(dbPath, activityId) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  try {
+    const assignment = readAssignment(db, activityId);
+    if (!assignment?.routeId || !['same', 'reversed'].includes(assignment.relation)) return null;
+    const { routeId, relation } = assignment;
+
+    const currentRow = db.exec('SELECT checkpoints_json, segments_json FROM activity_features WHERE activity_id = ?', [activityId])[0]?.values?.[0];
+    const currentCheckpoints = currentRow ? safeParseJson(currentRow[0], []) : [];
+    const currentSegments = currentRow ? safeParseJson(currentRow[1], []) : [];
+
+    const priorValues = db.exec(`
+      SELECT af.checkpoints_json, af.segments_json, a.start_time
+      FROM activity_routes ar
+      JOIN activity_features af ON af.activity_id = ar.activity_id
+      JOIN activities a ON a.id = ar.activity_id
+      WHERE ar.route_id = ? AND ar.relation LIKE ? AND ar.activity_id != ?
+      ORDER BY a.start_time ASC`, [routeId, `${relation}%`, activityId])[0]?.values || [];
+    const prior = priorValues.map((row) => ({
+      checkpoints: safeParseJson(row[0], []),
+      segments: safeParseJson(row[1], []),
+      startTime: row[2],
+    }));
+
+    const summary = summarizeCheckpoints(currentCheckpoints, prior);
+    const checkpoints = summary.filter((mark) => mark.priorRides > 0).slice(0, 10).map((mark) => ({
+      km: mark.km, elapsedS: mark.elapsedS, priorMedianS: mark.priorMedianS,
+      priorBestS: mark.priorBestS, priorRides: mark.priorRides,
+    }));
+
+    const described = describeRouteFeatures(ensureRouteFeatures(db, routeId), relation);
+    const sections = (described?.rows || []).map((row) => ({
+      fromKm: row.fromKm, toKm: row.toKm, gradePct: row.gradePct, speedKmh: row.ownKmh,
+    }));
+
+    // The final climb's time across prior same-direction rides, matched by start distance, for the
+    // mini-chart. The current ride is appended at its own date.
+    const finalClimb = [...currentSegments].reverse().find((segment) => segment.type === 'climb' && segment.elevGainM >= 25);
+    const finalClimbHistory = [];
+    if (finalClimb) {
+      const start = finalClimb.startDistanceKm;
+      const rows = [];
+      for (const ride of prior) {
+        const climb = (ride.segments || []).find((segment) => segment.type === 'climb'
+          && start != null && segment.startDistanceKm != null && Math.abs(segment.startDistanceKm - start) < 1.5);
+        if (climb) rows.push({ date: String(ride.startTime).slice(0, 10), durationS: climb.durationS });
+      }
+      rows.push({ date: 'current', durationS: finalClimb.durationS });
+      rows.sort((a, b) => (a.date === 'current' ? 1 : b.date === 'current' ? -1 : a.date.localeCompare(b.date)));
+      finalClimbHistory.push(...rows);
+    }
+
+    return { relation, checkpoints, sections, finalClimbHistory, priorRideCount: prior.length };
+  } finally {
+    db.close();
+  }
 }
 
 async function storeAnalysisInDb(dbPath, activityId, analysis, summary = null, modelId = null) {

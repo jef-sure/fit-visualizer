@@ -1153,6 +1153,7 @@ function summarizeSegmentRange(records, range, shared, options) {
     avgGrade: moving && Number.isFinite(avgGrade) ? roundTo(avgGrade, 1) : null,
     elevGainM: moving ? roundTo(elevGainM, 0) : null,
     distanceKm: Number.isFinite(distanceKm) ? roundTo(distanceKm, 1) : null,
+    startDistanceKm: Number.isFinite(startDistanceKm) ? roundTo(startDistanceKm, 1) : null,
     avgSpeedKmh: moving && Number.isFinite(avgSpeedKmh) ? roundTo(avgSpeedKmh, 1) : null,
     avgHr: heartRates.length ? roundTo(average(heartRates), 0) : null,
     avgPower: moving && powers.length ? roundTo(average(powers), 0) : null,

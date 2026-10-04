@@ -169,6 +169,7 @@ function ensureDatabaseSchema(db) {
       zones_json           TEXT,
       peak_hr_json         TEXT,
       session_class_json   TEXT,
+      checkpoints_json     TEXT,
       trimp                REAL,
       hr_tss               REAL,
       elapsed_coverage_pct REAL
@@ -245,6 +246,7 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'heart_rate_profiles', 'observed_max_source_json', 'TEXT');
   addColumnIfMissing(db, 'activity_analysis', 'summary_json', 'TEXT');
   addColumnIfMissing(db, 'activity_analysis', 'model_id', 'TEXT');
+  addColumnIfMissing(db, 'activity_features', 'checkpoints_json', 'TEXT');
   addColumnIfMissing(db, 'routes', 'note', 'TEXT');
   addColumnIfMissing(db, 'routes', 'features_json', 'TEXT');
 }
