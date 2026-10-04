@@ -252,5 +252,5 @@
   "vPower n/a": "vPower н/д",
   "Estimated power here (≈{0} W) did not clear the checks for a comparable estimate (coverage, gravity share, or a capped/accelerating sample); heart rate is the quoted effort for this segment instead.": "Оценочная мощность здесь (≈{0} Вт) не прошла проверки на сравнимую оценку (покрытие, доля гравитационной работы или участок с ограничением/ускорением); для этого сегмента усилие указано по пульсу.",
   "middle-tier model": "средняя модель",
-  "This ride:": "Этот заезд:"
+  "This ride: {0} km, only part of it on this {1} km route; the facts below describe the route.": "Этот заезд: {0} км, лишь часть — по маршруту в {1} км; факты ниже описывают маршрут."
 }

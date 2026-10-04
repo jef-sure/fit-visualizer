@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- The route card on a partial ride (a longer ride that only partly follows the route) now states what part of the route this ride covered, instead of presenting the route's facts as if the whole route was ridden. Full same-direction/reversed rides are unaffected; the card's numbers are route facts by design and stay the same across rides of one route.
+- The route card on a partial ride now says it plainly: "This ride: 33.7 km, only part of it on this 20.9 km route; the facts below describe the route" — instead of showing the route's 20.4 km as if the ride had covered it. Full same-direction/reversed rides are unaffected; the card's numbers are route facts by design and stay the same across rides of one route.
 
 ## 0.26.8 - 2026-10-04
 

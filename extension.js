@@ -328,9 +328,18 @@ async function getRouteCard(dbPath, activityId) {
     const card = readRouteCard(db, activityId);
     if (!card) return null;
     const described = card.features ? describeRouteFeatures(card.features, card.relation === 'reversed' ? 'reversed' : 'same') : null;
+    // A partial ride is longer than the route it partly follows; the card must be able to say so.
+    let rideDistanceKm = null;
+    const distStmt = db.prepare('SELECT total_distance_km FROM activities WHERE id = ?');
+    try {
+      distStmt.bind([activityId]);
+      if (distStmt.step()) rideDistanceKm = Number(distStmt.getAsObject().total_distance_km) || null;
+    } finally {
+      distStmt.free();
+    }
     return {
       routeId: card.routeId, name: card.name, note: card.note, rideCount: card.rideCount, relation: card.relation,
-      relationDetail: card.relationDetail ?? null,
+      relationDetail: card.relationDetail ?? null, rideDistanceKm,
       lengthKm: card.features?.lengthKm ?? null, ascentM: card.features?.ascentM ?? null, descentM: card.features?.descentM ?? null,
       climbs: described?.climbs ?? [],
     };
