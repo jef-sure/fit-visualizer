@@ -139,6 +139,7 @@ test('model price update is contributed to the palette and routes through the co
   assert.deepEqual(errors, ['FIT model price update failed: Offline']);
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
   assert.ok(manifest.contributes.commands.some((entry) => entry.command === 'fitVisualizer.updateModelPrices' && entry.title === 'FIT: Update Model Prices'));
+  assert.ok(!manifest.contributes.commands.some((entry) => entry.command === 'fitVisualizer.rebuildDerivedFeatures'), 'the rebuild command is gone from the palette');
   assert.equal(manifest.l10n, './l10n');
 });
 const {
@@ -3800,7 +3801,7 @@ test('every command handler used by commands.js is destructured from services an
   const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   const destructured = /const \{([^}]+)\} = services;/.exec(commandsSource)[1].split(',').map((name) => name.trim()).filter(Boolean);
   const supplied = /registerCommands\(context, \{([^}]+)\}\)/.exec(extensionSource)[1].split(',').map((name) => name.trim()).filter(Boolean);
-  for (const name of ['rebuildDerivedFeatures', 'tidyHeartRateProfiles']) {
+  for (const name of ['tidyHeartRateProfiles']) {
     assert.ok(destructured.includes(name), `${name} destructured in commands.js`);
     assert.ok(supplied.includes(name), `${name} supplied from activate`);
   }
@@ -4357,7 +4358,7 @@ test('asking to record notes is suppressed when recent analyses already suggeste
 test('a stale derived-feature version triggers one silent background rebuild, a fresh one does not', async () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /scheduleDerivedFeatureAutoRebuild\(\);/);
-  assert.match(source, /if \(silent && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
+  assert.match(source, /if \(silent && !skipStaleCheck && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
   assert.match(source, /WHERE features_version != \$\{FEATURES_VERSION\}/);
   assert.equal(require('../activity-features').FEATURES_VERSION, 2, 'the version bump is what makes existing caches stale');
 

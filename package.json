@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.20.1",
+  "version": "0.20.2",
   "description": "FIT file viewer and analyzer: charts, map, climb/descent segments, heart-rate zones, ride history and AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
@@ -62,10 +62,6 @@
       {
         "command": "fitVisualizer.tidyHeartRateProfiles",
         "title": "FIT: Tidy Heart-Rate Profiles"
-      },
-      {
-        "command": "fitVisualizer.rebuildDerivedFeatures",
-        "title": "FIT: Rebuild Derived Features"
       },
       {
         "command": "fitVisualizer.updateModelPrices",

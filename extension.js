@@ -169,7 +169,6 @@ function activate(context) {
     resolveFitUri,
     selectDatabaseFolder,
     showActivityBrowserInPanel,
-    rebuildDerivedFeatures,
     tidyHeartRateProfiles,
     updateModelPriceTable,
   }));
@@ -233,7 +232,7 @@ function scheduleDerivedFeatureAutoRebuild() {
   }, 1500);
 }
 
-async function rebuildDerivedFeatures({ silent = false } = {}) {
+async function rebuildDerivedFeatures({ silent = false, skipStaleCheck = false, reason } = {}) {
   const dbPath = silent ? await resolveActiveDbPath() : (await resolveActiveDbPath() || await selectDatabaseFolder());
   if (!dbPath) {
     return;
@@ -241,7 +240,7 @@ async function rebuildDerivedFeatures({ silent = false } = {}) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
-    if (silent && !needsDerivedFeatureRebuild(db)) {
+    if (silent && !skipStaleCheck && !needsDerivedFeatureRebuild(db)) {
       return;
     }
     // Routes are re-derived in chronological order so the earliest ride defines each route.
@@ -273,7 +272,7 @@ async function rebuildDerivedFeatures({ silent = false } = {}) {
       );
     }
     await persistDatabase(db, dbPath);
-    if (!silent) {
+    if (!silent && reason !== 'indexing') {
       vscode.window.showInformationMessage(`Derived features rebuilt for ${ordered.length} activities.`);
     }
   } finally {
@@ -453,6 +452,10 @@ async function indexFitFolder(onlyNew) {
     dbPath,
     `Indexing ${fitUris.length} ${onlyNew ? 'new ' : ''}FIT file(s)...`
   );
+  // Indexing is the user's maintenance ritual: it also refreshes the derived-feature cache and
+  // routes, so no separate command is needed. Manual command removed; the background
+  // version-triggered rebuild still covers format changes after updates.
+  await rebuildDerivedFeatures({ silent: false, skipStaleCheck: true, reason: 'indexing' });
   vscode.window.showInformationMessage(vscode.l10n.t('FIT DB index complete: {0} indexed, {1} failed.', result.saved, result.failed));
 }
 

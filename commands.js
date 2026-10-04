@@ -16,7 +16,6 @@ function registerCommands(context, services) {
     resolveActiveDbPath,
     resolveFitUri,
     selectDatabaseFolder,
-    rebuildDerivedFeatures,
     showActivityBrowserInPanel,
     tidyHeartRateProfiles,
     updateModelPriceTable,
@@ -65,12 +64,6 @@ function registerCommands(context, services) {
     () => tidyHeartRateProfiles()
   );
 
-  const rebuildFeatures = register(
-    'fitVisualizer.rebuildDerivedFeatures',
-    'FIT derived-feature rebuild failed',
-    () => rebuildDerivedFeatures()
-  );
-
   const indexOne = register('fitVisualizer.indexOne', 'FIT DB index failed', async (resource) => {
     const targetUri = resource?.fsPath?.toLowerCase().endsWith('.fit')
       ? resource
@@ -108,7 +101,7 @@ function registerCommands(context, services) {
     }
   );
 
-  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, rebuildFeatures, updateModelPrices, customEditor];
+  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, updateModelPrices, customEditor];
 }
 
 function createFitEditorProvider(context, services) {

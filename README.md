@@ -37,7 +37,6 @@ Run **FIT: Re-analyze Outdated Analyses** (analysis format 22). Re-indexing is n
 ### To 0.16.0
 
 1. Run **FIT: Re-analyze Outdated Analyses** to refresh saved AI analyses (analysis format 20). Re-indexing is not required.
-2. Optional: run **FIT: Rebuild Derived Features** once to pre-populate the new derived-feature cache for all activities (it also fills lazily during analyses).
 
 ### To 0.15.0
 
@@ -185,7 +184,6 @@ How to get `.fit` files off common devices:
 - FIT: Add Manual Activity — enter a workout by hand when there is no FIT file (say, the bike computer stayed at home), so it still counts in your history and analysis
 - FIT: Re-analyze Outdated Analyses — processes all activities with outdated or missing analyses in one chronological batch, after confirming the total number of Copilot requests; current analyses are left unchanged
 - FIT: Tidy Heart-Rate Profiles — previews consecutive duplicate dated zone profiles, removes them on confirmation, and lists max-HR flips worth reviewing
-- FIT: Rebuild Derived Features — recomputes and caches segments, zones, peaks, session classes, routes and load metrics for every stored activity; runs by itself after updates that change the derived-feature format, and can be run manually after changing segmentation or power settings
 - FIT: Update Model Prices — downloads the official GitHub Copilot token-price table and saves it locally for subsequent analyses; no Copilot request is made
 
 Right-click a `.fit` file in the Explorer for two shortcuts to the commands above — **Visualize File** and **Index This File** — nothing else is added there; segmentation, analysis, and everything else still happens inside the visual editor once the file is open.

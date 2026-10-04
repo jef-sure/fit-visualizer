@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.20.2 - 2026-10-04
+
+### Removed
+
+- The **FIT: Rebuild Derived Features** command. Indexing (**FIT: Index All Files / New / This File**) now rebuilds the derived-feature cache and routes as part of the same run, and updates that change the derived-feature format rebuild it in the background on the next start. There is no separate step to remember.
+
 ## 0.20.1 - 2026-10-04
 
 ### Changed
