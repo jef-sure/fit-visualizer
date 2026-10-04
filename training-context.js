@@ -159,8 +159,7 @@ function countSessionClasses(rows) {
   return counts;
 }
 
-// Foster-style weekly monotony: mean daily load / SD of daily load across all calendar days of the
-// period, with non-imported days counted as zero load only when the period contains any activity.
+// Mean / SD across imported days with positive load; missing days are not assumed to be rest.
 // Returns null when the period has fewer than two active days: one load spike is not monotony.
 function computeMonotony(entries) {
   const days = new Map();
@@ -190,8 +189,9 @@ function computeLoadRhythm(activities, referenceTime, currentSport) {
   if (!Number.isFinite(reference)) return null;
   const dated = (activities || []).filter((activity) => {
     const time = new Date(activity.startTime).getTime();
-    return Number.isFinite(time) && time < reference && time >= reference - 90 * 86400000;
+    return activity.sport === currentSport && Number.isFinite(time) && time < reference && time >= reference - 90 * 86400000;
   }).sort((left, right) => new Date(left.startTime) - new Date(right.startTime));
+  if (!dated.length || reference - new Date(dated[0].startTime).getTime() < 14 * 86400000) return null;
   const aggregate = (days, previous = false) => {
     const end = reference - (previous ? days : 0) * 86400000;
     const start = end - days * 86400000;
@@ -230,8 +230,8 @@ function computeLoadRhythm(activities, referenceTime, currentSport) {
 // ({ startTime, sport, utcOffsetS, trimp }); each point is the acute:chronic ratio for that ride's
 // own date, so the last six values read as a short history when the user switches activities.
 function computeLoadRhythmSeries(loads, currentStartTime, sport) {
-  const startTimes = [...new Set([...(loads || []).map((row) => row.startTime), currentStartTime])]
-    .filter((time) => Number.isFinite(new Date(time).getTime()))
+  const startTimes = [...new Set([...(loads || []).filter((row) => row.sport === sport).map((row) => row.startTime), currentStartTime])]
+    .filter((time) => Number.isFinite(new Date(time).getTime()) && new Date(time) <= new Date(currentStartTime))
     .sort((a, b) => new Date(a) - new Date(b));
   return startTimes.slice(-6).map((time) => {
     const rhythm = computeLoadRhythm(loads, time, sport);

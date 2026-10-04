@@ -2,7 +2,7 @@
 // keyed by the inputs they were computed from so stale rows recompute lazily.
 // Pure key/row helpers live here; the vscode-bound compute pipeline stays in extension.js.
 
-const FEATURES_VERSION = 7;
+const FEATURES_VERSION = 8;
 
 const { createHash } = require('node:crypto');
 
@@ -54,4 +54,3 @@ module.exports = {
   isFeatureRowFresh,
   settingsKey,
 };
-

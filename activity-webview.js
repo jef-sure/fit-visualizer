@@ -235,6 +235,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
     .compLegend { font-size:0.75rem; font-weight:normal; color:var(--muted); margin-left:6px; }
     .spinner { display:inline-block; width:14px; height:14px; border:2px solid color-mix(in srgb, currentColor 30%, transparent); border-top-color:currentColor; border-radius:50%; animation:fitSpinner 0.8s linear infinite; vertical-align:-2px; }
     @keyframes fitSpinner { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation:none; } }
     .analysisProgress { display:none; align-items:center; gap:10px; padding:12px; color:var(--muted); font-size:0.95rem; }
     .analysisProgress .spinner { width:18px; height:18px; color:var(--accent); }
   </style>
@@ -484,7 +485,7 @@ function renderSessionNotesCard(notes, ui, mapId, inferred = null) {
 // Part I, UI: one row per computed trend - value, median of 5, an arrow, and the code verdict
 // phrase. No causes, no "health": those are the model's job, guided by the same numbers.
 function renderHistory(series, formatValue) {
-  const points = (series || []).filter((point) => Number.isFinite(Number(point?.value)));
+  const points = (series || []).filter((point) => point?.value != null && point.value !== '' && Number.isFinite(Number(point.value)));
   if (points.length < 2) return '';
   const values = points.map((point) => Number(point.value));
   const min = Math.min(...values);
@@ -903,10 +904,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     </section>
     <section class="chart">
       <h2>${escapeHtml(ui.aiAnalysis)}</h2>
+      <div id="analysisProgress" class="analysisProgress" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>${escapeHtml(ui.analysisProgress)}</span></div>
       <div id="analysisContent" style="padding:12px;color:var(--muted);min-height:80px;line-height:1.5;">
         <p style="margin:0;">${escapeHtml(ui.loadingAnalysis)}</p>
       </div>
-      <div id="analysisProgress" class="analysisProgress"><span class="spinner"></span><span>${escapeHtml(ui.analysisProgress)}</span></div>
       <div id="analysisMeta" style="display:none;padding:0 12px 6px 12px;font-size:0.75rem;color:var(--muted);"></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <button id="analyzeBtn" style="margin-top:10px;padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.analyzeActivity)}</button>
@@ -1070,7 +1071,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       window.addEventListener('message', (event) => {
         const msg = event.data;
         const currentId = Number(window.currentActivityId);
-        if ((msg.type === 'analysisResult'
+        if ((msg.type === 'analysisBusy'
+          || msg.type === 'analysisResult'
           || msg.type === 'analysisError'
           || msg.type === 'noAnalysis'
           || msg.type === 'analysisChatState'
@@ -1084,9 +1086,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           && Number(msg.id) !== currentId) {
           return;
         }
-        if (msg.type === 'analysisResult') {
+        if (msg.type === 'analysisBusy') {
+          setAnalyzeBusy(Boolean(msg.busy));
+        } else if (msg.type === 'analysisResult') {
           hasAnalysis = true;
-          analysisOutdated = false;
+          analysisOutdated = msg.version != null && msg.version < ${analysisVersion};
           analysisMeta = msg.modelId ? { modelId: msg.modelId, analyzedAt: msg.analyzedAt || null } : null;
           showAnalysisText(msg.analysis);
           showAnalysisMeta();
@@ -1330,6 +1334,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       function setAnalyzeBusy(busy) {
         if (!analyzeBtn) return;
         analyzeBtn.disabled = busy;
+        analyzeBtn.setAttribute('aria-busy', String(busy));
         analyzeBtn.innerHTML = busy
           ? '<span class="spinner" style="color:var(--bg);border-top-color:var(--bg);"></span><span style="margin-left:8px;">' + escapeHtml(ui.analyzing) + '</span>'
           : escapeHtml(analyzeButtonLabel());
@@ -1426,6 +1431,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       });
 
       window.currentActivityId = ${fitData && fitData._activityId ? fitData._activityId : 'null'};
+      if (window.currentActivityId) {
+        vscode.postMessage({ type: 'analysisStateRequest', id: window.currentActivityId });
+      }
 
       if (!window.currentActivityId) {
         analysisContent.innerHTML = '<p style="margin:0;color:#ff6b6b;">' + escapeHtml(ui.noActivityDataForAnalysis) + '</p>';

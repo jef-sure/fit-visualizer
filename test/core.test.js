@@ -170,7 +170,7 @@ function loadActivityWebviewForTest() {
   }
 }
 
-function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = {}) {
+function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = {}, fsOverrides = {}) {
   const modulePath = require.resolve('../extension');
   const originalLoad = Module._load;
   Module._load = function load(request, parent, isMain) {
@@ -182,6 +182,9 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     if (request === './fit-files' && parent.filename === modulePath) {
       return { ...originalLoad.call(this, request, parent, isMain), ...fitFileOverrides };
     }
+    if (request === 'node:fs/promises' && parent.filename === modulePath) {
+      return { ...originalLoad.call(this, request, parent, isMain), ...fsOverrides };
+    }
     return originalLoad.call(this, request, parent, isMain);
   };
   try {
@@ -189,7 +192,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, awaitDerivedFeatureRebuild, getModelPickerData, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -1039,7 +1042,7 @@ test('bulk re-analysis runs one Copilot request at a time', () => {
   assert.match(loop, /await generateActivityAnalysis\(dbPath, target\.id, true\);/);
   assert.doesNotMatch(loop, /Promise\.(all|allSettled|race)/);
   // Analyses started from the webview must not interleave with a bulk run: sql.js rewrites the whole file.
-  assert.match(source, /return enqueueLlmTask\(\(\) => runActivityAnalysis\(dbPath, activityId, force, modelOverride\)\)/);
+  assert.match(source, /const task = enqueueLlmTask\(\(\) => runActivityAnalysis\(dbPath, activityId, force, modelOverride\)\)/);
   assert.match(source, /async function appendActivityChatTurn[\s\S]*?return enqueueLlmTask\(async \(\) => \{/);
 });
 
@@ -2237,9 +2240,10 @@ test('manual activity handler opens, persists, and closes the sql.js database', 
   const handler = source.slice(source.indexOf('async function addAndBrowseManualActivity()'), source.indexOf('\nasync function resolveActiveDbPath'));
 
   assert.doesNotMatch(handler, /getDb\(/);
-  assert.match(handler, /const SQL = await getSqlJs\(\);\s*db = await openDatabase\(SQL, dbPath\);/);
+  assert.match(handler, /const SQL = await getSqlJs\(\);\s*const db = await openDatabase\(SQL, dbPath\);/);
   assert.match(handler, /await persistDatabase\(db, dbPath\);/);
-  assert.match(handler, /finally \{\s*db\?\.close\(\);\s*\}/);
+  assert.match(handler, /finally \{\s*db\.close\(\);\s*\}/);
+  assert.match(handler, /await enqueueDatabaseTask\(async \(\) =>/);
 });
 
 test('database schema clears legacy zero sentinels from derived workload metrics', async () => {
@@ -3706,8 +3710,8 @@ test('comparison feature is wired: DB functions, message handlers and cheap-mode
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /async function getActivityComparisonFromDb\(/);
   assert.match(source, /async function getActivityComparisonsForActivity\(/);
-  assert.match(source, /async function storeActivityComparisonInDb\(/);
-  assert.match(source, /async function removeActivityComparisonFromDb\(/);
+  assert.match(source, /function storeActivityComparisonInDb\(/);
+  assert.match(source, /function removeActivityComparisonFromDb\(/);
   assert.match(source, /async function generateActivityComparison\(/);
   assert.match(source, /return enqueueLlmTask\(\(\) => runActivityComparison\(/);
   assert.match(source, /msg\.type === 'compareActivitiesAI'/);
@@ -4122,6 +4126,205 @@ test('the route-card rhythm is derived from the same load windows as the prompt'
   const prevRatioLow = Boolean(weekPrev?.trimpActivities) && chronic > 0 && weekPrev.trimpSum / chronic < 0.8;
   const expected = ctx.monotony?.monotony != null ? loadRhythm(acute, chronic, ctx.monotony.monotony, prevRatioLow) : null;
   assert.deepEqual(computeLoadRhythm(acts, referenceTime, 'cycling'), expected);
+});
+
+test('route trends match nearby places once per ride and fall back to a usable mark', () => {
+  const { computeRouteTrends } = require('../trend-metrics');
+  const cp = (km, elapsedS = 1000, extra = {}) => ({ km, elapsedS, avgHr: 140, ...extra });
+  const priors = Array.from({ length: 5 }, (_, index) => ({
+    startTime: `2026-01-0${index + 1}`,
+    checkpoints: [cp(5.1), cp(10.1, 2000, { avgHr: null })], segments: [],
+  }));
+  const trends = computeRouteTrends([cp(5), cp(10, 2000)], [], '2026-01-10', priors);
+  assert.equal(trends.efficiency.km, 5);
+  assert.equal(trends.efficiency.samples, 5);
+  assert.equal(trends.efficiencyHistory.length, 6);
+  assert.equal(computeRouteTrends([cp(5)], [], '2026-01-10', [{
+    checkpoints: Array.from({ length: 5 }, () => cp(5)), segments: [],
+  }]).efficiency, null, 'five marks on one ride are not five rides');
+  const far = priors.map((ride) => ({ ...ride, checkpoints: [
+    cp(5, 1000, { lat: 50, lon: 30 }), cp(10),
+  ] }));
+  assert.equal(computeRouteTrends([cp(5, 1000, { lat: 51, lon: 30 }), cp(10, 2000, { avgHr: null })],
+    [], '2026-01-10', far).efficiency, null, 'matching km must not override different GPS places');
+});
+
+test('efficiency tendencies use the two latest rides and their strictly earlier five-ride bases', () => {
+  const { routeEfficiency } = require('../trend-metrics');
+  const cp = (elapsedS) => ({ km: 10, elapsedS, avgHr: 100 });
+  assert.equal(routeEfficiency(cp(900), [...Array.from({ length: 5 }, () => cp(1000)), cp(900), cp(900)]).verdict,
+    'tendency-better');
+  assert.equal(routeEfficiency(cp(900), [...Array.from({ length: 5 }, () => cp(1000)), cp(900), cp(1000)]).verdict,
+    'better-once', 'the immediately preceding usual ride breaks the tendency');
+  assert.equal(routeEfficiency(cp(900), [...Array.from({ length: 5 }, () => cp(1000)), cp(900)]).verdict,
+    'better-once', 'not enough history for three independent five-ride comparisons');
+});
+
+test('checkpoint effort uses cumulative HR, while split HR retains its original meaning', () => {
+  const { computeCheckpoints } = require('../route-store');
+  const { routeEfficiency } = require('../trend-metrics');
+  const records = Array.from({ length: 41 }, (_, index) => ({
+    elapsed_time: index * 60, distance: index * 0.1, heart_rate: index <= 20 ? 100 : 160,
+  }));
+  const checkpoints = computeCheckpoints(records);
+  assert.equal(checkpoints.at(-1).avgHr, 160);
+  assert.equal(checkpoints.at(-1).cumulativeAvgHr, 130);
+  const missingGps = computeCheckpoints(records.map((record) => ({ ...record, position_lat: null, position_long: null })));
+  assert.equal(missingGps.at(-1).lat, null, 'missing GPS must not become a measured equator coordinate');
+  assert.equal(missingGps.at(-1).lon, null);
+  const current = checkpoints.at(-1);
+  const result = routeEfficiency(current, Array.from({ length: 5 }, () => ({ ...current })));
+  assert.equal(result.effort, 2400 * 130);
+});
+
+test('recovery compares one final climb per ride at the same place and rejects missing values', () => {
+  const { computeRouteTrends, postClimbRecovery } = require('../trend-metrics');
+  const climb = (drop, extra = {}) => ({
+    type: 'climb', durationS: 240, startDistanceKm: 8, distanceKm: 1,
+    postClimbHrDropBpm: drop, avgHr: 150, ...extra,
+  });
+  const manyClimbs = { startTime: '2026-01-01', segments: [climb(25), climb(25), climb(25), climb(25), climb(5)] };
+  assert.equal(computeRouteTrends([], [climb(5)], '2026-01-10', [manyClimbs]).recovery, null);
+  const priors = Array.from({ length: 5 }, (_, index) => ({ ...manyClimbs, startTime: `2026-01-0${index + 1}` }));
+  const trends = computeRouteTrends([], [climb(5)], '2026-01-10', priors);
+  assert.equal(trends.recovery.medianDrop, 5);
+  assert.equal(trends.recovery.verdict, 'usual');
+  assert.deepEqual(trends.recoveryHistory.map((point) => point.value), [5, 5, 5, 5, 5, 5]);
+  assert.equal(computeRouteTrends([], [climb(5, { startDistanceKm: 12 })], '2026-01-10', priors).recovery, null);
+  const shortFinal = computeRouteTrends([], [climb(20), climb(5, { durationS: 60 })], '2026-01-10', priors);
+  assert.equal(shortFinal.recovery, null);
+  assert.ok(!shortFinal.recoveryHistory.some((point) => point.current));
+  assert.equal(postClimbRecovery(null, [20, 20, 20, 20, 20]), null);
+  assert.equal(postClimbRecovery(20, [null, 20, 20, 20, 20]), null);
+});
+
+test('load rhythm and history stay within the selected sport and require fourteen days', () => {
+  const { computeLoadRhythm, computeLoadRhythmSeries } = require('../training-context');
+  const reference = '2026-02-01T12:00:00Z';
+  const row = (daysAgo, trimp, sport = 'cycling') => ({
+    startTime: new Date(Date.parse(reference) - daysAgo * 86400000).toISOString(), trimp, sport, utcOffsetS: 0,
+  });
+  const rides = [row(1, 100), row(2, 120), row(3, 130), row(5, 110), row(20, 80)];
+  const mixed = [...rides, row(25, 1000, 'running'), row(1.5, 900, 'running'), row(-1, 500)];
+  assert.deepEqual(computeLoadRhythm(mixed, reference, 'cycling'), computeLoadRhythm(rides, reference, 'cycling'));
+  assert.deepEqual(computeLoadRhythmSeries(mixed, reference, 'cycling'), computeLoadRhythmSeries(rides, reference, 'cycling'));
+  assert.equal(computeLoadRhythm(rides.slice(0, 4), reference, 'cycling'), null);
+});
+
+test('lazy card features persist once and concurrent route saves cannot overwrite each other', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-release-'));
+  const dbPath = path.join(dir, 'test.sqlite');
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  ensureDatabaseSchema(db);
+  db.run("INSERT INTO activities (id, file_path, source, sport, start_time, total_distance_km, total_timer_s) VALUES (1, 'fixture.fit', 'fit', 'cycling', '2026-01-20T12:00:00Z', 4, 2400)");
+  for (let index = 0; index <= 40; index += 1) {
+    db.run('INSERT INTO records (activity_id, record_index, elapsed_s, distance_km, heart_rate, latitude, longitude) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [1, index, index * 60, index * 0.1, 140, 50 + index * 0.0009, 30]);
+  }
+  fs.writeFileSync(dbPath, Buffer.from(db.export()));
+  db.close();
+  let writes = 0;
+  let release;
+  let started;
+  let pause = false;
+  let failRename = false;
+  const internals = loadExtensionInternalsForTest({}, {}, {
+    writeFile: async (...args) => {
+      writes += 1;
+      if (pause) {
+        pause = false;
+        started();
+        await new Promise((resolve) => { release = resolve; });
+      }
+      return fs.promises.writeFile(...args);
+    },
+    rename: async (...args) => {
+      if (failRename) throw new Error('Simulated rename failure');
+      return fs.promises.rename(...args);
+    },
+  });
+  try {
+    await internals.getTrendsForCard(dbPath, 1);
+    assert.equal(writes, 1);
+    await internals.getTrendsForCard(dbPath, 1);
+    assert.equal(writes, 1, 'fresh cache read must not write again');
+    const stored = new SQL.Database(fs.readFileSync(dbPath));
+    const routeId = stored.exec('SELECT route_id FROM activity_routes WHERE activity_id = 1')[0].values[0][0];
+    assert.equal(stored.exec('SELECT features_version FROM activity_features')[0].values[0][0], 8);
+    stored.close();
+    pause = true;
+    const writeStarted = new Promise((resolve) => { started = resolve; });
+    const first = internals.updateRoute(dbPath, { routeId, name: 'Saved name', note: 'First note' });
+    await writeStarted;
+    const second = internals.updateActivityNotes(dbPath, 1, { note: 'Saved activity note' });
+    const card = internals.getRouteCard(dbPath, 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(writes, 2, 'other writers must not open/write stale snapshots while the first write is paused');
+    const duringWrite = new SQL.Database(fs.readFileSync(dbPath));
+    duringWrite.close();
+    release();
+    await Promise.all([first, second, card]);
+    const final = new SQL.Database(fs.readFileSync(dbPath));
+    try {
+      assert.equal(final.exec('SELECT name FROM routes')[0].values[0][0], 'Saved name');
+      assert.equal(final.exec('SELECT note FROM routes')[0].values[0][0], 'First note');
+      assert.equal(require('../activity-notes').readActivityNotes(final, 1).note, 'Saved activity note');
+    } finally { final.close(); }
+    failRename = true;
+    await assert.rejects(internals.updateRoute(dbPath, { routeId, name: 'Must not replace saved data', note: '' }), /Simulated rename failure/);
+    const afterFailure = new SQL.Database(fs.readFileSync(dbPath));
+    assert.equal(afterFailure.exec('SELECT name FROM routes')[0].values[0][0], 'Saved name');
+    afterFailure.close();
+    assert.deepEqual(fs.readdirSync(dir), ['test.sqlite'], 'failed exports leave no temporary file');
+    failRename = false;
+    await internals.updateRoute(dbPath, { routeId, name: 'Retry after failed save', note: '' });
+  } finally {
+    release?.();
+    fs.unlinkSync(dbPath);
+    fs.rmdirSync(dir);
+  }
+});
+
+test('analysis deduplicates pending requests but allows retry after success or failure', async () => {
+  const internals = loadExtensionInternalsForTest();
+  let count = 0;
+  let release;
+  internals.setAnalysisRunner(async () => {
+    count += 1;
+    return new Promise((resolve) => { release = resolve; });
+  });
+  const first = internals.generateActivityAnalysis('/tmp/test.sqlite', 1, true);
+  const second = internals.generateActivityAnalysis('/tmp/test.sqlite', 1, true);
+  assert.equal(internals.pendingAnalyses.size, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(count, 1);
+  const browsing = await internals.enqueueDatabaseTask(async () => 'browsing still works');
+  assert.equal(browsing, 'browsing still works', 'waiting for AI must not lock database browsing');
+  release({ text: 'Done' });
+  assert.deepEqual(await Promise.all([first, second]), [{ text: 'Done' }, { text: 'Done' }]);
+  assert.equal(internals.pendingAnalyses.size, 0);
+  internals.setAnalysisRunner(async () => { throw new Error('Model unavailable'); });
+  await assert.rejects(internals.generateActivityAnalysis('/tmp/test.sqlite', 1, true), /Model unavailable/);
+  assert.equal(internals.pendingAnalyses.size, 0);
+  internals.setAnalysisRunner(async () => ({ text: 'Retry succeeded' }));
+  assert.equal((await internals.generateActivityAnalysis('/tmp/test.sqlite', 1, true)).text, 'Retry succeeded');
+});
+
+test('history rendering omits missing values and analysis requests host busy state after loading', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const route = { routeId: 1, name: 'Loop', rideCount: 6, relation: 'same', trends: {
+    rhythm: { ratio: 1, verdict: 'steady' },
+    rhythmHistory: [{ date: '2026-01-01', value: null }, { date: '2026-01-02', value: 100 }],
+  } };
+  const html = renderActivityContentHtml({}, {}, { _activityId: 1, records: straightGpsRecords(4, 18), sessions: [], laps: [] },
+    null, 'n', false, null, {}, null, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 36, [], null, false, 'osm', route, [], null);
+  assert.doesNotMatch(html, /class="routeTrendHistory"/, 'one actual point cannot become a two-point strip through null -> zero');
+  assert.match(html, /type: 'analysisStateRequest'/);
+  assert.match(html, /msg\.type === 'analysisBusy'/);
+  assert.match(html, /role="status" aria-live="polite"/);
+  assert.ok(html.indexOf('id="analysisProgress"') < html.indexOf('id="analysisContent"'));
+  assert.match(html, /setAttribute\('aria-busy', String\(busy\)\)/);
 });
 
 test('route-typical second-half pattern separates the route from the day', () => {
@@ -4656,7 +4859,7 @@ test('a stale derived-feature version triggers one background rebuild with progr
   assert.match(source, /if \(\(silent \|\| background\) && !skipStaleCheck && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
   assert.match(source, /reason: 'auto'/);
   assert.match(source, /WHERE features_version != \$\{FEATURES_VERSION\}/);
-  assert.equal(require('../activity-features').FEATURES_VERSION, 7, 'the version bump is what makes existing caches stale');
+  assert.equal(require('../activity-features').FEATURES_VERSION, 8, 'the version bump is what makes existing caches stale');
 
   const { needsDerivedFeatureRebuild } = loadExtensionInternalsForTest();
   const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });

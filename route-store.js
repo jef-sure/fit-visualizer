@@ -148,6 +148,8 @@ function computeCheckpoints(records, segments = [], { spacingKm = CHECKPOINT_SPA
   let markIndex = 0;
   let hrSum = 0;
   let hrCount = 0;
+  let cumulativeHrSum = 0;
+  let cumulativeHrSeconds = 0;
   let spanTime = 0;
   let spanDistance = 0;
   for (let index = 1; index < list.length && markIndex < final.length; index += 1) {
@@ -161,15 +163,18 @@ function computeCheckpoints(records, segments = [], { spacingKm = CHECKPOINT_SPA
       if (Number.isFinite(hr) && hr > 0) {
         hrSum += hr * dt;
         hrCount += dt;
+        cumulativeHrSum += hr * dt;
+        cumulativeHrSeconds += dt;
       }
     }
     while (markIndex < final.length && record.distance >= final[markIndex]) {
       result.push({
         km: Math.round(final[markIndex] * 10) / 10,
-        lat: Number.isFinite(Number(record.position_lat)) ? Number(record.position_lat) : null,
-        lon: Number.isFinite(Number(record.position_long)) ? Number(record.position_long) : null,
+        lat: record.position_lat != null && Number.isFinite(Number(record.position_lat)) ? Number(record.position_lat) : null,
+        lon: record.position_long != null && Number.isFinite(Number(record.position_long)) ? Number(record.position_long) : null,
         elapsedS: Math.round(record.elapsed_time),
         avgHr: hrCount > 0 ? Math.round(hrSum / hrCount) : null,
+        cumulativeAvgHr: cumulativeHrSeconds > 0 ? Math.round(cumulativeHrSum / cumulativeHrSeconds) : null,
         avgSpeedKmh: spanTime > 0 && spanDistance > 0 ? (spanDistance / (spanTime / 3600)) : null,
       });
       spanTime = 0;
@@ -216,8 +221,8 @@ function priorRowsNear(priorRides, mark, { radiusM = CHECKPOINT_MATCH_RADIUS_M, 
         ? haversineM(mark.lat, mark.lon, row.lat, row.lon)
         : axisGap < Infinity ? axisGap * 1000 : Infinity;
       // Place-nearest wins; the axis distance breaks ties and is the metric without GPS.
-      const better = best == null || axisGap < best.axisGap
-        || (axisGap === best.axisGap && d < best.d);
+      const better = best == null || d < best.d
+        || (d === best.d && axisGap < best.axisGap);
       if (better) best = { row, d, axisGap };
     }
     if (best != null && best.d <= radiusM) matches.push(best.row);

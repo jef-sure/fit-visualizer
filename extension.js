@@ -33,7 +33,7 @@ const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, loc
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
-const { loadRhythm, computeRouteTrends } = require('./trend-metrics');
+const { computeRouteTrends } = require('./trend-metrics');
 const PRIOR_RIDES_FOR_TRENDS = 5;
 const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readAssignment, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
@@ -114,14 +114,16 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 35;
+const ANALYSIS_VERSION = 36;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const ROUTE_FILTER_STATE_KEY = 'fitVisualizer.routeFilter';
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
 const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
 
-// sql.js rewrites the whole database file, so overlapping analyses would clobber each other.
+// Keep model requests ordered; serialize database snapshots independently of AI latency.
 let llmTaskQueue = Promise.resolve();
+let databaseTaskQueue = Promise.resolve();
+const pendingAnalyses = new Map();
 let llmLogCleanupDone = false;
 let analysisWarningChannel = null;
 let analysisWarningNotified = false;
@@ -150,12 +152,20 @@ function reportAnalysisWarning(message, severity = 'info') {
 }
 
 function enqueueLlmTask(task) {
-  // One serial queue for everything that persists the database: analyses, comparisons, chat
-  // turns and the derived-feature rebuild. The file is a whole sql.js export, so two writers
-  // running at once would overwrite each other's rows.
+  // Model requests stay serialized, but do not hold the database lock while waiting for AI.
   const result = llmTaskQueue.then(task, task);
   llmTaskQueue = result.then(() => undefined, () => undefined);
   return result;
+}
+
+function enqueueDatabaseTask(task) {
+  const result = databaseTaskQueue.then(task, task);
+  databaseTaskQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+function analysisTaskKey(dbPath, activityId) {
+  return JSON.stringify([path.resolve(dbPath), Number(activityId)]);
 }
 
 function activate(context) {
@@ -215,15 +225,18 @@ async function tidyHeartRateProfiles() {
   if (pick !== 'Remove duplicates') {
     return;
   }
-  const db2 = await openDatabase(SQL, dbPath);
-  try {
-    for (const date of redundant) {
-      db2.run('DELETE FROM heart_rate_profiles WHERE effective_date = ?', [date]);
+  await enqueueDatabaseTask(async () => {
+    const db2 = await openDatabase(SQL, dbPath);
+    try {
+      const stillRedundant = planHeartRateProfileTidy(readHeartRateProfiles(db2)).redundant;
+      for (const date of redundant.filter((date) => stillRedundant.includes(date))) {
+        db2.run('DELETE FROM heart_rate_profiles WHERE effective_date = ?', [date]);
+      }
+      await persistDatabase(db2, dbPath);
+    } finally {
+      db2.close();
     }
-    await persistDatabase(db2, dbPath);
-  } finally {
-    db2.close();
-  }
+  });
   vscode.window.showInformationMessage(`Removed ${redundant.length} duplicate heart-rate profile${redundant.length > 1 ? 's' : ''}.`);
 }
 
@@ -232,8 +245,8 @@ async function tidyHeartRateProfiles() {
 // silently in the background — the user never runs a command for it. Runs only for the remembered
 // database (the one this workspace actually uses) and only when a rebuild is actually needed.
 let derivedFeatureAutoRebuildStarted = false;
-// The rebuild currently running (or null). Writers outside the serial task queue — the webview's
-// save handlers and indexing — wait on it instead of racing its final whole-file write.
+// The rebuild currently running (or null). Readers can wait for its updated derived data;
+// all writers also use the database queue.
 let pendingDerivedRebuild = null;
 
 function awaitDerivedFeatureRebuild() {
@@ -250,8 +263,7 @@ function scheduleDerivedFeatureAutoRebuild() {
   }, 1500);
 }
 
-// The rebuild runs inside the same serial queue as analyses, so it never overlaps a stored
-// analysis; while it runs, pendingDerivedRebuild lets the other writers wait for it.
+// Preserve model-task ordering and serialize the rebuild's database lifecycle with other saves.
 function rebuildDerivedFeatures(options = {}) {
   return enqueueLlmTask(async () => {
     const run = rebuildDerivedFeaturesNow(options);
@@ -264,7 +276,11 @@ function rebuildDerivedFeatures(options = {}) {
   });
 }
 
-async function rebuildDerivedFeaturesNow({ silent = false, skipStaleCheck = false, reason } = {}) {
+function rebuildDerivedFeaturesNow(options = {}) {
+  return enqueueDatabaseTask(() => rebuildDerivedFeaturesInDatabase(options));
+}
+
+async function rebuildDerivedFeaturesInDatabase({ silent = false, skipStaleCheck = false, reason } = {}) {
   // The automatic rebuild after an update stays quiet when there is nothing to do, but when there
   // is, it shows the same progress as the manual one: the user otherwise cannot tell whether the
   // segments on screen are old or new.
@@ -290,8 +306,8 @@ async function rebuildDerivedFeaturesNow({ silent = false, skipStaleCheck = fals
       for (const id of ordered) {
         try {
           ensureFeaturesForActivity(db, id);
-        } catch {
-          // A single broken activity must not abort the rebuild.
+        } catch (error) {
+          reportAnalysisWarning(`Activity ${id}: derived-feature rebuild failed: ${error.message}`, 'warn');
         }
         done += 1;
         report?.(`${done}/${ordered.length}`);
@@ -326,13 +342,21 @@ function needsDerivedFeatureRebuild(db) {
 // Unlike getTrainingContextFromDb (which the prompt needs), this reads cached checkpoints, segments
 // and load values instead of rebuilding every ride's feature pipeline, so switching activities
 // stays fast.
-async function getTrendsForCard(dbPath, activityId) {
+function getTrendsForCard(dbPath, activityId) {
+  return enqueueDatabaseTask(() => getTrendsForCardNow(dbPath, activityId));
+}
+
+async function getTrendsForCardNow(dbPath, activityId) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
-    return computeTrendsForCard(db, activityId);
-  } catch {
-    return null;
+    const changesBefore = totalChanges(db);
+    const trends = computeTrendsForCard(db, activityId);
+    if (totalChanges(db) > changesBefore) await persistDatabase(db, dbPath);
+    return trends;
+  } catch (error) {
+    reportAnalysisWarning(`Activity ${activityId}: cannot load trend indicators: ${error.message}`, 'warn');
+    throw error;
   } finally {
     db.close();
   }
@@ -352,45 +376,38 @@ function computeTrendsForCard(db, activityId) {
   };
   const selected = readRows('SELECT * FROM activities WHERE id = ?', [activityId])[0];
   if (!selected?.start_time) return null;
-  // Load rhythm is route-independent and cheap: cached TRIMP (else the stored import-time value)
-  // for every earlier activity, without any record pipeline.
-  const loadRows = readRows(`
-    SELECT a.start_time, a.sport, a.utc_offset_s, CASE WHEN af.trimp > 0 THEN af.trimp ELSE a.trimp END AS trimp
-    FROM activities a
-    LEFT JOIN activity_features af ON af.activity_id = a.id
-    WHERE datetime(a.start_time) < datetime(?)`, [selected.start_time]);
-  const loads = loadRows.map((row) => ({
-    startTime: row.start_time, sport: row.sport, utcOffsetS: row.utc_offset_s, trimp: row.trimp,
-  }));
-  const rhythm = computeLoadRhythm(loads, selected.start_time, selected.sport);
-  const rhythmHistory = computeLoadRhythmSeries(loads, selected.start_time, selected.sport);
+  const profile = getAthleteProfileFromDbConnection(db);
+  const settingsHash = settingsKey({ segmentation: getSegmentationOptions(), powerModel: getPowerModelOptions() });
+  const freshKey = (startTime) => featureCacheKey({
+    featuresVersion: FEATURES_VERSION, settingsHash,
+    hrProfile: attachRestingHeartRate(getProfileHeartRateConfig(db, startTime), profile),
+    athlete: profile,
+  });
+  const readFeatures = (id, startTime) => {
+    let row = readRows('SELECT * FROM activity_features WHERE activity_id = ?', [id])[0] || null;
+    if (!isFeatureRowFresh(row, freshKey(startTime))) {
+      ensureFeaturesForActivity(db, id);
+      row = readRows('SELECT * FROM activity_features WHERE activity_id = ?', [id])[0] || null;
+    }
+    return {
+      segments: safeParseJson(row?.segments_json, []),
+      checkpoints: safeParseJson(row?.checkpoints_json, []),
+    };
+  };
+  const current = readFeatures(activityId, selected.start_time);
+  for (const row of readRows(`
+    SELECT id, start_time FROM activities
+    WHERE sport = ? AND source != 'manual' AND datetime(start_time) < datetime(?)
+      AND datetime(start_time) >= datetime(?, '-90 days')
+    ORDER BY datetime(start_time), id`, [selected.sport, selected.start_time, selected.start_time])) {
+    readFeatures(row.id, row.start_time);
+  }
   // The efficiency/recovery indicators need a full same/reversed route; other rides show no route
   // trends but can still show rhythm.
   let trends = { efficiency: null, recovery: null };
   const assignment = readAssignment(db, activityId);
   const relation = assignment?.relation;
   if (assignment?.routeId && ['same', 'reversed'].includes(relation)) {
-    const profile = getAthleteProfileFromDbConnection(db);
-    const settingsHash = settingsKey({ segmentation: getSegmentationOptions(), powerModel: getPowerModelOptions() });
-    const freshKey = (startTime) => featureCacheKey({
-      featuresVersion: FEATURES_VERSION, settingsHash,
-      hrProfile: attachRestingHeartRate(getProfileHeartRateConfig(db, startTime), profile),
-      athlete: profile,
-    });
-    // Cached checkpoints/segments are used only when the stored row matches the current inputs;
-    // a stale row recomputes just that one ride (the lazy path, without the full 90-day rebuild).
-    const readFeatures = (id, startTime) => {
-      let row = readRows('SELECT * FROM activity_features WHERE activity_id = ?', [id])[0] || null;
-      if (!isFeatureRowFresh(row, freshKey(startTime))) {
-        ensureFeaturesForActivity(db, id);
-        row = readRows('SELECT * FROM activity_features WHERE activity_id = ?', [id])[0] || null;
-      }
-      return {
-        segments: safeParseJson(row?.segments_json, []),
-        checkpoints: safeParseJson(row?.checkpoints_json, []),
-      };
-    };
-    const current = readFeatures(activityId, selected.start_time);
     // Prior rides of the same route and direction, oldest first. The stored relation keeps its
     // match detail (e.g. "same (wind-assisted)"), so compare its head.
     const priorRows = readRows(`
@@ -398,17 +415,30 @@ function computeTrendsForCard(db, activityId) {
       FROM activity_routes ar
       JOIN activities a ON a.id = ar.activity_id
       WHERE ar.route_id = ? AND ar.relation LIKE (? || '%') AND datetime(a.start_time) < datetime(?)
-      ORDER BY datetime(a.start_time) ASC, a.id ASC`, [assignment.routeId, relation, selected.start_time]);
+        AND datetime(a.start_time) >= datetime(?, '-90 days')
+      ORDER BY datetime(a.start_time) ASC, a.id ASC`, [assignment.routeId, relation, selected.start_time, selected.start_time]);
     const priorSameRoute = priorRows.map((row) => ({
       startTime: row.start_time, ...readFeatures(row.activity_id, row.start_time),
     }));
     trends = computeRouteTrends(current.checkpoints, current.segments, selected.start_time, priorSameRoute, PRIOR_RIDES_FOR_TRENDS);
   }
+  const refreshedLoads = readRows(`
+    SELECT a.start_time, a.sport, a.utc_offset_s, CASE WHEN af.trimp > 0 THEN af.trimp ELSE a.trimp END AS trimp
+    FROM activities a LEFT JOIN activity_features af ON af.activity_id = a.id
+    WHERE datetime(a.start_time) < datetime(?)`, [selected.start_time]).map((row) => ({
+    startTime: row.start_time, sport: row.sport, utcOffsetS: row.utc_offset_s, trimp: row.trimp,
+  }));
+  const rhythm = computeLoadRhythm(refreshedLoads, selected.start_time, selected.sport);
+  const rhythmHistory = computeLoadRhythmSeries(refreshedLoads, selected.start_time, selected.sport);
   if (!trends.efficiency && !trends.recovery && !rhythm) return null;
   return { ...trends, rhythm, rhythmHistory };
 }
 
-async function getRouteCard(dbPath, activityId) {
+function getRouteCard(dbPath, activityId) {
+  return enqueueDatabaseTask(() => getRouteCardNow(dbPath, activityId));
+}
+
+async function getRouteCardNow(dbPath, activityId) {
   if (!activityId) return null;
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
@@ -451,7 +481,11 @@ async function getRouteCard(dbPath, activityId) {
   }
 }
 
-async function updateActivityNotes(dbPath, activityId, input) {
+function updateActivityNotes(dbPath, activityId, input) {
+  return enqueueDatabaseTask(() => updateActivityNotesNow(dbPath, activityId, input));
+}
+
+async function updateActivityNotesNow(dbPath, activityId, input) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
@@ -462,7 +496,11 @@ async function updateActivityNotes(dbPath, activityId, input) {
   }
 }
 
-async function updateRoute(dbPath, { routeId, name, note }) {
+function updateRoute(dbPath, input) {
+  return enqueueDatabaseTask(() => updateRouteNow(dbPath, input));
+}
+
+async function updateRouteNow(dbPath, { routeId, name, note }) {
   const id = Number(routeId);
   if (!Number.isInteger(id) || id <= 0) {
     throw new Error('Invalid route.');
@@ -540,7 +578,7 @@ function ensureFeaturesForActivity(db, activityId) {
       checkpoints_json=excluded.checkpoints_json,
       trimp=excluded.trimp, hr_tss=excluded.hr_tss, elapsed_coverage_pct=excluded.elapsed_coverage_pct
   `, [row.id, FEATURES_VERSION, settingsHash, hrProfileKey(hrConfig), athleteKey(profile), key, new Date().toISOString(),
-    JSON.stringify(segments.map((segment) => ({ ...segment, routePoints: undefined }))),
+    JSON.stringify(segments),
     JSON.stringify(zones), JSON.stringify(peakHr), JSON.stringify(sessionClass), JSON.stringify(checkpoints),
     summary.trimp ?? null, summary.hrTss ?? null,
     zones?.enabled && timerS > 0 ? 100 * zones.totalSeconds / timerS : null]);
@@ -949,28 +987,28 @@ async function addAndBrowseManualActivity() {
     return;
   }
 
-  let db;
   try {
     await awaitDerivedFeatureRebuild();
-    const SQL = await getSqlJs();
-    db = await openDatabase(SQL, dbPath);
-    const activityId = createManualActivity(db, {
-      startTime,
-      sport,
-      durationS,
-      distanceKm,
-      avgHr: Number.isFinite(avgHr) ? avgHr : null,
-      maxHr: Number.isFinite(maxHr) ? maxHr : null,
-      elevGainM: Number.isFinite(elevGainM) ? elevGainM : null,
-    }, notes);
-    await persistDatabase(db, dbPath);
-
+    const activityId = await enqueueDatabaseTask(async () => {
+      const SQL = await getSqlJs();
+      const db = await openDatabase(SQL, dbPath);
+      try {
+        const id = createManualActivity(db, {
+          startTime, sport, durationS, distanceKm,
+          avgHr: Number.isFinite(avgHr) ? avgHr : null,
+          maxHr: Number.isFinite(maxHr) ? maxHr : null,
+          elevGainM: Number.isFinite(elevGainM) ? elevGainM : null,
+        }, notes);
+        await persistDatabase(db, dbPath);
+        return id;
+      } finally {
+        db.close();
+      }
+    });
     await rememberDatabasePath(dbPath);
     await openActivityBrowser(extensionContextRef, dbPath, activityId);
   } catch (err) {
     vscode.window.showErrorMessage(`Failed to create manual activity: ${err.message}`);
-  } finally {
-    db?.close();
   }
 }
 
@@ -1177,7 +1215,9 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
   const selectedId = preselectId
     || (initialPool[0]?.id ? Number(initialPool[0].id) : activities[0]?.id ? Number(activities[0].id) : null);
   let translationJustGenerated = false;
+  let renderGeneration = 0;
   async function render(selId, selCompId) {
+    const generation = ++renderGeneration;
     const data = selId ? await loadFitDataFromDb(dbPath, selId) : null;
     const comp = selCompId ? await loadFitDataFromDb(dbPath, selCompId) : null;
     const athleteProfile = await getAthleteProfile(dbPath, selId);
@@ -1185,8 +1225,8 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const analysis = selId ? await getLatestAnalysisAnyVersion(dbPath, selId) : null;
     const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
     const comparisons = selId ? await getActivityComparisonsForActivity(dbPath, selId) : [];
-    const routeCard = selId ? await getRouteCard(dbPath, selId) : null;
     const routeTrends = selId ? await getTrendsForCard(dbPath, selId) : null;
+    const routeCard = selId ? await getRouteCard(dbPath, selId) : null;
     // The Session Notes form pre-fills with what the model inferred for this ride; fields the
     // user has already declared are merged field by field in the webview.
     if (data) data.inferredNotes = inferNotesPreFill(data.inferredNotes);
@@ -1203,6 +1243,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const generatedTranslations = bundledTranslations || await loadGeneratedTranslationBundle(
       extensionContextRef?.globalStorageUri?.fsPath, vscode.env.language
     );
+    if (generation !== renderGeneration) return;
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
       activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard ? { ...routeCard, trends: routeTrends } : null, chips.qualityFlags, context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null, modelPicker
@@ -1225,7 +1266,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       return Number.isInteger(id) && id > 0 ? id : null;
     };
     const hasCompId = msg.compId != null && msg.compId !== '';
-    if (['selectActivity', 'analyzeActivity', 'analysisChatTurn', 'updateActivityHeartRate',
+    if (['selectActivity', 'analysisStateRequest', 'analyzeActivity', 'analysisChatTurn', 'updateActivityHeartRate',
       'updateHeartRateProfile', 'updateRoute', 'updateActivityNotes', 'autoCalculateHeartRateProfile', 'compareActivitiesAI', 'removeComparison']
       .includes(msg.type)) {
       if (!asActivityId(msg.id)) {
@@ -1237,7 +1278,24 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       panel.webview.postMessage({ type: 'comparisonError', id: Number(msg.id), compId: Number(msg.compId), error: 'Invalid comparison activity id.' });
       return;
     }
-    if (msg.type === 'selectActivity') {
+    if (msg.type === 'analysisStateRequest') {
+      const id = asActivityId(msg.id);
+      if (!id) return;
+      const busy = pendingAnalyses.has(analysisTaskKey(dbPath, id));
+      panel.webview.postMessage({ type: 'analysisBusy', id, busy });
+      if (!busy) {
+        const latest = await getLatestAnalysisAnyVersion(dbPath, id);
+        // A new request can start while the stored result is being read.
+        if (!pendingAnalyses.has(analysisTaskKey(dbPath, id))) {
+          if (latest) panel.webview.postMessage({
+            type: 'analysisResult', id, analysis: latest.text, version: latest.version,
+            modelId: latest.modelId, analyzedAt: latest.analyzedAt,
+          });
+        } else {
+          panel.webview.postMessage({ type: 'analysisBusy', id, busy: true });
+        }
+      }
+    } else if (msg.type === 'selectActivity') {
       await render(msg.id ? Number(msg.id) : null, msg.compId ? Number(msg.compId) : null);
     } else if (msg.type === 'setRouteFilter') {
       // One message persists the filter and re-renders, so the render cannot read the old value.
@@ -1312,7 +1370,9 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
         const requestedActivityId = Number(msg.id);
         // The dropdown choice is a one-off override for this run; the pinned setting is untouched.
         const chosenModel = typeof msg.modelId === 'string' && msg.modelId.trim() ? msg.modelId.trim() : null;
-        const { text: analysis, warnings, modelId, analyzedAt } = await generateActivityAnalysis(dbPath, requestedActivityId, msg.force, chosenModel);
+        const task = generateActivityAnalysis(dbPath, requestedActivityId, msg.force, chosenModel);
+        panel.webview.postMessage({ type: 'analysisBusy', id: requestedActivityId, busy: true });
+        const { text: analysis, warnings, modelId, analyzedAt } = await task;
         panel.webview.postMessage({ type: 'analysisResult', id: requestedActivityId, analysis, warnings, modelId, analyzedAt });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -1562,7 +1622,11 @@ async function loadFitDataFromDb(dbPath, activityId) {
   }
 }
 
-async function saveFitToLocalDb(filePath, fitData, targetDbPath) {
+function saveFitToLocalDb(filePath, fitData, targetDbPath) {
+  return enqueueDatabaseTask(() => saveFitToLocalDbNow(filePath, fitData, targetDbPath));
+}
+
+async function saveFitToLocalDbNow(filePath, fitData, targetDbPath) {
   const dbPath = targetDbPath || await getLocalDbPath(path.dirname(filePath));
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
@@ -1623,7 +1687,17 @@ function totalChanges(db) {
 
 async function persistDatabase(db, dbPath) {
   const bytes = db.export();
-  await fs.writeFile(dbPath, Buffer.from(bytes));
+  const temporaryPath = `${dbPath}.${process.pid}.tmp`;
+  try {
+    await fs.writeFile(temporaryPath, Buffer.from(bytes), { mode: 0o600 });
+    await fs.rename(temporaryPath, dbPath);
+  } finally {
+    try {
+      await fs.unlink(temporaryPath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') reportAnalysisWarning(`Cannot remove temporary database export: ${error.message}`, 'warn');
+    }
+  }
 }
 
 function getAthleteProfileFromDbConnection(db) {
@@ -2082,7 +2156,15 @@ async function getWheelCalibrationRecommendation(dbPath) {
 }
 
 async function generateActivityAnalysis(dbPath, activityId, force = false, modelOverride = null) {
-  return enqueueLlmTask(() => runActivityAnalysis(dbPath, activityId, force, modelOverride));
+  const key = analysisTaskKey(dbPath, activityId);
+  if (pendingAnalyses.has(key)) return pendingAnalyses.get(key);
+  const task = enqueueLlmTask(() => runActivityAnalysis(dbPath, activityId, force, modelOverride));
+  pendingAnalyses.set(key, task);
+  try {
+    return await task;
+  } finally {
+    if (pendingAnalyses.get(key) === task) pendingAnalyses.delete(key);
+  }
 }
 
 // Builds the analysis prompt exactly as a real run would (also used by the prompt evaluation command).
@@ -2419,7 +2501,11 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
   };
 }
 
-async function updateActivityHeartRate(dbPath, activityId, avgHrInput, maxHrInput) {
+function updateActivityHeartRate(dbPath, activityId, avgHrInput, maxHrInput) {
+  return enqueueDatabaseTask(() => updateActivityHeartRateNow(dbPath, activityId, avgHrInput, maxHrInput));
+}
+
+async function updateActivityHeartRateNow(dbPath, activityId, avgHrInput, maxHrInput) {
   const id = Number(activityId);
   const avgHr = parseOptionalHeartRate(avgHrInput, 'Average heart rate');
   const maxHr = parseOptionalHeartRate(maxHrInput, 'Maximum heart rate');
@@ -2453,7 +2539,11 @@ function parseObservedMaxSource(value) {
   return source.bpm ? source : null;
 }
 
-async function updateHeartRateProfile(dbPath, message) {
+function updateHeartRateProfile(dbPath, message) {
+  return enqueueDatabaseTask(() => updateHeartRateProfileNow(dbPath, message));
+}
+
+async function updateHeartRateProfileNow(dbPath, message) {
   const activityId = Number(message.id);
   if (!Number.isInteger(activityId) || activityId <= 0) {
     throw new Error('Invalid activity.');
@@ -2558,7 +2648,11 @@ function observedPeakHeartRateFromDb(db, windowS) {
   return best;
 }
 
-async function autoCalculateHeartRateProfileFromDb(dbPath, message) {
+function autoCalculateHeartRateProfileFromDb(dbPath, message) {
+  return enqueueDatabaseTask(() => autoCalculateHeartRateProfileFromDbNow(dbPath, message));
+}
+
+async function autoCalculateHeartRateProfileFromDbNow(dbPath, message) {
   const athleteProfile = parseRequiredAthleteProfile(message);
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
@@ -2957,7 +3051,11 @@ async function getOutdatedAnalysisActivities(dbPath) {
   }
 }
 
-async function getProgressSummaryFromDb(dbPath, activityId, currentData = null) {
+function getProgressSummaryFromDb(dbPath, activityId, currentData = null) {
+  return enqueueDatabaseTask(() => getProgressSummaryFromDbNow(dbPath, activityId, currentData));
+}
+
+async function getProgressSummaryFromDbNow(dbPath, activityId, currentData = null) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   let stmt;
@@ -3173,7 +3271,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     const payload = {
       featuresVersion: FEATURES_VERSION, settingsHash, hrProfileKey: hrProfileKey(hrConfig), athleteKey: athleteKey(profile),
       featureCacheKey: key,
-      segments: detail.segments.map((segment) => ({ ...segment, routePoints: undefined })),
+      segments: detail.segments,
       zones, peakHr, sessionClass, checkpoints: detail.checkpoints,
       trimp: summary.trimp, hrTss: summary.hrTss,
       elapsedCoveragePct: zones?.enabled && timerS > 0 ? 100 * zones.totalSeconds / timerS : null,
@@ -3248,20 +3346,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   const qualityFlags = [...(currentData?.qualityFlags || []), ...(offsetFlag ? [offsetFlag] : [])];
   if (currentData) currentData.qualityFlags = qualityFlags;
   // Part I, indicator 2: acute:chronic load rhythm, from the same volume rows the prompt prints.
-  if (context.volume?.length) {
-    const weekNow = context.volume[0]?.sports?.[0];
-    const weekPrev = context.volume[1]?.sports?.[0];
-    const monthAvg = context.volume[2]?.sports?.[0];
-    const acute = weekNow?.trimpActivities ? weekNow.trimpSum : null;
-    const chronic = monthAvg?.trimpActivities && monthAvg.activities
-      ? (monthAvg.trimpSum / (28 / 7)) : null;
-    const prevRatioLow = (() => {
-      if (!(weekPrev?.trimpActivities) || !(chronic > 0)) return false;
-      return weekPrev.trimpSum / chronic < 0.8;
-    })();
-    context.rhythm = (context.monotony?.monotony != null)
-      ? loadRhythm(acute, chronic, context.monotony.monotony, prevRatioLow) : null;
-  }
+  context.rhythm = computeLoadRhythm(activities, selected.start_time, selected.sport);
   context.qualityFlags = qualityFlags;
   context.routeContext = currentRouteInfo
     ? buildRouteContext({ routeInfo: currentRouteInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected, readRouteNote(db, currentRouteInfo.routeId))
@@ -3436,7 +3521,11 @@ function buildRouteContext(currentData, activities, selected, routeNote = null) 
   };
 }
 
-async function storeAnalysisInDb(dbPath, activityId, analysis, summary = null, modelId = null) {
+function storeAnalysisInDb(dbPath, activityId, analysis, summary = null, modelId = null) {
+  return enqueueDatabaseTask(() => storeAnalysisInDbNow(dbPath, activityId, analysis, summary, modelId));
+}
+
+async function storeAnalysisInDbNow(dbPath, activityId, analysis, summary = null, modelId = null) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
@@ -3499,7 +3588,11 @@ async function getActivityComparisonsForActivity(dbPath, activityId) {
   }
 }
 
-async function storeActivityComparisonInDb(dbPath, activityId, comparedActivityId, comparisonText) {
+function storeActivityComparisonInDb(dbPath, activityId, comparedActivityId, comparisonText) {
+  return enqueueDatabaseTask(() => storeActivityComparisonInDbNow(dbPath, activityId, comparedActivityId, comparisonText));
+}
+
+async function storeActivityComparisonInDbNow(dbPath, activityId, comparedActivityId, comparisonText) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
@@ -3518,7 +3611,11 @@ async function storeActivityComparisonInDb(dbPath, activityId, comparedActivityI
 }
 
 // Removes only this one directed pair; other accumulated comparisons for either activity are untouched.
-async function removeActivityComparisonFromDb(dbPath, activityId, comparedActivityId) {
+function removeActivityComparisonFromDb(dbPath, activityId, comparedActivityId) {
+  return enqueueDatabaseTask(() => removeActivityComparisonFromDbNow(dbPath, activityId, comparedActivityId));
+}
+
+async function removeActivityComparisonFromDbNow(dbPath, activityId, comparedActivityId) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
@@ -3631,7 +3728,11 @@ async function getAnalysisChatFromDb(dbPath, activityId) {
   }
 }
 
-async function storeAnalysisChatInDb(dbPath, activityId, messages) {
+function storeAnalysisChatInDb(dbPath, activityId, messages) {
+  return enqueueDatabaseTask(() => storeAnalysisChatInDbNow(dbPath, activityId, messages));
+}
+
+async function storeAnalysisChatInDbNow(dbPath, activityId, messages) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {

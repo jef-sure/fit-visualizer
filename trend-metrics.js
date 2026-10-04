@@ -12,8 +12,11 @@
 //     of the last 5 prior rides of the same route and direction.
 
 const PRIOR_RIDES = 5;
+const { priorRowsNear } = require('./route-store');
+const { haversineM } = require('./route-match');
 
 const asFinite = (value) => {
+  if (value == null || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 };
@@ -32,22 +35,24 @@ const round1 = (value) => Math.round(value * 10) / 10;
 function routeEfficiency(current, priors) {
   const mark = asFinite(current?.km);
   const elapsed = asFinite(current?.elapsedS);
-  const hr = asFinite(current?.avgHr);
+  const hr = asFinite(current?.cumulativeAvgHr ?? current?.avgHr);
   if (mark == null || elapsed == null || hr == null || !(elapsed > 0) || !(hr > 0)) return null;
   const comparable = (priors || []).filter((prior) => asFinite(prior?.km) === mark
-    && asFinite(prior?.elapsedS) > 0 && asFinite(prior?.avgHr) > 0);
+    && asFinite(prior?.elapsedS) > 0 && asFinite(prior?.cumulativeAvgHr ?? prior?.avgHr) > 0);
   if (comparable.length < PRIOR_RIDES) return null;
   const recent = comparable.slice(-PRIOR_RIDES);
-  const medianEffort = median(recent.map((prior) => prior.elapsedS * prior.avgHr));
+  const effortOf = (prior) => prior.elapsedS * (prior.cumulativeAvgHr ?? prior.avgHr);
+  const medianEffort = median(recent.map(effortOf));
   const effort = elapsed * hr;
   if (!(medianEffort > 0)) return null;
   const deltaPct = 100 * (effort - medianEffort) / medianEffort;
   // "3 in a row the same way" turns a single deviation into a tendency: the last 3 rides,
   // including this one, all on the same side of their own comparison base.
-  const series = [comparable[comparable.length - 2], comparable[comparable.length - 3]].filter(Boolean);
-  const priorDeltas = series.map((prior) => {
-    const base = median(recent.filter((r) => r !== prior).map((r) => r.elapsedS * r.avgHr));
-    return base > 0 ? 100 * (prior.elapsedS * prior.avgHr - base) / base : null;
+  const priorDeltas = [comparable.length - 2, comparable.length - 1].map((index) => {
+    const baseRides = comparable.slice(Math.max(0, index - PRIOR_RIDES), index);
+    if (baseRides.length < PRIOR_RIDES) return null;
+    const base = median(baseRides.map(effortOf));
+    return base > 0 ? 100 * (effortOf(comparable[index]) - base) / base : null;
   });
   const lastThree = [deltaPct, ...priorDeltas].filter(Number.isFinite);
   const sameSide = lastThree.length === 3
@@ -90,46 +95,55 @@ function postClimbRecovery(currentDrop, priorDrops, climbPeakHr = null) {
 // prompt and the lightweight route-card path so both report the same numbers. Each priorSameRoute
 // entry carries `checkpoints` and `segments` for earlier rides of the same route and direction.
 function computeRouteTrends(currentCheckpoints, currentSegments, currentStartTime, priorSameRoute, minPriorRides = PRIOR_RIDES) {
-  // Marks sit at each ride's own segment boundaries, so exact km values differ ride to ride;
-  // place identity is approximated by km within 150 m (route length differences are tiny here).
-  // The indicator uses the current ride's LAST mark that at least minPriorRides priors reach.
-  const priorMarkCounts = new Map();
-  for (const activity of priorSameRoute) {
-    for (const cp of activity.checkpoints || []) {
-      const bucket = Math.round(cp.km * 2) / 2;
-      priorMarkCounts.set(bucket, (priorMarkCounts.get(bucket) || 0) + 1);
-    }
-  }
-  const nearMark = (km) => {
-    const bucket = Math.round(km * 2) / 2;
-    return priorMarkCounts.get(bucket) || 0;
+  const lengthKm = Math.max(0, ...(currentCheckpoints || []).map((cp) => cp.km).filter(Number.isFinite));
+  const effort = (cp) => {
+    const elapsed = asFinite(cp?.elapsedS);
+    const hr = asFinite(cp?.cumulativeAvgHr ?? cp?.avgHr);
+    return elapsed > 0 && hr > 0 ? Math.round(elapsed * hr) : null;
   };
-  const currentMarks = (currentCheckpoints || []).filter((cp) => nearMark(cp.km) >= minPriorRides);
-  const lastMark = currentMarks.at(-1) || null;
-  const markKm = lastMark ? lastMark.km : null;
-  const pickPrior = (checkpoints) => (checkpoints || [])
-    .reduce((best, cp) => (Number.isFinite(cp.km) && Math.abs(cp.km - markKm) <= 0.2
-      && (!best || Math.abs(cp.km - markKm) < Math.abs(best.km - markKm)) ? cp : best), null);
-  const efficiency = lastMark
-    ? routeEfficiency(lastMark,
-        priorSameRoute.map((activity) => pickPrior(activity.checkpoints)).filter(Boolean))
-    : null;
-  const recovery = (() => {
-    const climbs = (currentSegments || []).filter((segment) => segment.type === 'climb');
-    const finalClimb = climbs.at(-1);
-    if (!finalClimb || !(finalClimb.durationS >= 180) || finalClimb.postClimbHrDropBpm == null) return null;
-    const priorDrops = priorSameRoute
-      .map((activity) => (activity.segments || [])
-        .filter((segment) => segment.type === 'climb' && segment.durationS >= 180)
-        .map((segment) => segment.postClimbHrDropBpm))
-      .flat().filter((drop) => Number.isFinite(drop));
-    return postClimbRecovery(finalClimb.postClimbHrDropBpm, priorDrops, finalClimb.avgHr);
-  })();
+  const matching = (activity, mark) => priorRowsNear([activity], mark, { lengthKm })[0] || null;
+  let lastMark = null;
+  let efficiency = null;
+  for (const mark of [...(currentCheckpoints || [])].sort((a, b) => b.km - a.km)) {
+    if (effort(mark) == null) continue;
+    const matches = priorSameRoute.map((activity) => matching(activity, mark))
+      .filter((cp) => effort(cp) != null).map((cp) => ({ ...cp, km: mark.km }));
+    if (matches.length < minPriorRides) continue;
+    const candidate = routeEfficiency(mark, matches);
+    if (candidate) { lastMark = mark; efficiency = candidate; break; }
+  }
+  const markKm = lastMark?.km ?? null;
+  const pickPrior = (checkpoints) => lastMark ? matching({ checkpoints }, lastMark) : null;
+  const finalClimbOf = (segments) => (segments || []).filter((segment) => segment.type === 'climb').at(-1);
+  const finalClimb = finalClimbOf(currentSegments);
+  const climbDrop = (segments) => {
+    const last = finalClimbOf(segments);
+    const drop = asFinite(last?.postClimbHrDropBpm);
+    return last?.durationS >= 180 && drop != null && drop >= 0 ? drop : null;
+  };
+  const currentDrop = climbDrop(currentSegments);
+  const comparableClimb = (segments) => {
+    const prior = finalClimbOf(segments);
+    if (!prior || !finalClimb) return false;
+    if (prior.routePoints?.length === 5 && finalClimb.routePoints?.length === 5) {
+      return finalClimb.routePoints.every((point, index) => {
+        const other = prior.routePoints[index];
+        return haversineM(point.latitude, point.longitude, other.latitude, other.longitude) <= 150;
+      });
+    }
+    const start = asFinite(finalClimb.startDistanceKm);
+    const priorStart = asFinite(prior.startDistanceKm);
+    const distance = asFinite(finalClimb.distanceKm);
+    const priorDistance = asFinite(prior.distanceKm);
+    return start != null && priorStart != null && distance > 0 && priorDistance > 0
+      && Math.abs(start - priorStart) <= 0.15
+      && Math.abs(start + distance - priorStart - priorDistance) <= 0.15;
+  };
+  const priorDrops = priorSameRoute.filter((activity) => comparableClimb(activity.segments))
+    .map((activity) => climbDrop(activity.segments)).filter((drop) => drop != null);
+  const recovery = postClimbRecovery(currentDrop, priorDrops, finalClimb?.avgHr);
   // Per-ride values for the card's history strip (oldest first, current last). Each entry is
   // { date, value, current? } so the UI can draw a small trend and highlight this ride.
-  const effort = (cp) => (Number.isFinite(Number(cp?.elapsedS)) && Number.isFinite(Number(cp?.avgHr))
-    && Number(cp.elapsedS) > 0 && Number(cp.avgHr) > 0
-    ? Math.round(Number(cp.elapsedS) * Number(cp.avgHr)) : null);
   const efficiencyHistory = markKm == null ? [] : [
     ...priorSameRoute.map((activity) => {
       const value = effort(pickPrior(activity.checkpoints));
@@ -137,15 +151,9 @@ function computeRouteTrends(currentCheckpoints, currentSegments, currentStartTim
     }).filter(Boolean),
     ...(effort(lastMark) == null ? [] : [{ date: currentStartTime, value: effort(lastMark), current: true }]),
   ];
-  const climbDrop = (segments) => {
-    const climbs = (segments || []).filter((segment) => segment.type === 'climb' && segment.durationS >= 180);
-    const last = climbs.at(-1);
-    return (last && Number.isFinite(Number(last.postClimbHrDropBpm)) && last.postClimbHrDropBpm != null)
-      ? Number(last.postClimbHrDropBpm) : null;
-  };
-  const currentDrop = climbDrop(currentSegments);
   const recoveryHistory = [
     ...priorSameRoute.map((activity) => {
+      if (!comparableClimb(activity.segments)) return null;
       const value = climbDrop(activity.segments);
       return value == null ? null : { date: activity.startTime, value };
     }).filter(Boolean),

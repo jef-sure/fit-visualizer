@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.28.9 - 2026-10-04
+
+### Fixed
+
+- Serialized all database write lifecycles, including route-card and lazy feature-cache refreshes, in a queue separate from model generation. Atomic export replacement keeps the previous file intact on failure and prevents readers from opening a partly written database.
+- Lazy trend-cache updates now persist, refresh same-sport loads before calculating weekly trends, and use the same 90-day route-history window as the prompt.
+- Efficiency matches checkpoints by place within 150 m, counts distinct rides, and falls back to the latest usable checkpoint. Effort uses cumulative time-weighted HR rather than the last split's HR. Three-ride tendencies compare each ride against its own earlier five-ride baseline.
+- Weekly load no longer mixes sports and requires at least 14 days of same-sport history. History points exclude other sports, future activities and missing values.
+- Recovery compares one qualifying final climb per ride at a comparable place; earlier climbs cannot inflate the five-ride minimum or substitute for a short final climb.
+- Analysis progress is restored from host state after browsing. Duplicate requests share one pending analysis; failed requests can be retried. The progress line is directly below the heading and exposes accessible status.
+- Replaced the misleading "normal range" label with a comparison to the athlete's usual week.
+
+### Changed
+
+- Analysis format is now 36 and derived features version 8; existing features are rebuilt automatically and older analyses are marked outdated.
+- Documented remaining model-response evaluation rather than claiming full plan completion.
+
 ## 0.28.8 - 2026-10-04
 
 ### Added
