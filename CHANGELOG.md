@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.25.0 - 2026-10-04
+
+### Upgrade Notes
+
+- Run **FIT: Re-analyze Outdated Analyses** (analysis format 31). Derived features rebuild themselves in the background; re-indexing is not required.
+
+### Added
+
+- **Analysis model dropdown**: the analysis card shows the model that produced the analysis and a Model selector listing the models the current vendor offers (with a default entry naming the model it resolves to). Choosing a model and pressing **Analyze Again** re-analyzes with that model as a one-off, without changing the pinned setting, so the same ride can be compared across models.
+
+### Changed
+
+- **The analysis reads like a coach, not a report**: the prompt now has a Voice section — second person in one register, plain sentences, a caveat stated once where it changes the conclusion, a couple of numbers per point, and the answer's own headings. Zone and class names (recovery, endurance, tempo, threshold, VO2max, mixed, unstructured, undetermined) are translated, not left in English inside another language.
+
+### Fixed
+
+- The model signature under the analysis ("Analyzed by …") now substitutes the placeholders; a template-literal escaping bug left "{0} · {1} · {2}" on screen.
+- Form fields, selects and textareas use a dedicated, clearly visible border on dark themes, with a shared focus style.
+- The data-quality flags block was printed twice in the analysis prompt; the chat prompt also duplicated the route context and the altitude block.
+- `OFFSET_CHANGED` never reached a prompt; it is now appended to the ride's own flags.
+- The activity page always rendered the session-class and data-quality chips empty.
+- The route filter's "All routes" hid every routed ride; filtering is now one round trip that keeps a consistent selection.
+- Route-page checkpoint medians use the latest five rides before this one, matching the prompt.
+- A hike with a "trail" sub-sport no longer maps to running.
+- The derived-feature rebuild is serialized with every other database writer, so a background rebuild cannot overwrite freshly stored analyses.
+
 ## 0.24.0 - 2026-10-04
 
 ### Upgrade Notes
