@@ -174,6 +174,7 @@ const UI_STRINGS = {
   power: 'Power',
   virtualPower: 'vPower',
   vpowerNotUsedBadge: 'vPower n/a',
+  middleTierModel: 'middle-tier model',
   vpowerNotUsedTitle: 'Estimated power here (\u2248{0} W) did not clear the checks for a comparable estimate (coverage, gravity share, or a capped/accelerating sample); heart rate is the quoted effort for this segment instead.',
   lap: 'Lap',
   climb: 'Climb',

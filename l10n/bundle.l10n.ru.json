@@ -250,5 +250,6 @@
   "Climbs in this direction:": "Подъёмы в этом направлении:",
   "km {0}-{1} · +{2} m · {3}%": "км {0}–{1} · +{2} м · {3}%",
   "vPower n/a": "vPower н/д",
-  "Estimated power here (≈{0} W) did not clear the checks for a comparable estimate (coverage, gravity share, or a capped/accelerating sample); heart rate is the quoted effort for this segment instead.": "Оценочная мощность здесь (≈{0} Вт) не прошла проверки на сравнимую оценку (покрытие, доля гравитационной работы или участок с ограничением/ускорением); для этого сегмента усилие указано по пульсу."
+  "Estimated power here (≈{0} W) did not clear the checks for a comparable estimate (coverage, gravity share, or a capped/accelerating sample); heart rate is the quoted effort for this segment instead.": "Оценочная мощность здесь (≈{0} Вт) не прошла проверки на сравнимую оценку (покрытие, доля гравитационной работы или участок с ограничением/ускорением); для этого сегмента усилие указано по пульсу.",
+  "middle-tier model": "средняя модель"
 }

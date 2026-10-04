@@ -2640,15 +2640,19 @@ test('cheap analysis model preference is configurable and applied only to one-of
   assert.match(source, /get\('preferCheapAnalysisModel'\) !== false/);
   assert.match(source, /function getCheapModelMarkers\(\)/);
 
-  // Analysis, comparison and chat all follow one model policy: the picked model, else the
-  // pinned one, else the cheapest. (Comparisons and chat used to take the vendor's first
-  // listed model, which silently picked an expensive one.)
-  for (const kind of ['analysis', 'comparison', 'chat']) {
+  // Analysis follows picked > pinned > cheapest; comparison and chat follow
+  // picked > their own pin > a middle-tier model (sonnet/gemini/gpt-5 class).
+  const analysisCallIndex = source.indexOf('kind: \'analysis\',');
+  const analysisCallSource = source.slice(
+    source.lastIndexOf('requestCopilotAnalysis(vscode, prompt, {', analysisCallIndex), analysisCallIndex);
+  assert.match(analysisCallSource, /preferCheapModel: getPreferCheapAnalysisModel\(\)/);
+  assert.match(analysisCallSource, /modelId: modelOverride \|\| getAnalysisModelId\(\)/);
+  for (const [kind, pinReader] of [['comparison', 'getComparisonModelId'], ['chat', 'getChatModelId']]) {
     const callIndex = source.indexOf(`kind: '${kind}',`);
-    const callStart = source.lastIndexOf('requestCopilotAnalysis(vscode, prompt, {', callIndex);
-    const callSource = source.slice(callStart, callIndex);
-    assert.match(callSource, /preferCheapModel: getPreferCheapAnalysisModel\(\)/, `${kind} call opts into the cheap-model policy`);
-    assert.match(callSource, /modelId: modelOverride \|\| getAnalysisModelId\(\)/, `${kind} call honours the override and the pin`);
+    const callSource = source.slice(
+      source.lastIndexOf('requestCopilotAnalysis(vscode, prompt, {', callIndex), callIndex);
+    assert.match(callSource, /tier: 'middle'/, `${kind} call defaults to the middle tier`);
+    assert.match(callSource, new RegExp(`modelId: modelOverride \\|\\| ${pinReader}\\(\\)`), `${kind} call honours the override and its pin`);
   }
 });
 
@@ -3690,12 +3694,12 @@ test('comparison feature is wired: DB functions, message handlers and cheap-mode
   assert.match(source, /type: 'comparisonResult'/);
   assert.match(source, /type: 'comparisonRemoved'/);
 
-  // The comparison follows the same model policy as the analysis (picked, else pinned, else cheapest).
+  // The comparison defaults to a middle-tier model, overridable per call and by its own pin.
   const comparisonCallIndex = source.indexOf("kind: 'comparison',");
   const comparisonCallStart = source.lastIndexOf('requestCopilotAnalysis(vscode, prompt, {', comparisonCallIndex);
   const comparisonCallSource = source.slice(comparisonCallStart, comparisonCallIndex);
-  assert.match(comparisonCallSource, /preferCheapModel: getPreferCheapAnalysisModel\(\)/);
-  assert.match(comparisonCallSource, /modelId: modelOverride \|\| getAnalysisModelId\(\)/);
+  assert.match(comparisonCallSource, /tier: 'middle'/);
+  assert.match(comparisonCallSource, /modelId: modelOverride \|\| getComparisonModelId\(\)/);
 });
 
 test('segment context always returns display rows, even with nothing to show', () => {

@@ -289,6 +289,8 @@ Most settings can be left at their defaults. Segmentation thresholds are mainly 
 | `fitVisualizer.llmChatLogRetentionDays`          | `180`   | Delete chat/comparison logs older than this; conversations outlive one-off analyses. `0` keeps them indefinitely. |
 | `fitVisualizer.lmVendor`                          | `copilot` | VS Code language-model vendor ID used for activity analysis and chat.                                            |
 | `fitVisualizer.analysisModelId`                  | ``      | Pins one-off analyses to one model id, overriding the cheapest-model selection; useful for reproducible prompts.   |
+| `fitVisualizer.comparisonModelId`                | ``      | Pins AI comparisons to one model id; the default is an automatic middle-tier choice (sonnet/gemini/gpt-5 class).    |
+| `fitVisualizer.chatModelId`                      | ``      | Pins follow-up chat to one model id; same middle-tier default as comparisons.                                      |
 | `fitVisualizer.powerModel.dragArea`              | `0.32`  | Effective frontal area CdA (m²) for estimated power: ~0.25 tucked on a TT bike, ~0.32 on the hoods, 0.40+ upright. |
 | `fitVisualizer.powerModel.rollingResistance`     | `0.004` | Rolling resistance Crr for estimated power; raise it for wider or knobbly tyres.                                   |
 | `fitVisualizer.segmentation.gradeThresholdPct`   | `2.5`   | Grade (%) from which a segment is called a climb or a descent rather than flat.                                    |

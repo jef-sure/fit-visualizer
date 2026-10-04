@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.7 - 2026-10-04
+
+### Changed
+
+- **Comparison and chat default to a middle-tier model** (sonnet/gemini/gpt-5 class: a named middle tier when one is listed, else the median of the price-ranked list), with their own pins `fitVisualizer.comparisonModelId` and `fitVisualizer.chatModelId` and dropdown labels naming the model each default resolves to. The analysis keeps its cheapest-model default and `analysisModelId`.
+
 ## 0.26.6 - 2026-10-04
 
 ### Changed

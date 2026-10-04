@@ -636,6 +636,13 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     `<option value=""${usedModelId ? '' : ' selected'}>${escapeHtml(formatUi(ui.defaultModel, modelPicker?.defaultName || ui.cheapestModel))}</option>`,
     ...modelPickerModels.map((model) => `<option value="${escapeHtml(model.id)}"${model.id === usedModelId ? ' selected' : ''}>${escapeHtml(modelLabel(model))}</option>`),
   ].join('');
+  // Comparison and chat default to a middle-tier model, so their default labels differ.
+  const tierOptions = (defaultName) => [
+    `<option value="">${escapeHtml(formatUi(ui.defaultModel, defaultName))}</option>`,
+    ...modelPickerModels.map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(modelLabel(model))}</option>`),
+  ].join('');
+  const compareModelOptions = tierOptions(modelPicker?.middleDefaultName || ui.middleTierModel);
+  const chatModelOptions = tierOptions(modelPicker?.middleDefaultName || ui.middleTierModel);
 
   const comparedId = Number(comparedActivityId);
   const canCompare = Number.isFinite(comparedId) && comparedId > 0;
@@ -643,7 +650,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const compareTriggerHtml = canCompare
     ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <button id="compareBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(alreadyCompared ? ui.compareAgain : ui.compareWithAI)}</button>
-        <select id="compareModelSel" class="actSelector" style="width:auto;min-width:160px;border:1px solid var(--input-border);">${modelOptions}</select>
+        <select id="compareModelSel" class="actSelector" style="width:auto;min-width:160px;border:1px solid var(--input-border);">${compareModelOptions}</select>
       </div>`
     : '';
 
@@ -850,7 +857,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           <button id="analysisChatSendBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.send)}</button>
         </div>
         <div style="margin-top:6px;">
-          <select id="chatModelSel" class="actSelector" style="width:auto;min-width:160px;border:1px solid var(--input-border);">${modelOptions}</select>
+          <select id="chatModelSel" class="actSelector" style="width:auto;min-width:160px;border:1px solid var(--input-border);">${chatModelOptions}</select>
         </div>
         <div id="analysisChatStatus" style="margin-top:6px;font-size:0.85rem;color:var(--muted);"></div>
       </div>

@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.26.6",
+  "version": "0.26.7",
   "description": "FIT file viewer and analyzer: charts, map, climb/descent segments, heart-rate zones, ride history and AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
@@ -132,7 +132,23 @@
             "null"
           ],
           "default": null,
-          "description": "Pin one-off activity analysis to a specific language-model id (overrides the cheapest-model selection). Useful for reproducing prompt experiments; the log records which model answered. Chat and comparison always use the provider's first model."
+          "description": "Pin one-off activity analysis to a specific language-model id (overrides the cheapest-model selection). Useful for reproducing prompt experiments; the log records which model answered."
+        },
+        "fitVisualizer.comparisonModelId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Pin AI comparisons to a specific language-model id (overrides the default middle-tier selection). Leave empty to use the automatic default. The dropdown next to the Compare button overrides it for one comparison."
+        },
+        "fitVisualizer.chatModelId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Pin follow-up chat to a specific language-model id (overrides the default middle-tier selection). Leave empty to use the automatic default. The dropdown under the chat input overrides it for one reply."
         },
         "fitVisualizer.cheapModelMarkers": {
           "type": "array",

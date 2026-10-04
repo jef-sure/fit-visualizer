@@ -477,23 +477,31 @@ async function getModelPickerData() {
   const models = Array.isArray(raw) ? raw : [];
   // The default (no explicit choice) still resolves within the configured vendor.
   const vendorModels = models.filter((model) => !model.vendor || model.vendor === vendor);
-  let defaultName = null;
-  if (vendorModels.length) {
+  const resolveDefault = (options, fallbackLabel) => {
+    if (!vendorModels.length) return fallbackLabel;
     try {
-      const resolved = await selectPreferredModel(vscode, vendor, vendorModels, {
-        modelId: getAnalysisModelId(),
-        preferCheapModel: getPreferCheapAnalysisModel(),
-        cheapModelMarkers: getCheapModelMarkers(),
-      });
-      defaultName = resolved?.name || resolved?.id || null;
+      const resolved = selectPreferredModel(vscode, vendor, vendorModels, { ...options });
+      return resolved?.name || resolved?.id || fallbackLabel;
     } catch {
-      defaultName = null;
+      return fallbackLabel;
     }
-  }
+  };
+  const analysisDefault = resolveDefault({
+    modelId: getAnalysisModelId(),
+    preferCheapModel: getPreferCheapAnalysisModel(),
+    cheapModelMarkers: getCheapModelMarkers(),
+  }, getPreferCheapAnalysisModel() ? vscode.l10n.t('cheapest model') : vscode.l10n.t('first listed model'));
+  const middleDefault = resolveDefault({
+    preferCheapModel: true,
+    tier: 'middle',
+    modelId: getComparisonModelId(),
+    cheapModelMarkers: getCheapModelMarkers(),
+  }, vscode.l10n.t('middle-tier model'));
   return {
     vendor,
     models: models.map((model) => ({ id: model.id, name: model.name || model.id, vendor: model.vendor })),
-    defaultName: defaultName || (getPreferCheapAnalysisModel() ? vscode.l10n.t('cheapest model') : vscode.l10n.t('first listed model')),
+    defaultName: analysisDefault,
+    middleDefaultName: middleDefault,
   };
 }
 
@@ -2081,6 +2089,16 @@ function getAnalysisModelId() {
   return modelId || undefined;
 }
 
+function getComparisonModelId() {
+  const modelId = String(vscode.workspace.getConfiguration('fitVisualizer').get('comparisonModelId') || '').trim();
+  return modelId || undefined;
+}
+
+function getChatModelId() {
+  const modelId = String(vscode.workspace.getConfiguration('fitVisualizer').get('chatModelId') || '').trim();
+  return modelId || undefined;
+}
+
 function getCheapModelMarkers() {
   const markers = vscode.workspace.getConfiguration('fitVisualizer').get('cheapModelMarkers');
   return Array.isArray(markers) ? markers.filter((marker) => typeof marker === 'string') : undefined;
@@ -3403,12 +3421,13 @@ async function runActivityComparison(dbPath, activityId, comparedActivityId, for
   ]);
 
   const prompt = generateComparisonPrompt(analysisData, comparedData, vscode.env.language);
-  // Comparison follows the same model policy as the analysis: the picked model, else the
-  // pinned one, else the cheapest. Before, it silently took the vendor's first-listed model.
+  // Comparison defaults to a middle-tier model (sonnet/gemini/gpt-5 class): more thorough than
+  // the cheapest, far cheaper than the flagship. The dropdown overrides once, the pin always.
   const comparison = await requestCopilotAnalysis(vscode, prompt, {
     vendor: getLanguageModelVendor(),
-    preferCheapModel: getPreferCheapAnalysisModel(),
-    modelId: modelOverride || getAnalysisModelId(),
+    preferCheapModel: true,
+    tier: 'middle',
+    modelId: modelOverride || getComparisonModelId(),
     cheapModelMarkers: getCheapModelMarkers(),
     onCompleted: (result) => logLlmRequest(dbPath, {
       activityId: numId,
@@ -3514,11 +3533,12 @@ async function runActivityChatReply(dbPath, activityId, history, userQuestion, m
   const prompt = generateAnalysisChatPrompt(
     analysisData, summary, hrConfig, baseAnalysis, safeHistory, userQuestion, vscode.env.language
   );
-  // Chat follows the same model policy as the analysis (picked, else pinned, else cheapest).
+  // Chat defaults to the same middle tier as comparisons.
   return requestCopilotAnalysis(vscode, prompt, {
     vendor: getLanguageModelVendor(),
-    preferCheapModel: getPreferCheapAnalysisModel(),
-    modelId: modelOverride || getAnalysisModelId(),
+    preferCheapModel: true,
+    tier: 'middle',
+    modelId: modelOverride || getChatModelId(),
     cheapModelMarkers: getCheapModelMarkers(),
     onCompleted: (result) => logLlmRequest(dbPath, { activityId: Number(activityId), kind: 'chat', ...result }),
   });
