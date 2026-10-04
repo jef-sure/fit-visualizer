@@ -5,6 +5,8 @@ const { computeElevationGainLoss } = require('./chart-data');
 const { rankModelsByCost } = require('./model-pricing');
 const { describeStretches } = require('./route-features');
 const { buildDataQualityFlagBlock } = require('./data-quality');
+const { buildRouteSignature, matchRoutes } = require('./route-match');
+const { computeCheckpoints } = require('./route-store');
 const { SUMMARY_TAIL_INSTRUCTION, describeAnalysisForHistory } = require('./analysis-summary');
 const { buildInferredNotesBlock, buildSessionNotesBlock, describeNotesShort } = require('./activity-notes');
 
@@ -917,15 +919,53 @@ function generateAnalysisPrompt(...args) {
   return `${instructions}\n\n${data}`;
 }
 
+// Numbered coaching principles shared by the main, chat and comparison prompts. The SUMMARY tail
+// and answer-format instructions are separate and only used by the one-off analysis prompt.
+function renderPrinciples() {
+  return ANALYSIS_PRINCIPLES.map((principle, index) => `${index + 1}. ${principle}`).join('\n');
+}
+
+// One line stating whether two rides share a route, from matchRoutes. No line when GPS is absent.
+function describeRouteRelation(relation) {
+  if (!relation || relation.type === 'different') return null;
+  const direction = relation.type === 'same' ? 'same direction' : relation.type === 'reversed' ? 'opposite direction' : 'partial overlap';
+  return `Route relation: same route, ${direction} (${relation.detail}).`;
+}
+
+// A checkpoint comparison table, only for rides on the same route: marks are aligned by rounded
+// distance so a slightly different total (wheel sensor) still matches. Returns '' when the marks
+// cannot be aligned (different routes) or there is nothing to compare.
+function buildCheckpointComparisonTable(aCheckpoints, bCheckpoints) {
+  const listA = Array.isArray(aCheckpoints) ? aCheckpoints : [];
+  const listB = Array.isArray(bCheckpoints) ? bCheckpoints : [];
+  if (!listA.length || !listB.length) return '';
+  const byKm = new Map(listB.map((checkpoint) => [Math.round(Number(checkpoint.km) * 10) / 10, checkpoint]));
+  const rows = listA.map((checkpoint) => {
+    const other = byKm.get(Math.round(Number(checkpoint.km) * 10) / 10);
+    if (!other) return null;
+    const time = `${formatHms(checkpoint.elapsedS)} / ${formatHms(other.elapsedS)}`;
+    const hr = checkpoint.avgHr != null && other.avgHr != null ? `, HR ${checkpoint.avgHr} / ${other.avgHr}` : '';
+    return `- km ${checkpoint.km}: ${time}${hr}`;
+  }).filter(Boolean);
+  if (rows.length < 2) return '';
+  return `**Checkpoints (This Workout / Compared Activity):**\n${rows.join('\n')}`;
+}
+
 function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, baseAnalysis, history, userQuestion, locale) {
   const session = fitData.sessions?.[0] || {};
   const { text: workoutFields, powerSource } = buildWorkoutFields(session, fitData.records, fitData.altitudeSettlingWindow);
   const safeHistory = formatConversation(history);
   const segmentContext = buildSegmentContext(fitData.segments).text;
 
+  const routeContext = progressSummary?.trainingContext?.routeContext;
+  const routeProfile = progressSummary?.trainingContext?.routeProfile;
+  const hasRouteStretches = Boolean(fitData.segments?.some((segment) => segment.routeStretches?.length));
+
   const body = joinNonEmpty([
     `Workout facts for this activity:\n${workoutFields}`,
     buildSessionNotesBlock(fitData.sessionNotes),
+    buildInferredNotesBlock(fitData.inferredNotes, fitData.sessionNotes),
+    buildAltitudeQualityBlock(progressSummary?.trainingContext?.altitudeQuality, fitData.qualityFlags),
     buildHeartRateProfileContext(heartRateConfig),
     buildZoneContext(fitData.records, heartRateConfig),
     buildPeakHeartRateContext(fitData.records, progressSummary?.trainingContext),
@@ -934,6 +974,8 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
     buildLapContext(fitData),
     buildTrainingHistoryContext(progressSummary?.trainingContext),
     buildRecentHistoryContext(progressSummary?.trainingContext?.recentHistory),
+    routeContext ? buildRouteContextBlock(routeContext) : null,
+    routeProfile ? buildRouteProfileBlock(routeProfile) : null,
     powerSource === 'estimated from motion data'
       ? '**Data Quality Note:** Whole-ride power is estimated from motion and is not supplied as a reliable training-load metric. Any vpower shown for climbs is only a rough terrain-specific estimate; do not treat it as measured power.'
       : null,
@@ -949,11 +991,15 @@ ${body}
 Latest user question:
 ${String(userQuestion || '').trim()}
 
+**Coaching Principles:**
+${renderPrinciples()}
+
 Rules:
 - Use provided workout/history facts; do not invent personal circumstances or later activities.
 - hrTSS uses an estimated threshold HR (middle of the Threshold zone), not a directly tested LTHR value; treat it as approximate.
 - User-reported HR values, when present, are a summary from another device, not a measurement of this recording: treat them as an approximate indication and never as zone time, peaks or load.
-- If the user says the route was not flat, explicitly use elevation gain/loss context and explain what can and cannot be inferred without full grade distribution.${segmentContext ? '\n- Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.' : ''}
+- If the user says the route was not flat, explicitly use elevation gain/loss context and explain what can and cannot be inferred without full grade distribution.
+- Do not end your answer with a SUMMARY tail; answer in prose only.${segmentContext ? '\n- Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.' : ''}${hasRouteStretches ? '\n- When asked why speed changed inside a flat segment, first use the route-stretch breakdown: a change that matches the typical speed for this direction belongs to the route, and only the deviation from typical and the HR change are this ride\'s facts.' : ''}
 - Be specific and concise. Answer the question directly; go longer only when the question genuinely needs the detail.
 - If the data is insufficient for a claim, say so and ask one clarifying follow-up.
 ${sportsEvidenceRules().map((rule) => `- ${rule}`).join('\n')}
@@ -972,6 +1018,15 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
   const comparedSegmentContext = buildSegmentContext(collapseShortStops(comparedFitData.segments)).text;
   const hasSegments = Boolean(segmentContext) || Boolean(comparedSegmentContext);
 
+  // Route relation and (only on the same route) an aligned checkpoint table. A different route
+  // means checkpoints are not compared at all.
+  const relation = matchRoutes(buildRouteSignature(fitData.records), buildRouteSignature(comparedFitData.records));
+  const sameRoute = relation.type === 'same' || relation.type === 'reversed';
+  const routeRelationLine = describeRouteRelation(relation);
+  const checkpointTable = sameRoute
+    ? buildCheckpointComparisonTable(computeCheckpoints(fitData.records), computeCheckpoints(comparedFitData.records))
+    : '';
+
   const dataQualityNote = (label, source) => (source === 'estimated from motion data'
     ? `**Data Quality Note (${label}):** Whole-ride power is estimated from motion and is not supplied as a reliable training-load metric. Any vpower shown for climbs is only a rough terrain-specific estimate; do not treat it as measured power.`
     : null);
@@ -982,6 +1037,9 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
 
   const body = joinNonEmpty([
     joinNonEmpty([`**This Workout:**\n${workoutFields}`, segmentContext], '\n\n'),
+    buildSessionNotesBlock(fitData.sessionNotes),
+    buildInferredNotesBlock(fitData.inferredNotes, fitData.sessionNotes),
+    buildDataQualityFlagBlock(fitData.qualityFlags),
     dataQualityNote('This Workout', powerSource),
     labelProfile(fitData.analysisHeartRateConfig),
     buildZoneContext(fitData.records, fitData.analysisHeartRateConfig),
@@ -990,6 +1048,9 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
     buildReportedHeartRateContext(session),
     buildLapContext(fitData),
     joinNonEmpty([`**Another Compared Activity:**\n${comparedWorkoutFields}`, comparedSegmentContext], '\n\n'),
+    buildSessionNotesBlock(comparedFitData.sessionNotes),
+    buildInferredNotesBlock(comparedFitData.inferredNotes, comparedFitData.sessionNotes),
+    buildDataQualityFlagBlock(comparedFitData.qualityFlags),
     dataQualityNote('Compared Activity', comparedPowerSource),
     labelProfile(comparedFitData.analysisHeartRateConfig),
     buildZoneContext(comparedFitData.records, comparedFitData.analysisHeartRateConfig),
@@ -997,6 +1058,8 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
     buildDataQualityContext(comparedFitData),
     buildReportedHeartRateContext(comparedSession),
     buildLapContext(comparedFitData),
+    routeRelationLine,
+    checkpointTable,
   ], '\n\n');
 
   const evidenceRules = [
@@ -1011,9 +1074,12 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
     ...sportsEvidenceRules(),
   ].filter(Boolean).map((rule) => `- ${rule}`).join('\n');
 
-  return `Compare "This Workout" against "Another Compared Activity" segment by segment, focusing on differences in pacing, effort and terrain handling.
+  return `Compare "This Workout" against "Another Compared Activity" segment by segment, focusing on differences in pacing, effort and terrain handling.${routeRelationLine ? ` When the two rides are on the same route, prefer the checkpoint table over raw speed for the route-level verdict.` : ' The two rides are not on the same route, so compare segment structure and intensity without a checkpoint table.'}
 
 ${body}
+
+**Coaching Principles:**
+${renderPrinciples()}
 
 **Evidence Rules:**
 ${evidenceRules}

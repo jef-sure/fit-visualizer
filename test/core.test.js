@@ -4611,3 +4611,39 @@ test('manual activity writes session notes', async () => {
     db.close();
   }
 });
+
+test('chat and comparison prompts carry principles, notes and route relation (C5)', () => {
+  const chat = generateAnalysisChatPrompt(
+    { sessions: [{ total_distance_km: 20 }], records: [], segments: [], sessionNotes: { rpe: 7, purpose: 'race' } },
+    {}, {}, '', [], 'How hard was this?', 'en'
+  );
+  assert.match(chat, /Coaching Principles:/);
+  assert.match(chat, /Hierarchy of evidence/);
+  assert.match(chat, /Athlete's Session Notes \(user-declared for this ride\)/);
+  assert.match(chat, /Do not end your answer with a SUMMARY tail/);
+
+  // Same straight line: same route, so a checkpoint table is supplied.
+  const sameA = straightGpsRecords(1200, 20, { startLat: 52.0, startLon: 21.0 });
+  const sameB = straightGpsRecords(1200, 20, { startLat: 52.0, startLon: 21.0 });
+  const same = generateComparisonPrompt(
+    { sessions: [{ total_distance_km: 6.7 }], records: sameA, segments: [], sessionNotes: { rpe: 7 } },
+    { sessions: [{ total_distance_km: 6.7 }], records: sameB, segments: [], sessionNotes: { rpe: 6 } },
+    'en'
+  );
+  assert.match(same, /Coaching Principles:/);
+  assert.match(same, /Route relation: same route, same direction/);
+  assert.match(same, /Checkpoints \(This Workout \/ Compared Activity\):/);
+  assert.match(same, /km 2:/);
+
+  // Different start points: different route, so no checkpoint table and no route-relation line.
+  const diffA = straightGpsRecords(600, 20, { startLat: 52.0, startLon: 21.0 });
+  const diffB = straightGpsRecords(600, 20, { startLat: 53.0, startLon: 22.0 });
+  const diff = generateComparisonPrompt(
+    { sessions: [{ total_distance_km: 3.3 }], records: diffA, segments: [] },
+    { sessions: [{ total_distance_km: 3.3 }], records: diffB, segments: [] },
+    'en'
+  );
+  assert.match(diff, /not on the same route/);
+  assert.doesNotMatch(diff, /Checkpoints \(This Workout \/ Compared Activity\)/);
+  assert.doesNotMatch(diff, /Route relation: same route/);
+});
