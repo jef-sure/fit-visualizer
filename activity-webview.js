@@ -340,28 +340,40 @@ const PURPOSE_UI = { commute: 'purposeCommute', endurance: 'purposeEndurance', t
 const FEELING_UI = { fresh: 'feelingFresh', normal: 'feelingNormal', tired: 'feelingTired', ill: 'feelingIll' };
 const CONDITION_UI = { headwind: 'condHeadwind', tailwind: 'condTailwind', rain: 'condRain', heat: 'condHeat', cold: 'condCold', group: 'condGroup', traffic: 'condTraffic', night: 'condNight', new_route: 'condNewRoute' };
 
-function renderSessionNotesCard(notes, ui, mapId) {
+function renderSessionNotesCard(notes, ui, mapId, inferred = null) {
+  // Merge field by field: user-declared values win, the model's inference fills only what the
+  // user left blank (purpose/conditions; RPE, feeling and the note are never inferred).
+  const effective = {
+    rpe: notes?.rpe ?? null,
+    purpose: notes?.purpose ?? inferred?.purpose ?? null,
+    feeling: notes?.feeling ?? null,
+    conditions: notes?.conditions?.length ? notes.conditions : (inferred?.conditions ?? []),
+    note: notes?.note ?? null,
+  };
+  const inferredHint = inferred && ((!notes?.purpose && inferred.purpose) || (!notes?.conditions?.length && inferred.conditions?.length))
+    ? `<div class="mapHint" style="margin-top:0;margin-bottom:6px;">${escapeHtml(ui.notesInferredHint)}</div>` : '';
   const options = (values, uiKeys, selected) => `<option value=""${selected ? '' : ' selected'}>${escapeHtml(ui.select)}</option>`
     + values.map((value) => `<option value="${value}"${selected === value ? ' selected' : ''}>${escapeHtml(ui[uiKeys[value]])}</option>`).join('');
-  const rpeOptions = `<option value=""${notes?.rpe ? '' : ' selected'}>${escapeHtml(ui.select)}</option>`
-    + Array.from({ length: 10 }, (_, index) => `<option value="${index + 1}"${notes?.rpe === index + 1 ? ' selected' : ''}>${index + 1}</option>`).join('');
+  const rpeOptions = `<option value=""${effective?.rpe ? '' : ' selected'}>${escapeHtml(ui.select)}</option>`
+    + Array.from({ length: 10 }, (_, index) => `<option value="${index + 1}"${effective?.rpe === index + 1 ? ' selected' : ''}>${index + 1}</option>`).join('');
   const conditions = CONDITIONS.map((value) => `<label style="display:flex;gap:4px;align-items:center;">
-            <input type="checkbox" name="${mapId}Condition" value="${value}" style="width:auto;"${notes?.conditions?.includes(value) ? ' checked' : ''}>
+            <input type="checkbox" name="${mapId}Condition" value="${value}" style="width:auto;"${effective?.conditions?.includes(value) ? ' checked' : ''}>
             <span>${escapeHtml(ui[CONDITION_UI[value]])}</span>
           </label>`).join('');
   return `<section class="chart manualData">
       <h2>${escapeHtml(ui.sessionNotesSection)}</h2>
+      ${inferredHint}
       <form id="${mapId}NotesForm" class="manualDataForm">
         <label><span>${escapeHtml(ui.rpeLabel)}</span><select id="${mapId}NotesRpe">${rpeOptions}</select></label>
-        <label><span>${escapeHtml(ui.purposeLabel)}</span><select id="${mapId}NotesPurpose">${options(PURPOSES, PURPOSE_UI, notes?.purpose)}</select></label>
-        <label><span>${escapeHtml(ui.feelingLabel)}</span><select id="${mapId}NotesFeeling">${options(FEELINGS, FEELING_UI, notes?.feeling)}</select></label>
+        <label><span>${escapeHtml(ui.purposeLabel)}</span><select id="${mapId}NotesPurpose">${options(PURPOSES, PURPOSE_UI, effective?.purpose)}</select></label>
+        <label><span>${escapeHtml(ui.feelingLabel)}</span><select id="${mapId}NotesFeeling">${options(FEELINGS, FEELING_UI, effective?.feeling)}</select></label>
         <fieldset style="flex:1 1 100%;border:0;padding:0;margin:0;">
           <legend style="color:var(--muted);font-size:0.82rem;padding:0 0 4px 0;">${escapeHtml(ui.conditionsLabel)}</legend>
           <div style="display:flex;gap:6px 14px;flex-wrap:wrap;color:var(--muted);font-size:0.82rem;">${conditions}</div>
         </fieldset>
         <label style="flex:1 1 100%;">
           <span>${escapeHtml(ui.sessionNoteLabel)}</span>
-          <textarea id="${mapId}NotesText" rows="2" maxlength="1000" style="width:100%;box-sizing:border-box;">${escapeHtml(notes?.note || '')}</textarea>
+          <textarea id="${mapId}NotesText" rows="2" maxlength="1000" style="width:100%;box-sizing:border-box;">${escapeHtml(effective?.note || '')}</textarea>
         </label>
         <button type="submit">${escapeHtml(ui.saveNotes)}</button>
         <span id="${mapId}NotesStatus" class="manualDataStatus"></span>
@@ -525,7 +537,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       </div>` : '';
 
   const routeCardHtml = routeCard && !isComparison ? renderRouteCard(routeCard, ui, mapId) : '';
-  const notesCardHtml = isComparison ? '' : renderSessionNotesCard(fitData.sessionNotes, ui, mapId);
+  const notesCardHtml = isComparison ? '' : renderSessionNotesCard(fitData.sessionNotes, ui, mapId, fitData.inferredNotes);
 
   return `<main class="wrap">
     <section class="hero">

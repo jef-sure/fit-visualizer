@@ -48,6 +48,7 @@ const UI_STRINGS = {
   condNewRoute: 'New route',
   sessionClassLabel: 'Session class',
   qualityFlagsLabel: 'Data quality',
+  notesInferredHint: "Fields marked below are the AI’s inference from this ride’s data — edit and save to correct them; a saved note becomes your own.",
   routeSection: 'Route',
   routeNameLabel: 'Route name',
   routeNoteLabel: 'About this route',

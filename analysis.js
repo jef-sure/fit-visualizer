@@ -6,7 +6,7 @@ const { rankModelsByCost } = require('./model-pricing');
 const { describeStretches } = require('./route-features');
 const { buildDataQualityFlagBlock } = require('./data-quality');
 const { SUMMARY_TAIL_INSTRUCTION, describeAnalysisForHistory } = require('./analysis-summary');
-const { buildSessionNotesBlock, describeNotesShort } = require('./activity-notes');
+const { buildInferredNotesBlock, buildSessionNotesBlock, describeNotesShort } = require('./activity-notes');
 
 function formatPositive(value, digits) {
   const num = Number(value);
@@ -561,7 +561,7 @@ function describeLanguageModelError(vscode, error) {
 // Character budgets per block (reference: a ~1 h, 1 Hz ride). Matching is by heading prefix; the
 // log shows budget/actual and an overshoot is reported as a warning, never truncated.
 const PROMPT_BLOCK_BUDGETS = Object.freeze([
-  ['This Workout', 1500], ['Segment Breakdown', 1600], ['Same-Route Context', 1500], ['Route Profile', 1000], ['Altitude Quality', 1800], ['Heuristic Session Class', 400],
+  ['This Workout', 1500], ['Segment Breakdown', 1600], ['Same-Route Context', 2200], ['Route Profile', 1000], ['Altitude Quality', 1800], ['Heuristic Session Class', 400],
   ['Time in Heart-Rate Zones', 900], ['Peak Sustained', 900], ['Recent Activity History', 4500],
   ['Training Volume and Covered Intensity', 3200], ['Dated User Context', 3200], ['Principles', 4000],
   ['Questions for Analysis', 1800],
@@ -835,7 +835,7 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
 
   // Data first, interpretation rules last: without a system role, closeness to the question is the only lever.
   const body = joinNonEmpty([
-    joinNonEmpty([`**This Workout:**\n${workoutFields}`, buildSessionNotesBlock(fitData.sessionNotes), segmentContext], '\n\n'),
+    joinNonEmpty([`**This Workout:**\n${workoutFields}`, buildSessionNotesBlock(fitData.sessionNotes), buildInferredNotesBlock(fitData.inferredNotes, fitData.sessionNotes), segmentContext], '\n\n'),
     buildLapContext(fitData),
     powerSource === 'estimated from motion data'
       ? '**Data Quality Note:** Whole-ride power is estimated from motion and is not supplied as a reliable training-load metric. Any vpower shown for climbs is only a rough terrain-specific estimate; do not treat it as measured power.'

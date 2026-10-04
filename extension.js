@@ -35,7 +35,7 @@ const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
 const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
-const { readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
+const { inferNotesPreFill, readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
 const { computeDataQualityFlags } = require('./data-quality');
 const { computeSegmentStretches, describeRouteFeatures } = require('./route-features');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling, mirrorConsensusProfile } = require('./altitude-quality');
@@ -920,6 +920,9 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
     const comparisons = selId ? await getActivityComparisonsForActivity(dbPath, selId) : [];
     const routeCard = selId ? await getRouteCard(dbPath, selId) : null;
+    // The Session Notes form pre-fills with what the model inferred for this ride; fields the
+    // user has already declared are merged field by field in the webview.
+    if (data) data.inferredNotes = inferNotesPreFill(data.inferredNotes);
     const hrConfig = data
       ? await getHeartRateConfigForActivity(dbPath, data.sessions?.[0]?.start_time)
       : getHeartRateConfig();
@@ -1136,6 +1139,22 @@ function buildDisplaySegments(fitData, athleteProfile, heartRateConfig) {
   });
 }
 
+
+// The parsed SUMMARY tail of the latest stored analysis (any version): the model's own inference
+// for this ride, used for pre-filling notes and for the revisable block when the user saved none.
+function readLatestSummaryForActivity(db, activityId) {
+  const stmt = db.prepare('SELECT summary_json FROM activity_analysis WHERE activity_id = ? ORDER BY analysis_version DESC, updated_at DESC LIMIT 1');
+  try {
+    stmt.bind([activityId]);
+    if (!stmt.step()) return null;
+    return parseStoredSummary(stmt.getAsObject().summary_json);
+  } catch {
+    return null;
+  } finally {
+    stmt.free();
+  }
+}
+
 async function loadFitDataFromDb(dbPath, activityId) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
@@ -1226,6 +1245,7 @@ async function loadFitDataFromDb(dbPath, activityId) {
       }],
       laps: parseStoredLaps(activity.laps_json),
       sessionNotes: readActivityNotes(db, activityId),
+      inferredNotes: readLatestSummaryForActivity(db, activityId),
       _activityId: Number(activity.id),
       _fileName: activity.file_name,
       _source: activity.source || 'fit',

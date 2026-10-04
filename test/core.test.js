@@ -3746,7 +3746,7 @@ test('analysis summary tail is parsed tolerantly and cut from the displayed text
   const { parseAnalysisSummary, describeAnalysisForHistory } = require('../analysis-summary');
   const clean = parseAnalysisSummary(`Main answer.\n\nSecond paragraph.\n\n---\nSUMMARY\ntype: threshold\nfinding: HR drift 142→157 on the 34-min flat\nadvice_category: pacing\nadvice: start the flat 1–2 km/h slower\nopen: none\nrevised: none`);
   assert.equal(clean.body, 'Main answer.\n\nSecond paragraph.');
-  assert.deepEqual(clean.summary, { type: 'threshold', finding: 'HR drift 142→157 on the 34-min flat', adviceCategory: 'pacing', advice: 'start the flat 1–2 km/h slower', open: null, revised: null });
+  assert.deepEqual(clean.summary, { type: 'threshold', finding: 'HR drift 142→157 on the 34-min flat', adviceCategory: 'pacing', advice: 'start the flat 1–2 km/h slower', open: null, revised: null, purpose: [], conditions: [] });
 
   // Markdown decoration, case, a category with extras and missing fields.
   const messy = parseAnalysisSummary('Answer.\n\n**SUMMARY**\n- **Type:** Tempo\n- **Advice category:** `Load` (or pacing)\n- **Advice:** add one easy day\n- **Revised:** earlier heat hypothesis');
@@ -4472,4 +4472,50 @@ test('activity page shows the session-class chip with evidence and quality-flag 
   assert.match(html, /chipInfo[^>]*title="HR_ABSENT: no HR"/);
   assert.doesNotMatch(render(null, []), /Session class: /);
   assert.doesNotMatch(render(null, []), /class="chip/);
+});
+
+test('inferred notes from the summary tail reach the prompt as revisable and pre-fill the form', () => {
+  const { buildInferredNotesBlock, inferNotesPreFill } = require('../activity-notes');
+  const summary = { purpose: ['commute'], conditions: ['headwind'] };
+  assert.match(buildInferredNotesBlock(summary), /Session Notes \(AI-inferred from this ride's data, revisable\)/);
+  assert.match(buildInferredNotesBlock(summary), /purpose: commute \(inferred/);
+  assert.match(buildInferredNotesBlock(summary), /not user statements/);
+  assert.equal(buildInferredNotesBlock({ purpose: [], conditions: [] }), '');
+  assert.equal(buildInferredNotesBlock({ purpose: ['unknown'], conditions: ['none'] }), '');
+  // User-declared fields suppress the matching inference, field by field.
+  assert.doesNotMatch(buildInferredNotesBlock(summary, { purpose: 'race' }), /purpose: commute/);
+  assert.match(buildInferredNotesBlock(summary, { purpose: 'race' }), /conditions: headwind/);
+  assert.equal(buildInferredNotesBlock(summary, { purpose: 'race', conditions: ['headwind'] }), '');
+  assert.deepEqual(inferNotesPreFill(summary), { purpose: 'commute', conditions: ['headwind'] });
+  assert.equal(inferNotesPreFill({ purpose: [], conditions: [] }), null);
+
+  const prompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], inferredNotes: summary }, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.match(prompt, /AI-inferred from this ride's data, revisable/);
+  const withUser = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], sessionNotes: { rpe: 7, purpose: 'race' }, inferredNotes: summary }, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.match(withUser, /user-declared for this ride/);
+  assert.doesNotMatch(withUser, /purpose: commute \(inferred/); // declared purpose suppresses the inference
+  assert.match(withUser, /conditions: headwind \(inferred/); // undeclared condition is still suggested
+  const fullOverride = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], sessionNotes: { purpose: 'race', conditions: ['headwind'] }, inferredNotes: summary }, { total_activities: 0 }, {}, null, [], [], 'en');
+  assert.doesNotMatch(fullOverride, /AI-inferred from this ride's data/);
+
+  const { parseAnalysisSummary, SUMMARY_TAIL_INSTRUCTION } = require('../analysis-summary');
+  assert.match(SUMMARY_TAIL_INSTRUCTION, /purpose: <the purpose this ride's data best supports/);
+  assert.match(SUMMARY_TAIL_INSTRUCTION, /conditions: <conditions this ride's data suggest/);
+  assert.deepEqual(parseAnalysisSummary('A.\n---\nSUMMARY\ntype: tempo\npurpose: commute\nconditions: headwind').summary.purpose, ['commute']);
+
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const base = { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] };
+  const html = renderActivityContentHtml({}, {}, { ...base, inferredNotes: { purpose: 'commute', conditions: ['headwind'] } }, null, 'n', false, null, {}, null, [], null,
+    UI_STRINGS, GLOSSARY, false, 'en', [], null, [], null, false, 'osm', null, []);
+  assert.match(html, /<option value="commute" selected>/);
+  assert.match(html, /value="headwind" style="width:auto;" checked>/);
+  assert.match(html, /Fields marked below are the AI/);
+
+  // Mixed case: user declared only conditions; the inferred purpose still pre-fills, while the
+  // declared conditions win over the inferred ones.
+  const mixed = renderActivityContentHtml({}, {}, { ...base, sessionNotes: { rpe: null, purpose: null, feeling: null, conditions: ['rain'], note: null }, inferredNotes: { purpose: 'commute', conditions: ['headwind'] } }, null, 'n', false, null, {}, null, [], null,
+    UI_STRINGS, GLOSSARY, false, 'en', [], null, [], null, false, 'osm', null, []);
+  assert.match(mixed, /<option value="commute" selected>/);
+  assert.match(mixed, /value="rain" style="width:auto;" checked>/);
+  assert.doesNotMatch(mixed, /value="headwind" style="width:auto;" checked>/);
 });

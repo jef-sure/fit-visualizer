@@ -3,7 +3,9 @@
 // from the displayed text, and fed back into later prompts instead of full past analyses.
 
 const ADVICE_CATEGORIES = Object.freeze(['pacing', 'load', 'route', 'data', 'recovery', 'technique', 'none']);
-const SUMMARY_KEYS = Object.freeze(['type', 'finding', 'advice_category', 'advice', 'open', 'revised']);
+const SUMMARY_KEYS = Object.freeze(['type', 'finding', 'advice_category', 'advice', 'open', 'revised', 'purpose', 'conditions']);
+const PURPOSE_VALUES = Object.freeze(['commute', 'endurance', 'tempo', 'intervals', 'recovery', 'race', 'social', 'other', 'unknown']);
+const CONDITION_VALUES = Object.freeze(['headwind', 'tailwind', 'rain', 'heat', 'cold', 'group', 'traffic', 'night', 'new_route', 'none']);
 const FALLBACK_CHARS = 400;
 const SESSION_TYPES = Object.freeze(['recovery', 'endurance', 'tempo', 'threshold', 'vo2max/anaerobic', 'mixed', 'unstructured', 'undetermined']);
 
@@ -34,7 +36,9 @@ finding: <the single most important observation with its number>
 advice_category: <one of: ${ADVICE_CATEGORIES.join(' | ')}>
 advice: <the practical step in one short sentence>
 open: <one question whose answer would change the advice and is not answered by the route profile, notes or flags; usually none>
-revised: <what from the earlier summaries you now revise, or none>`;
+revised: <what from the earlier summaries you now revise, or none>
+purpose: <the purpose this ride's data best supports: ${PURPOSE_VALUES.join(' | ')}; write unknown when nothing supports a claim>
+conditions: <conditions this ride's data suggest: ${CONDITION_VALUES.join(' | ')}; write none when nothing supports a claim>`;
 
 const stripDecoration = (text) => String(text ?? '')
   .replace(/[*_`]+/g, '')
@@ -50,6 +54,16 @@ function normalizeCategory(value) {
   }
   if (best) return best.category;
   return text ? 'other' : null;
+}
+
+
+// A tail field restricted to a known value list: the exact value, or entries mentioned in a list;
+// absent, "none" or "unknown" mean nothing was inferred.
+function normalizeListed(value, allowed) {
+  const text = stripDecoration(value).toLowerCase();
+  if (!text || /^(none|unknown|n\/a|-)$/.test(text)) return [];
+  if (allowed.includes(text)) return [text];
+  return allowed.filter((entry) => new RegExp(`\\b${entry}\\b`).test(text) && entry !== 'none');
 }
 
 // Splits a model answer into the display body and its summary tail. Never throws; a missing or
@@ -88,6 +102,8 @@ function parseAnalysisSummary(text) {
       advice: fields.advice || null,
       open: /^(none|n\/a|-)?$/i.test(fields.open || '') ? null : fields.open,
       revised: /^(none|n\/a|-)?$/i.test(fields.revised || '') ? null : fields.revised,
+        purpose: normalizeListed(fields.purpose, PURPOSE_VALUES),
+        conditions: normalizeListed(fields.conditions, CONDITION_VALUES),
     },
   };
 }
@@ -125,10 +141,12 @@ function parseStoredSummary(json) {
 
 module.exports = {
   ADVICE_CATEGORIES,
+  PURPOSE_VALUES,
   SESSION_TYPES,
   normalizeSessionType,
   FALLBACK_CHARS,
   SUMMARY_TAIL_INSTRUCTION,
+  CONDITION_VALUES,
   describeAnalysisForHistory,
   parseAnalysisSummary,
   parseStoredSummary,

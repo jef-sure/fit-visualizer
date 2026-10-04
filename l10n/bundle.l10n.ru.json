@@ -231,5 +231,6 @@
   "Night": "Ночь",
   "New route": "Новый маршрут",
   "Session class": "Класс сессии",
-  "Data quality": "Качество данных"
+  "Data quality": "Качество данных",
+  "Fields marked below are the AI’s inference from this ride’s data — edit and save to correct them; a saved note becomes your own.": "Поля ниже — вывод ИИ из данных этой поездки — исправьте и сохраните; сохранённая заметка становится вашей."
 }

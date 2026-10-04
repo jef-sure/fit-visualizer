@@ -85,11 +85,34 @@ function buildSessionNotesBlock(notes) {
   return `**Athlete's Session Notes (user-declared for this ride):**\n${parts.length ? `${parts.join('; ')}.` : ''}${notes.note ? `${parts.length ? '\n' : ''}Note: ${notes.note}` : ''}\n${notes.purpose ? 'The declared purpose replaces any inferred training direction for this session. ' : ''}${notes.rpe ? 'RPE is the athlete\'s own measure of internal effort and may disagree with HR. ' : ''}${notes.conditions?.length ? 'Declared conditions are facts about this ride and may explain speed and HR changes. ' : ''}Do not ask again for what is declared here.`;
 }
 
+// The model's own inference from this ride's analysis (tail purpose/conditions). Shown to the
+// model as revisable and to the user as a form pre-fill; user-declared notes always win, field by
+// field: a purpose the user declared suppresses the inferred purpose, and declared conditions
+// suppress the inferred conditions, leaving the rest as suggestions.
+function buildInferredNotesBlock(summary, notes) {
+  const purpose = summary?.purpose?.length && summary.purpose[0] !== 'unknown' && !notes?.purpose ? summary.purpose[0] : null;
+  const conditions = (summary?.conditions || []).filter((condition) => condition !== 'none' && !notes?.conditions?.includes(condition));
+  if (!purpose && !conditions.length) return '';
+  return `**Session Notes (AI-inferred from this ride's data, revisable):**\n${[
+    purpose ? `purpose: ${label(purpose)} (inferred; the user may correct it on the activity page)` : null,
+    conditions.length ? `conditions: ${conditions.map(label).join(', ')} (inferred; the user may correct them)` : null,
+  ].filter(Boolean).join('; ')}.\nThese are inferences from data, not user statements; treat them as working assumptions, not as the athlete's declared intent.`;
+}
+
+// Pre-fill for the Session Notes form: what the model inferred for this ride.
+function inferNotesPreFill(summary) {
+  const purpose = summary?.purpose?.length && summary.purpose[0] !== 'unknown' ? summary.purpose[0] : null;
+  const conditions = (summary?.conditions || []).filter((condition) => condition !== 'none');
+  return purpose || conditions.length ? { purpose, conditions } : null;
+}
+
 module.exports = {
   CONDITIONS,
   FEELINGS,
   PURPOSES,
+  buildInferredNotesBlock,
   buildSessionNotesBlock,
+  inferNotesPreFill,
   describeNotesShort,
   normalizeNotes,
   readActivityNotes,
