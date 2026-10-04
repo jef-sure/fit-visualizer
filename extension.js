@@ -242,7 +242,7 @@ function scheduleDerivedFeatureAutoRebuild() {
   if (derivedFeatureAutoRebuildStarted) return;
   derivedFeatureAutoRebuildStarted = true;
   setTimeout(() => {
-    rebuildDerivedFeatures({ silent: true }).catch(() => {
+    rebuildDerivedFeatures({ reason: 'auto' }).catch(() => {
       // A failed background rebuild leaves the lazy path in charge; nothing to report.
     });
   }, 1500);
@@ -263,14 +263,18 @@ function rebuildDerivedFeatures(options = {}) {
 }
 
 async function rebuildDerivedFeaturesNow({ silent = false, skipStaleCheck = false, reason } = {}) {
-  const dbPath = silent ? await resolveActiveDbPath() : (await resolveActiveDbPath() || await selectDatabaseFolder());
+  // The automatic rebuild after an update stays quiet when there is nothing to do, but when there
+  // is, it shows the same progress as the manual one: the user otherwise cannot tell whether the
+  // segments on screen are old or new.
+  const background = reason === 'auto';
+  const dbPath = silent || background ? await resolveActiveDbPath() : (await resolveActiveDbPath() || await selectDatabaseFolder());
   if (!dbPath) {
     return;
   }
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
-    if (silent && !skipStaleCheck && !needsDerivedFeatureRebuild(db)) {
+    if ((silent || background) && !skipStaleCheck && !needsDerivedFeatureRebuild(db)) {
       return;
     }
     // Routes are re-derived in chronological order so the earliest ride defines each route.
@@ -293,14 +297,10 @@ async function rebuildDerivedFeaturesNow({ silent = false, skipStaleCheck = fals
         await new Promise((resolve) => setImmediate(resolve));
       }
     };
-    if (silent) {
-      await rebuild();
-    } else {
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: 'FIT Visualizer: rebuilding derived features', cancellable: false },
-        (_progress, token) => rebuild((message) => { if (!token.isCancellationRequested) _progress.report({ message }); })
-      );
-    }
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'FIT Visualizer: rebuilding derived features', cancellable: false },
+      (_progress, token) => rebuild((message) => { if (!token.isCancellationRequested) _progress.report({ message }); })
+    );
     await persistDatabase(db, dbPath);
     if (!silent && reason !== 'indexing') {
       vscode.window.showInformationMessage(`Derived features rebuilt for ${ordered.length} activities.`);

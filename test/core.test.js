@@ -4447,10 +4447,12 @@ test('asking to record notes is suppressed when recent analyses already suggeste
   assert.ok(tail, 'the tail instruction encourages none');
 });
 
-test('a stale derived-feature version triggers one silent background rebuild, a fresh one does not', async () => {
+test('a stale derived-feature version triggers one background rebuild with progress, a fresh one does not', async () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /scheduleDerivedFeatureAutoRebuild\(\);/);
-  assert.match(source, /if \(silent && !skipStaleCheck && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
+  // The automatic rebuild skips quietly when fresh; when work is due it shows progress.
+  assert.match(source, /if \(\(silent \|\| background\) && !skipStaleCheck && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
+  assert.match(source, /reason: 'auto'/);
   assert.match(source, /WHERE features_version != \$\{FEATURES_VERSION\}/);
   assert.equal(require('../activity-features').FEATURES_VERSION, 5, 'the version bump is what makes existing caches stale');
 
