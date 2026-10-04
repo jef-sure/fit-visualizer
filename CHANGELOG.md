@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.20.0 - 2026-10-04
+
+### Upgrade Notes
+
+- Run **FIT: Rebuild Derived Features** once (the elevation consensus now includes rides in the opposite direction), then **FIT: Re-analyze Outdated Analyses** (analysis format 26). Re-indexing is only needed to restore the device ascent/descent figures (they were stored scaled by 1000 in earlier versions).
+
+### Added
+
+- **Route-stretch breakdown**: a long flat segment on a known route is broken at direction-effect and section boundaries, and each stretch's speed is compared with the median for that section in this riding direction, with a computed verdict ("speed follows the route; HR rises N bpm at route-typical speed", "slower than route-typical on km X-Y", …). A route-typical speed change is no longer presented as this ride's dynamics, and the prompt forbids listing its cause as an open question. Replaces the temporal-halves line for routed segments.
+- **Checkpoint verdicts**: checkpoint rows add the prior best time and the prior median HR, and one computed line states whether the ride was faster or slower at higher, similar or lower heart rate ("3:15 faster at HR 159 vs 139 — more effort, not evidence of efficiency").
+- **Reversed rides in the elevation consensus**: the route consensus is built from both directions (23 of 34 loop rides instead of 20); settling detection mirrors the profile so the ride's first minutes stay first. Ride 158 now gets its `ALT_SETTLING`.
+
+### Fixed
+
+- A device that wrote no ascent figure (stored 0/0) is no longer shown as a disagreeing source in the workout fields.
+- Session ascent/descent parsed in kilometres was stored without scaling (0.128 instead of 128 m); **FIT: Index All Files** restores the real figures.
+
+### Changed
+
+- The route profile block drops the per-section speed table (kept in the segment breakdown); it gains the rule not to ask about wind where a direction effect explains the stretch.
+- History rows: full summaries for the three latest only, the whole block is capped at 4500 characters by dropping whole oldest entries; routed rides drop the ascent line; `peak20` appears only for threshold/VO2max classes.
+- The SUMMARY tail asks for one question whose answer would change the advice — "usually none".
+- Candidate segment comparisons and the full previous-analysis text are omitted for rides with a GPS-confirmed route (or a stored summary).
+- Prompt size on the 39-ride database: mean 21.8k characters (was 24.7k).
+
 ## 0.19.1 - 2026-10-04
 
 ### Changed
