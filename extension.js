@@ -33,7 +33,7 @@ const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, loc
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
-const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
+const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readAssignment, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { CONDITIONS, FEELINGS, PURPOSES, inferNotesPreFill, readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
 const { computeDataQualityFlags } = require('./data-quality');
@@ -325,6 +325,14 @@ async function getRouteCard(dbPath, activityId) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
+    // A freshly formed route (for example after the longer-partial rule change) has no cached
+    // profile yet; compute it here rather than showing an empty card until something else does.
+    const changesBefore = totalChanges(db);
+    ensureRouteFeatures(db, readAssignment(db, activityId)?.routeId);
+    if (totalChanges(db) > changesBefore) {
+      // The computed profile is cached in the file, not just in this connection.
+      await persistDatabase(db, dbPath);
+    }
     const card = readRouteCard(db, activityId);
     if (!card) return null;
     const described = card.features ? describeRouteFeatures(card.features, card.relation === 'reversed' ? 'reversed' : 'same') : null;
@@ -338,11 +346,17 @@ async function getRouteCard(dbPath, activityId) {
       distStmt.free();
     }
     const coverageMatch = /(\d+)% of this track follows/.exec(card.relationDetail || '');
+    // Without a consensus profile (fewer than 5 rides on the route) the length still comes from
+    // the canonical signature, so a young route shows what is known instead of nothing.
+    const profileRidesNeeded = 5;
+    const profileReady = Boolean(card.features);
     return {
       routeId: card.routeId, name: card.name, note: card.note, rideCount: card.rideCount, relation: card.relation,
       relationDetail: card.relationDetail ?? null, rideDistanceKm, coveragePct: coverageMatch ? Number(coverageMatch[1]) : null,
-      lengthKm: card.features?.lengthKm ?? null, ascentM: card.features?.ascentM ?? null, descentM: card.features?.descentM ?? null,
+      lengthKm: card.features?.lengthKm ?? card.signatureLengthKm ?? null,
+      ascentM: card.features?.ascentM ?? null, descentM: card.features?.descentM ?? null,
       climbs: described?.climbs ?? [],
+      profilePending: !profileReady && card.rideCount < profileRidesNeeded ? profileRidesNeeded - card.rideCount : null,
     };
   } finally {
     db.close();

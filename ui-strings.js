@@ -67,6 +67,7 @@ const UI_STRINGS = {
   saveRoute: 'Save route',
   routeRides: '{0} rides on this route',
   routePartialLine: 'This ride: {0} km, a different and longer route of its own; {2}% of it follows this {1} km route. The facts below describe the {1} km route, not this ride.',
+  routeProfilePending: 'Ascent, descent and climbs appear after {0} more rides on this route; the length is from its GPS signature.',
   routeDirectionSame: 'this direction',
   routeDirectionReversed: 'opposite direction',
   routeDirectionPartial: 'part of the route',

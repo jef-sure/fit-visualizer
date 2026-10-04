@@ -489,6 +489,10 @@ function renderRouteCard(route, ui, mapId) {
     climb.fromKm, climb.toKm, climb.gainM, climb.avgGradePct));
   const climbLine = climbs.length
     ? `<div class="routeClimbs"><span class="routeClimbsLabel">${escapeHtml(ui.routeClimbs)}</span>${climbs.map((climb) => `<span class="routeClimbBadge">${escapeHtml(climb)}</span>`).join('')}</div>` : '';
+  // A young route (fewer than 5 rides) has no consensus profile yet: its card says so instead of
+  // silently missing the ascent/descent/climbs rows.
+  const profilePendingLine = route.profilePending
+    ? `<div class="routePartial">${escapeHtml(formatUi(ui.routeProfilePending, route.profilePending))}</div>` : '';
   return `<section class="chart manualData">
       <h2>${escapeHtml(ui.routeSection)}</h2>
       <div class="routeHead">
@@ -501,6 +505,7 @@ function renderRouteCard(route, ui, mapId) {
           ? `<div class="routePartial">${escapeHtml(route.relationDetail)}</div>` : ''}
       ${facts.length ? `<div class="routeFactsGrid">${facts.map((fact) => `<div class="metric"><div class="k">${escapeHtml(fact.k)}</div><div class="v">${escapeHtml(fact.v)}</div></div>`).join('')}</div>` : ''}
       ${climbLine}
+      ${profilePendingLine}
       <form id="${mapId}RouteForm" class="manualDataForm">
         <label>
           <span>${escapeHtml(ui.routeNameLabel)}</span>

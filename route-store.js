@@ -375,15 +375,17 @@ function setRouteName(db, routeId, name) {
 function readRouteCard(db, activityId) {
   const assignment = readAssignment(db, activityId);
   if (!assignment?.routeId) return null;
-  const stmt = db.prepare('SELECT id, name, note, ride_count, features_json FROM routes WHERE id = ?');
+  const stmt = db.prepare('SELECT id, name, note, ride_count, features_json, canonical_signature FROM routes WHERE id = ?');
   try {
     stmt.bind([assignment.routeId]);
     if (!stmt.step()) return null;
     const row = stmt.getAsObject();
     if (!(row.ride_count >= 2) && !row.note) return null;
     const features = safeJson(row.features_json)?.features || null;
+    const signature = safeJson(row.canonical_signature);
     return { routeId: row.id, name: row.name || '', note: row.note || '', rideCount: row.ride_count,
-      relation: assignment.relation, relationDetail: assignment.relationDetail || null, features };
+      relation: assignment.relation, relationDetail: assignment.relationDetail || null, features,
+      signatureLengthKm: Number.isFinite(Number(signature?.distanceKm)) ? Math.round(Number(signature.distanceKm) * 10) / 10 : null };
   } finally {
     stmt.free();
   }

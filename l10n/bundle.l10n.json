@@ -252,5 +252,6 @@
   "vPower n/a": "vPower n/a",
   "Estimated power here (≈{0} W) did not clear the checks for a comparable estimate (coverage, gravity share, or a capped/accelerating sample); heart rate is the quoted effort for this segment instead.": "Estimated power here (≈{0} W) did not clear the checks for a comparable estimate (coverage, gravity share, or a capped/accelerating sample); heart rate is the quoted effort for this segment instead.",
   "middle-tier model": "middle-tier model",
-  "This ride: {0} km, a different and longer route of its own; {2}% of it follows this {1} km route. The facts below describe the {1} km route, not this ride.": "This ride: {0} km, a different and longer route of its own; {2}% of it follows this {1} km route. The facts below describe the {1} km route, not this ride."
+  "This ride: {0} km, a different and longer route of its own; {2}% of it follows this {1} km route. The facts below describe the {1} km route, not this ride.": "This ride: {0} km, a different and longer route of its own; {2}% of it follows this {1} km route. The facts below describe the {1} km route, not this ride.",
+  "Ascent, descent and climbs appear after {0} more rides on this route; the length is from its GPS signature.": "Ascent, descent and climbs appear after {0} more rides on this route; the length is from its GPS signature."
 }
