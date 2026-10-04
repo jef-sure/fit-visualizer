@@ -210,6 +210,7 @@ const UI_STRINGS = {
   analyzeAgain: 'Analyze Again',
   reanalyze: 'Re-analyze',
   analyzing: 'Analyzing...',
+  analysisProgress: 'Analyzing this ride… this can take a couple of minutes. You can keep browsing other activities.',
   followUpChat: 'Follow-up Chat',
   followUpPlaceholder: 'Ask a follow-up question about this activity.',
   send: 'Send',

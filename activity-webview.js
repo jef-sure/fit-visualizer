@@ -233,6 +233,10 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
     .cmpA { font-weight:700; color:var(--accent); }
     .cmpB { font-weight:700; color: var(--vscode-charts-purple, #b88fce); }
     .compLegend { font-size:0.75rem; font-weight:normal; color:var(--muted); margin-left:6px; }
+    .spinner { display:inline-block; width:14px; height:14px; border:2px solid color-mix(in srgb, currentColor 30%, transparent); border-top-color:currentColor; border-radius:50%; animation:fitSpinner 0.8s linear infinite; vertical-align:-2px; }
+    @keyframes fitSpinner { to { transform: rotate(360deg); } }
+    .analysisProgress { display:none; align-items:center; gap:10px; padding:12px; color:var(--muted); font-size:0.95rem; }
+    .analysisProgress .spinner { width:18px; height:18px; color:var(--accent); }
   </style>
 </head>
 <body>
@@ -902,6 +906,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <div id="analysisContent" style="padding:12px;color:var(--muted);min-height:80px;line-height:1.5;">
         <p style="margin:0;">${escapeHtml(ui.loadingAnalysis)}</p>
       </div>
+      <div id="analysisProgress" class="analysisProgress"><span class="spinner"></span><span>${escapeHtml(ui.analysisProgress)}</span></div>
       <div id="analysisMeta" style="display:none;padding:0 12px 6px 12px;font-size:0.75rem;color:var(--muted);"></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <button id="analyzeBtn" style="margin-top:10px;padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.analyzeActivity)}</button>
@@ -1085,8 +1090,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           analysisMeta = msg.modelId ? { modelId: msg.modelId, analyzedAt: msg.analyzedAt || null } : null;
           showAnalysisText(msg.analysis);
           showAnalysisMeta();
-          analyzeBtn.disabled = false;
-          analyzeBtn.textContent = analyzeButtonLabel();
+          setAnalyzeBusy(false);
           const modelSel = document.getElementById('modelSel');
           if (modelSel && msg.modelId && Array.from(modelSel.options).some((option) => option.value === msg.modelId)) {
             modelSel.value = msg.modelId;
@@ -1096,12 +1100,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           hasAnalysis = false;
           analysisOutdated = false;
           analysisContent.innerHTML = '<p style="margin:0;color:var(--muted);">' + escapeHtml(ui.clickAnalyze) + '</p>';
-          analyzeBtn.disabled = false;
-          analyzeBtn.textContent = analyzeButtonLabel();
+          setAnalyzeBusy(false);
         } else if (msg.type === 'analysisError') {
           analysisContent.innerHTML = '<div style="color:#ff6b6b;">' + escapeHtml(formatMessage(ui.error, msg.error)) + '</div>';
-          analyzeBtn.disabled = false;
-          analyzeBtn.textContent = analyzeButtonLabel();
+          setAnalyzeBusy(false);
         } else if (msg.type === 'analysisChatState') {
           chatMessages = Array.isArray(msg.messages) ? msg.messages : [];
           renderChatMessages();
@@ -1325,14 +1327,23 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         updateSuggestion();
       }());
 
+      function setAnalyzeBusy(busy) {
+        if (!analyzeBtn) return;
+        analyzeBtn.disabled = busy;
+        analyzeBtn.innerHTML = busy
+          ? '<span class="spinner" style="color:var(--bg);border-top-color:var(--bg);"></span><span style="margin-left:8px;">' + escapeHtml(ui.analyzing) + '</span>'
+          : escapeHtml(analyzeButtonLabel());
+        const progress = document.getElementById('analysisProgress');
+        if (progress) progress.style.display = busy ? 'flex' : 'none';
+      }
+
       if (analyzeBtn) {
         analyzeBtn.addEventListener('click', () => {
           if (!window.currentActivityId || window.currentActivityId === 'null') {
             analysisContent.innerHTML = '<div style="color:#ff6b6b;">' + escapeHtml(formatMessage(ui.error, ui.noActivityLoaded)) + '</div>';
             return;
           }
-          analyzeBtn.disabled = true;
-          analyzeBtn.textContent = ui.analyzing;
+          setAnalyzeBusy(true);
           const modelSel = document.getElementById('modelSel');
           vscode.postMessage({ type: 'analyzeActivity', id: window.currentActivityId, force: hasAnalysis, modelId: modelSel ? modelSel.value : '' });
         });
