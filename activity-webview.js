@@ -143,7 +143,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
     .selLabel { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; }
     .actSelector {
       width: 100%;
-      border: 1px solid var(--border);
+      border: 1px solid var(--input-border);
       border-radius: 6px;
       padding: 5px 8px;
       background: var(--input-bg);
@@ -808,7 +808,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <button id="analyzeBtn" style="margin-top:10px;padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.analyzeActivity)}</button>
         <label style="display:flex;align-items:center;gap:6px;margin-top:10px;color:var(--muted);font-size:0.85rem;">
           <span>${escapeHtml(ui.analysisModelLabel)}</span>
-          <select id="modelSel" class="actSelector" style="width:auto;min-width:160px;">${modelOptions}</select>
+          <select id="modelSel" class="actSelector" style="width:auto;min-width:160px;border:1px solid var(--input-border);">${modelOptions}</select>
         </label>
       </div>
       ${comparisonBlock}
@@ -816,7 +816,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <h3 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--muted);">${escapeHtml(ui.followUpChat)}</h3>
         <div id="analysisChatMessages" style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--vscode-editor-background);"></div>
         <div style="display:flex;gap:8px;margin-top:8px;align-items:flex-start;">
-          <textarea id="analysisChatInput" rows="3" placeholder="${escapeHtml(ui.followUpPlaceholder)}" style="flex:1;min-height:62px;resize:vertical;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--input-bg);color:var(--input-fg);"></textarea>
+          <textarea id="analysisChatInput" rows="3" placeholder="${escapeHtml(ui.followUpPlaceholder)}" style="flex:1;min-height:62px;resize:vertical;border:1px solid var(--input-border);border-radius:6px;padding:8px;background:var(--input-bg);color:var(--input-fg);"></textarea>
           <button id="analysisChatSendBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.send)}</button>
         </div>
         <div id="analysisChatStatus" style="margin-top:6px;font-size:0.85rem;color:var(--muted);"></div>
@@ -2043,6 +2043,10 @@ function sharedCss() {
       --hr-zone-max: #e53935;
       --grid: color-mix(in srgb, var(--vscode-editor-foreground) 18%, transparent);
       --border: color-mix(in srgb, var(--vscode-editor-foreground) 20%, transparent);
+      /* Form controls need a clearer edge than --border, especially on dark themes where a
+         20% border disappears against the input background. Prefer the theme's own input
+         border token and fall back to a stronger foreground mix. */
+      --input-border: var(--vscode-input-border, color-mix(in srgb, var(--vscode-input-foreground) 40%, transparent));
       --input-bg: var(--vscode-input-background);
       --input-fg: var(--vscode-input-foreground);
     }
@@ -2123,7 +2127,7 @@ function sharedCss() {
     .segmentLegend { display:flex; gap:8px; flex-wrap:wrap; align-items:center; color:var(--muted); font-size:0.78rem; }
     .segmentLegendItem { display:inline-flex; align-items:center; gap:4px; }
     .segmentLegendItem i { width:10px; height:10px; border-radius:2px; display:inline-block; }
-    .mapControls select { border:1px solid var(--border); border-radius:6px; padding:4px 8px; background:var(--input-bg); color:var(--input-fg); font-size:0.9rem; }
+    .mapControls select { border:1px solid var(--input-border); border-radius:6px; padding:4px 8px; background:var(--input-bg); color:var(--input-fg); font-size:0.9rem; }
     #fitMap, #fitMapComp { height:var(--map-height,clamp(320px,52vh,760px)); border:1px solid var(--border); border-radius:10px; overflow:hidden; background:color-mix(in srgb,var(--card) 65%,var(--bg)); }
     .mapHint { color:var(--muted); font-size:0.85rem; }
     .mapZoomHint { position:absolute; inset:0; z-index:1200; display:flex; align-items:center; justify-content:center; pointer-events:none; opacity:0; transition:opacity 140ms ease; background:color-mix(in srgb,var(--bg) 55%,transparent); color:var(--ink); font-size:1.05rem; font-weight:700; letter-spacing:0.03em; }
@@ -2133,9 +2137,20 @@ function sharedCss() {
     .chipInfo { }
     .manualDataForm { display:flex; align-items:end; gap:12px; flex-wrap:wrap; }
     .manualDataForm label { display:grid; gap:4px; color:var(--muted); font-size:0.82rem; }
-    .manualDataForm input { width:150px; border:1px solid var(--border); border-radius:6px; padding:6px 8px; background:var(--input-bg); color:var(--input-fg); }
-    .manualDataForm textarea { border:1px solid var(--border); border-radius:6px; padding:6px 8px; background:var(--input-bg); color:var(--input-fg); font:inherit; resize:vertical; }
-    .manualDataForm select { width:150px; border:1px solid var(--border); border-radius:6px; padding:6px 8px; background:var(--input-bg); color:var(--input-fg); }
+    .manualDataForm input { width:150px; border:1px solid var(--input-border); border-radius:6px; padding:6px 8px; background:var(--input-bg); color:var(--input-fg); }
+    .manualDataForm textarea { border:1px solid var(--input-border); border-radius:6px; padding:6px 8px; background:var(--input-bg); color:var(--input-fg); font:inherit; resize:vertical; }
+    .manualDataForm select { width:150px; border:1px solid var(--input-border); border-radius:6px; padding:6px 8px; background:var(--input-bg); color:var(--input-fg); }
+    /* A single consistent focus treatment for every editable control: the accent edge is the
+       one cue that stays legible on both light and dark themes. */
+    input:not([type=checkbox]):focus, input[type=checkbox]:focus, textarea:focus, select:focus {
+      border-color: var(--accent);
+      outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+      outline-offset: 0;
+    }
+    input:not([type=checkbox]):hover, textarea:hover, select:hover {
+      border-color: color-mix(in srgb, var(--input-border) 55%, var(--accent));
+    }
+    input[type=checkbox] { accent-color: var(--accent); }
     .manualDataForm button { border:0; border-radius:6px; padding:7px 14px; background:var(--accent); color:var(--bg); font-weight:700; cursor:pointer; }
     .manualDataStatus { color:var(--muted); font-size:0.82rem; align-self:center; }
     .manualDataStatus.error { color:var(--vscode-errorForeground); }

@@ -4990,3 +4990,19 @@ test('every script block of the generated activity page parses', () => {
   // A syntax error inside the template literal is invisible to `node --check`; compile each block.
   for (const block of blocks) assert.doesNotThrow(() => new Function(block));
 });
+
+test('form controls use a dedicated input border and a shared focus style', () => {
+  const { renderActivityBrowserHtml } = loadActivityWebviewForTest();
+  const webview = { asWebviewUri: (uri) => ({ toString: () => uri.toString() }), cspSource: 'test-csp' };
+  const extensionUri = { fsPath: '/tmp' };
+  const activities = [{ id: 1, file_name: 'a.fit', start_time: '2026-09-01T10:00:00Z', sport: 'cycling', total_distance_km: 20, total_timer_s: 3600 }];
+  const html = renderActivityBrowserHtml(webview, extensionUri, activities, 1, { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] }, null, null, {}, {}, { text: 'x', version: 30, modelId: 'm' }, [], null, {}, null, [], 30, [], false, null, [], null, null, null);
+  assert.match(html, /--input-border: var\(--vscode-input-border/);
+  // Text inputs, selects and textareas take the stronger border, not the faint --border.
+  assert.match(html, /\.manualDataForm input \{ [^}]*var\(--input-border\)/);
+  assert.match(html, /\.manualDataForm select \{ [^}]*var\(--input-border\)/);
+  assert.match(html, /\.manualDataForm textarea \{ [^}]*var\(--input-border\)/);
+  assert.match(html, /\.actSelector \{[\s\S]*?var\(--input-border\)/);
+  assert.match(html, /input:not\(\[type=checkbox\]\):focus, input\[type=checkbox\]:focus, textarea:focus, select:focus/);
+  assert.match(html, /input\[type=checkbox\] \{ accent-color: var\(--accent\); \}/);
+});
