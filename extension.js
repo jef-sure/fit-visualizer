@@ -33,7 +33,7 @@ const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, loc
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
-const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readAssignment, readRouteAssignments, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
+const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { CONDITIONS, FEELINGS, PURPOSES, inferNotesPreFill, readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
 const { computeDataQualityFlags } = require('./data-quality');
@@ -1048,7 +1048,6 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     const analysisChat = selId ? await getAnalysisChatFromDb(dbPath, selId) : [];
     const comparisons = selId ? await getActivityComparisonsForActivity(dbPath, selId) : [];
     const routeCard = selId ? await getRouteCard(dbPath, selId) : null;
-    const routeUi = selId ? await getRouteUiData(dbPath, selId) : null;
     // The Session Notes form pre-fills with what the model inferred for this ride; fields the
     // user has already declared are merged field by field in the webview.
     if (data) data.inferredNotes = inferNotesPreFill(data.inferredNotes);
@@ -1067,7 +1066,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     );
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard, chips.qualityFlags, context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null, routeUi, modelPicker
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard, chips.qualityFlags, context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null, modelPicker
     );
     translationJustGenerated = false;
     if (selId) {
@@ -3263,72 +3262,6 @@ function buildRouteContext(currentData, activities, selected, routeNote = null) 
     climbLine,
     note: `Route identity from GPS geometry (${routeInfo.relation === 'reversed' ? 'ridden in the opposite direction to the route\'s first ride; compared only with rides in this direction' : 'same direction as the route\'s first ride'}); ${priorSameRoute.length} earlier rides in this direction in the analysis window. Checkpoint medians are descriptive splits of prior rides, not controlled time trials.`,
   };
-}
-
-// Checkpoint splits, the per-section route profile and the final-climb history for the Route
-// section on the activity page. The current ride's figures come from its stored features; prior
-// rides are the same-direction rides on the same route, oldest first.
-async function getRouteUiData(dbPath, activityId) {
-  const SQL = await getSqlJs();
-  const db = await openDatabase(SQL, dbPath);
-  try {
-    const assignment = readAssignment(db, activityId);
-    if (!assignment?.routeId || !['same', 'reversed'].includes(assignment.relation)) return null;
-    const { routeId, relation } = assignment;
-
-    const currentRow = db.exec('SELECT checkpoints_json, segments_json FROM activity_features WHERE activity_id = ?', [activityId])[0]?.values?.[0];
-    const currentCheckpoints = currentRow ? safeParseJson(currentRow[0], []) : [];
-    const currentSegments = currentRow ? safeParseJson(currentRow[1], []) : [];
-
-    // Prior rides are those before this one, in the same direction, oldest first — the same set
-    // the prompt compares against. Checkpoints use the latest five of them (as the UI says);
-    // the climb chart shows all of them.
-    const priorValues = db.exec(`
-      SELECT af.checkpoints_json, af.segments_json, a.start_time
-      FROM activity_routes ar
-      JOIN activity_features af ON af.activity_id = ar.activity_id
-      JOIN activities a ON a.id = ar.activity_id
-      WHERE ar.route_id = ? AND ar.relation LIKE ? AND ar.activity_id != ?
-        AND datetime(a.start_time) < (SELECT datetime(start_time) FROM activities WHERE id = ?)
-      ORDER BY datetime(a.start_time) ASC`, [routeId, `${relation}%`, activityId, activityId])[0]?.values || [];
-    const prior = priorValues.map((row) => ({
-      checkpoints: safeParseJson(row[0], []),
-      segments: safeParseJson(row[1], []),
-      startTime: row[2],
-    }));
-
-    const summary = summarizeCheckpoints(currentCheckpoints, prior.slice(-5));
-    const checkpoints = summary.filter((mark) => mark.priorRides > 0).slice(0, 10).map((mark) => ({
-      km: mark.km, elapsedS: mark.elapsedS, priorMedianS: mark.priorMedianS,
-      priorBestS: mark.priorBestS, priorRides: mark.priorRides,
-    }));
-
-    const described = describeRouteFeatures(ensureRouteFeatures(db, routeId), relation);
-    const sections = (described?.rows || []).map((row) => ({
-      fromKm: row.fromKm, toKm: row.toKm, gradePct: row.gradePct, speedKmh: row.ownKmh,
-    }));
-
-    // The final climb's time across prior same-direction rides, matched by start distance, for the
-    // mini-chart. The current ride is appended at its own date.
-    const finalClimb = [...currentSegments].reverse().find((segment) => segment.type === 'climb' && segment.elevGainM >= 25);
-    const finalClimbHistory = [];
-    if (finalClimb) {
-      const start = finalClimb.startDistanceKm;
-      const rows = [];
-      for (const ride of prior) {
-        const climb = (ride.segments || []).find((segment) => segment.type === 'climb'
-          && start != null && segment.startDistanceKm != null && Math.abs(segment.startDistanceKm - start) < 1.5);
-        if (climb) rows.push({ date: String(ride.startTime).slice(0, 10), durationS: climb.durationS });
-      }
-      rows.push({ date: 'current', durationS: finalClimb.durationS });
-      rows.sort((a, b) => (a.date === 'current' ? 1 : b.date === 'current' ? -1 : a.date.localeCompare(b.date)));
-      finalClimbHistory.push(...rows);
-    }
-
-    return { relation, checkpoints, sections, finalClimbHistory, priorRideCount: prior.length };
-  } finally {
-    db.close();
-  }
 }
 
 async function storeAnalysisInDb(dbPath, activityId, analysis, summary = null, modelId = null) {

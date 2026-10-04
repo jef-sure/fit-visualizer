@@ -189,7 +189,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, needsDerivedFeatureRebuild, getRouteUiData, enqueueLlmTask, awaitDerivedFeatureRebuild, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, awaitDerivedFeatureRebuild, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -4729,40 +4729,17 @@ test('activity list filters by route and persists the selected route (D3)', () =
   assert.match(filtered, /setRouteFilter/);
 });
 
-test('route section renders checkpoint splits, section speeds and the climb history chart (D2)', () => {
+test('the route section shows facts and the name/note form, not checkpoint tables or a climb chart', () => {
   const { renderActivityContentHtml } = loadActivityWebviewForTest();
-  const records = straightGpsRecords(4, 18);
-  const routeCard = {
-    routeId: 1, name: 'Loop', note: '', rideCount: 6, relation: 'same',
-    lengthKm: 33, ascentM: 110, descentM: 110, climbs: [{ fromKm: 28, toKm: 32, gainM: 90, avgGradePct: 4.5 }],
-  };
-  const routeUi = {
-    relation: 'same',
-    checkpoints: [
-      { km: 10, elapsedS: 1500, priorMedianS: 1560, priorBestS: 1460, priorRides: 5 },
-      { km: 20, elapsedS: 3060, priorMedianS: 3200, priorBestS: 3010, priorRides: 5 },
-    ],
-    sections: [{ fromKm: 0, toKm: 5, gradePct: 0.3, speedKmh: 27.5 }, { fromKm: 5, toKm: 10, gradePct: 1.2, speedKmh: 24.1 }],
-    finalClimbHistory: [
-      { date: '2026-08-01', durationS: 540 },
-      { date: '2026-08-15', durationS: 520 },
-      { date: 'current', durationS: 510 },
-    ],
-    priorRideCount: 5,
-  };
-  const html = renderActivityContentHtml({}, {}, { records, sessions: [], laps: [] }, null, 'n', false, null, {},
-    null, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 28, [], null, false, 'osm', routeCard, [], routeUi);
-  assert.match(html, /Checkpoints vs the median of the latest 5 same-direction rides/);
-  assert.match(html, /25:00/); // 1500 s this ride
-  assert.match(html, /26:00/); // 1560 s median
-  assert.match(html, /Typical speed by section/);
-  assert.match(html, /27\.5 km\/h/);
-  assert.match(html, /Final climb time by ride/);
-  assert.match(html, /<polyline class="lineA"/);
-  assert.match(html, /now/); // the current ride is labelled
+  const routeCard = { routeId: 1, name: 'Loop', note: '', rideCount: 6, relation: 'same', lengthKm: 33, ascentM: 110, descentM: 110, climbs: [{ fromKm: 28, toKm: 32, gainM: 90, avgGradePct: 4.5 }] };
+  const html = renderActivityContentHtml({}, {}, { records: straightGpsRecords(4, 18), sessions: [], laps: [] }, null, 'n', false, null, {},
+    null, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 28, [], null, false, 'osm', routeCard, [], null);
+  assert.match(html, /6 rides on this route/);
+  assert.match(html, /id="[^"]*RouteForm"/);
+  assert.doesNotMatch(html, /Checkpoints vs the median|Typical speed by section|Final climb time by ride/);
 });
 
-test('activity_features stores checkpoints for the route UI', async () => {
+test('activity_features keeps a checkpoints column for the prompt comparisons', async () => {
   const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
   const db = new SQL.Database();
   try {
@@ -4939,7 +4916,7 @@ test('analysis card dropdown shows the model that answered and only prepares the
   const base = { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] };
   const modelPicker = { models: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna' }, { id: 'claude-fable-5.1', name: 'Claude Fable 5.1' }], defaultName: 'GPT-6 Luna' };
   const render = (analysis) => renderActivityContentHtml({}, {}, { ...base }, null, 'n', false, null, {}, analysis,
-    [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm', null, [], null, modelPicker);
+    [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm', null, [], modelPicker);
 
   // The model that produced the displayed analysis is preselected, and the default entry names the real default model.
   const used = render({ text: 'Body', version: 30, modelId: 'claude-fable-5.1', analyzedAt: '2026-10-04T09:00:00.000Z' });
@@ -4960,7 +4937,7 @@ test('analysis card dropdown shows the model that answered and only prepares the
 test('the page formatMessage really substitutes placeholders (it sits inside a template literal)', () => {
   const { renderActivityContentHtml } = loadActivityWebviewForTest();
   const html = renderActivityContentHtml({}, {}, { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] }, null, 'n', false, null, {},
-    { text: 'x', version: 30, modelId: 'm' }, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm', null, [], null, null);
+    { text: 'x', version: 30, modelId: 'm' }, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm', null, [], null);
   // Take the function exactly as the browser receives it and run it.
   const source = /function formatMessage\(template\) \{[\s\S]*?\n      \}/.exec(html)?.[0];
   assert.ok(source, 'formatMessage is present in the page script');
@@ -4986,7 +4963,7 @@ test('every script block of the generated activity page parses', () => {
   const { renderActivityContentHtml } = loadActivityWebviewForTest();
   const html = renderActivityContentHtml({}, {}, { records: straightGpsRecords(30, 20), sessions: [{ sport: 'cycling' }], laps: [] }, null, 'n', false, null, {},
     { text: 'x', version: 30, modelId: 'm' }, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm',
-    { routeId: 1, name: 'Loop', note: '', rideCount: 3, relation: 'same' }, [], null, { models: [{ id: 'm', name: 'M' }], defaultName: 'M' });
+    { routeId: 1, name: 'Loop', note: '', rideCount: 3, relation: 'same' }, [], { models: [{ id: 'm', name: 'M' }], defaultName: 'M' });
   const blocks = [...html.matchAll(/<script nonce="n">([\s\S]*?)<\/script>/g)].map((match) => match[1]);
   assert.ok(blocks.length >= 1);
   // A syntax error inside the template literal is invisible to `node --check`; compile each block.
@@ -4998,7 +4975,7 @@ test('form controls use a dedicated input border and a shared focus style', () =
   const webview = { asWebviewUri: (uri) => ({ toString: () => uri.toString() }), cspSource: 'test-csp' };
   const extensionUri = { fsPath: '/tmp' };
   const activities = [{ id: 1, file_name: 'a.fit', start_time: '2026-09-01T10:00:00Z', sport: 'cycling', total_distance_km: 20, total_timer_s: 3600 }];
-  const html = renderActivityBrowserHtml(webview, extensionUri, activities, 1, { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] }, null, null, {}, {}, { text: 'x', version: 30, modelId: 'm' }, [], null, {}, null, [], 30, [], false, null, [], null, null, null);
+  const html = renderActivityBrowserHtml(webview, extensionUri, activities, 1, { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] }, null, null, {}, {}, { text: 'x', version: 30, modelId: 'm' }, [], null, {}, null, [], 30, [], false, null, [], null, null);
   assert.match(html, /--input-border: var\(--vscode-input-border/);
   // Text inputs, selects and textareas take the stronger border, not the faint --border.
   assert.match(html, /\.manualDataForm input \{ [^}]*var\(--input-border\)/);
@@ -5027,7 +5004,7 @@ test('the AI text renders markdown (headings, bold, lists) and still escapes HTM
 test('the generated page script carries the same markdown renderer the server uses', () => {
   const { renderActivityContentHtml } = loadActivityWebviewForTest();
   const html = renderActivityContentHtml({}, {}, { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] }, null, 'n', false, null, {},
-    { text: '### Title\n**bold**', version: 30, modelId: 'm' }, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm', null, [], null, null);
+    { text: '### Title\n**bold**', version: 30, modelId: 'm' }, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 30, [], null, false, 'osm', null, [], null);
   assert.match(html, /const renderMarkdown = \(text\) => \{/);
   // The page uses it for the analysis text and chat, not the old escaped pre-wrap.
   assert.match(html, /renderMarkdown\(text\)/);

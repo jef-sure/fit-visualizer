@@ -94,7 +94,7 @@ const renderMarkdown = (text) => {
   }).join('');
 };
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null, qualityFlags = [], routeFilter = null, routeUi = null, modelPicker = null) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null, qualityFlags = [], routeFilter = null, modelPicker = null) {
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
   const ui = localizeUi(translate);
   const glossary = localizeGlossary(translate);
@@ -172,7 +172,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles, routeCard, qualityFlags, routeUi, modelPicker)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles, routeCard, qualityFlags, modelPicker)
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -469,60 +469,7 @@ function renderSessionNotesCard(notes, ui, mapId, inferred = null) {
     </section>`;
 }
 
-// Checkpoint splits against the median of the latest same-direction rides, with the delta signed
-// and colored (negative = faster, green accent).
-function renderRouteCheckpoints(checkpoints, ui) {
-  if (!Array.isArray(checkpoints) || !checkpoints.length) return '';
-  const rows = checkpoints.map((mark) => {
-    const delta = mark.priorMedianS != null && mark.elapsedS != null
-      ? Math.round(mark.elapsedS - mark.priorMedianS) : null;
-    const deltaText = delta == null ? ''
-      : `<span style="color:${delta < 0 ? 'var(--accent)' : 'var(--muted)'}">${delta <= 0 ? '−' : '+'}${formatHms(Math.abs(delta))}</span>`;
-    return `<tr><td>${escapeHtml(mark.km)}</td><td>${mark.elapsedS != null ? formatHms(mark.elapsedS) : '—'}</td><td>${mark.priorMedianS != null ? formatHms(mark.priorMedianS) : '—'}</td><td>${mark.priorBestS != null ? formatHms(mark.priorBestS) : '—'}</td><td>${deltaText}</td></tr>`;
-  }).join('');
-  return `<h3 style="margin:14px 0 6px 0;font-size:0.95rem;color:var(--muted);">${escapeHtml(ui.routeCheckpoints)}</h3>
-    <table class="cmpTable"><thead><tr><th>${escapeHtml(ui.routeCheckpointColKm)}</th><th>${escapeHtml(ui.routeCheckpointColTime)}</th><th>${escapeHtml(ui.routeCheckpointColMedian)}</th><th>${escapeHtml(ui.routeCheckpointColBest)}</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
-}
-
-// Typical per-section speed for this riding direction, moved out of the AI prompt.
-function renderRouteSections(sections, ui) {
-  if (!Array.isArray(sections) || !sections.length) return '';
-  const rows = sections.map((row) => `<tr><td>${escapeHtml(formatUi(ui.routeSectionKm, row.fromKm, row.toKm))}</td><td>${row.gradePct != null ? escapeHtml(formatUi(ui.routeSectionGrade, Number(row.gradePct).toFixed(1))) : '—'}</td><td>${row.speedKmh != null ? `${Number(row.speedKmh).toFixed(1)} km/h` : '—'}</td></tr>`).join('');
-  return `<h3 style="margin:14px 0 6px 0;font-size:0.95rem;color:var(--muted);">${escapeHtml(ui.routeSections)}</h3>
-    <table class="cmpTable"><thead><tr><th>${escapeHtml(ui.routeCheckpointColKm)}</th><th>${escapeHtml(ui.routeSectionGradeHeader)}</th><th>${escapeHtml(ui.routeSectionSpeedHeader)}</th></tr></thead><tbody>${rows}</tbody></table>`;
-}
-
-// A compact line chart of the final climb's time across prior same-direction rides (and this one).
-function renderClimbHistoryChart(history, ui) {
-  if (!Array.isArray(history) || history.length < 2) return '';
-  const width = 560, height = 140, padLeft = 44, padRight = 12, padTop = 12, padBottom = 24;
-  const durations = history.map((row) => Number(row.durationS)).filter(Number.isFinite);
-  const max = Math.max(...durations, 1);
-  const plotW = width - padLeft - padRight;
-  const plotH = height - padTop - padBottom;
-  const step = plotW / Math.max(history.length - 1, 1);
-  const points = history.map((row, index) => ({
-    x: padLeft + index * step,
-    y: padTop + plotH - (Number(row.durationS) / max) * plotH,
-    row,
-  }));
-  const line = points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
-  const dots = points.map((p) => {
-    const current = p.row.date === 'current';
-    const fill = current ? 'var(--accent)' : 'var(--muted)';
-    return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${current ? 4 : 3}" fill="${fill}"><title>${escapeHtml(p.row.date)}: ${formatHms(p.row.durationS)}</title></circle>`;
-  }).join('');
-  const labels = points.map((p) => `<text class="tick" x="${p.x.toFixed(1)}" y="${height - 6}" text-anchor="middle">${escapeHtml(p.row.date === 'current' ? 'now' : p.row.date.slice(5))}</text>`).join('');
-  return `<h3 style="margin:14px 0 6px 0;font-size:0.95rem;color:var(--muted);">${escapeHtml(ui.routeFinalClimbHistory)}</h3>
-    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(ui.routeFinalClimbHistory)}" style="width:100%;height:140px;background:var(--vscode-editor-background);border:1px solid var(--border);border-radius:6px;">
-      <polyline class="lineA" points="${line}" />
-      ${dots}
-      <line class="axis" x1="${padLeft}" y1="${padTop + plotH}" x2="${width - padRight}" y2="${padTop + plotH}" />
-      ${labels}
-    </svg>`;
-}
-
-function renderRouteCard(route, ui, mapId, routeUi = null) {
+function renderRouteCard(route, ui, mapId) {
   const direction = route.relation === 'reversed' ? ui.routeDirectionReversed
     : route.relation === 'partial' ? ui.routeDirectionPartial : ui.routeDirectionSame;
   const facts = Number.isFinite(route.lengthKm)
@@ -532,9 +479,6 @@ function renderRouteCard(route, ui, mapId, routeUi = null) {
   return `<section class="chart manualData">
       <h2>${escapeHtml(ui.routeSection)}</h2>
       <div class="muted">${escapeHtml(formatUi(ui.routeRides, route.rideCount, direction))}${facts ? `<br>${escapeHtml(facts)}` : ''}${climbs ? `<br>${escapeHtml(climbs)}` : ''}</div>
-      ${routeUi ? renderRouteCheckpoints(routeUi.checkpoints, ui) : ''}
-      ${routeUi ? renderRouteSections(routeUi.sections, ui) : ''}
-      ${routeUi ? renderClimbHistoryChart(routeUi.finalClimbHistory, ui) : ''}
       <form id="${mapId}RouteForm" class="manualDataForm">
         <label>
           <span>${escapeHtml(ui.routeNameLabel)}</span>
@@ -551,7 +495,7 @@ function renderRouteCard(route, ui, mapId, routeUi = null) {
     </section>`;
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm', routeCard = null, qualityFlags = [], routeUi = null, modelPicker = null) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm', routeCard = null, qualityFlags = [], modelPicker = null) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -679,7 +623,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <div id="comparisonStatus" style="margin-top:6px;font-size:0.85rem;color:var(--muted);"></div>
       </div>` : '';
 
-  const routeCardHtml = routeCard && !isComparison ? renderRouteCard(routeCard, ui, mapId, routeUi) : '';
+  const routeCardHtml = routeCard && !isComparison ? renderRouteCard(routeCard, ui, mapId) : '';
   const notesCardHtml = isComparison ? '' : renderSessionNotesCard(fitData.sessionNotes, ui, mapId, fitData.inferredNotes);
 
   // The analysis-model picker. It shows the model that produced the analysis on screen (when it
