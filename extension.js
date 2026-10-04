@@ -114,6 +114,7 @@ let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
 const ANALYSIS_VERSION = 28;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
+const ROUTE_FILTER_STATE_KEY = 'fitVisualizer.routeFilter';
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
 const COMPARABLE_DISTANCE_MAX_RATIO = 1.25;
 
@@ -905,12 +906,16 @@ async function loadActivityListFromDb(dbPath) {
   const db = await openDatabase(SQL, dbPath);
   try {
     const stmt = db.prepare(`
-          SELECT id, file_name, start_time, sport, sub_sport,
-             total_distance_km, total_timer_s, total_elapsed_s,
-            COALESCE(manual_avg_hr, avg_hr) AS avg_hr,
-            COALESCE(manual_max_hr, max_hr) AS max_hr,
-            avg_speed_kmh, total_calories, record_count
-      FROM activities ORDER BY start_time DESC, imported_at DESC
+          SELECT a.id, a.file_name, a.start_time, a.sport, a.sub_sport,
+             a.total_distance_km, a.total_timer_s, a.total_elapsed_s,
+            COALESCE(a.manual_avg_hr, a.avg_hr) AS avg_hr,
+            COALESCE(a.manual_max_hr, a.max_hr) AS max_hr,
+            a.avg_speed_kmh, a.total_calories, a.record_count,
+            r.name AS route_name
+      FROM activities a
+      LEFT JOIN activity_routes ar ON ar.activity_id = a.id
+      LEFT JOIN routes r ON r.id = ar.route_id
+      ORDER BY a.start_time DESC, a.imported_at DESC
     `);
     const list = [];
     while (stmt.step()) { list.push(stmt.getAsObject()); }
@@ -996,7 +1001,7 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     );
     panel.webview.html = renderActivityBrowserHtml(
       panel.webview, context.extensionUri,
-      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard
+      activities, selId, data, selCompId, comp, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, ANALYSIS_VERSION, comparisons, translationJustGenerated, routeCard, [], context.workspaceState.get(ROUTE_FILTER_STATE_KEY) || null
     );
     translationJustGenerated = false;
     if (selId) {
@@ -1027,6 +1032,11 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     }
     if (msg.type === 'selectActivity') {
       await render(msg.id ? Number(msg.id) : null, msg.compId ? Number(msg.compId) : null);
+    } else if (msg.type === 'setRouteFilter') {
+      // The route filter is a pure client-side view preference; persist it so the next panel opens
+      // with the same filter. No re-render is needed — the webview already applied the change.
+      const filter = typeof msg.routeName === 'string' && msg.routeName.trim() ? msg.routeName.trim() : null;
+      await context.workspaceState.update(ROUTE_FILTER_STATE_KEY, filter);
     } else if (msg.type === 'generateTranslations') {
       const locale = String(vscode.env.language || '').replace(/_/g, '-');
       const language = displayLanguage(locale);

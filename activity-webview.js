@@ -34,7 +34,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
   getHrZoneIndex: getHeartRateZoneIndex,
 });
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null, qualityFlags = []) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null, qualityFlags = [], routeFilter = null) {
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
   const ui = localizeUi(translate);
   const glossary = localizeGlossary(translate);
@@ -44,18 +44,29 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   const hasData = fitData && Array.isArray(fitData.records) && fitData.records.length > 0;
   const hasComp = compData && Array.isArray(compData.records) && compData.records.length > 0;
 
-  const actOptions = activities.map((a) => {
+  // The route filter narrows both the activity selector and the comparison selector to rides on
+  // one route (by the route card name). Rides without a route assignment are hidden under a
+  // non-"all" filter.
+  const routeNames = [...new Set(activities.map((a) => (a.route_name ? String(a.route_name) : null)).filter(Boolean))].sort();
+  const activeRouteFilter = routeFilter && routeNames.includes(routeFilter) ? routeFilter : null;
+  const filterable = activeRouteFilter ? activities.filter((a) => String(a.route_name) === activeRouteFilter) : activities;
+  const routeOptions = [
+    `<option value="">${escapeHtml(ui.allRoutes)}</option>`,
+    ...routeNames.map((name) => `<option value="${escapeHtml(name)}"${name === activeRouteFilter ? ' selected' : ''}>${escapeHtml(name)}</option>`),
+  ].join('');
+
+  const actOptions = filterable.map((a) => {
     const label = escapeHtml(formatActivityLabel(a));
     const sel = Number(a.id) === Number(selectedId) ? ' selected' : '';
-    return `<option value="${escapeHtml(String(a.id))}"${sel}>${label}</option>`;
+    return `<option value="${escapeHtml(String(a.id))}" data-route="${escapeHtml(String(a.route_name || ''))}"${sel}>${label}</option>`;
   }).join('');
 
   const compOptions = [
-    `<option value="">- ${escapeHtml(ui.noComparison)} -</option>`,
-    ...activities.filter((a) => Number(a.id) !== Number(selectedId)).map((a) => {
+    `<option value="" data-route="">- ${escapeHtml(ui.noComparison)} -</option>`,
+    ...filterable.filter((a) => Number(a.id) !== Number(selectedId)).map((a) => {
       const label = escapeHtml(formatActivityLabel(a));
       const sel = Number(a.id) === Number(compId) ? ' selected' : '';
-      return `<option value="${escapeHtml(String(a.id))}"${sel}>${label}</option>`;
+      return `<option value="${escapeHtml(String(a.id))}" data-route="${escapeHtml(String(a.route_name || ''))}"${sel}>${label}</option>`;
     }),
   ].join('');
 
@@ -83,6 +94,32 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
           compId: document.getElementById('compSel').value || null,
         });
       }
+      // The route filter narrows both selectors client-side; the selected value is persisted so
+      // the next panel opens with the same filter.
+      function applyRouteFilter(name) {
+        const keep = (option) => option.dataset.route === (name || '');
+        const actSel = document.getElementById('actSel');
+        const compSel = document.getElementById('compSel');
+        let keepSelectedAct = false;
+        let keepSelectedComp = false;
+        for (const option of Array.from(actSel.options)) {
+          option.hidden = !keep(option);
+          if (option.selected && option.hidden) option.hidden = false;
+          if (option.selected && !option.hidden) keepSelectedAct = true;
+        }
+        for (const option of Array.from(compSel.options)) {
+          if (!option.value) { option.hidden = false; continue; }
+          option.hidden = !keep(option);
+          if (option.selected && option.hidden) option.hidden = false;
+          if (option.selected && !option.hidden) keepSelectedComp = true;
+        }
+        api.postMessage({ type: 'setRouteFilter', routeName: name || null });
+      }
+      const routeSel = document.getElementById('routeSel');
+      routeSel.addEventListener('change', () => {
+        applyRouteFilter(routeSel.value || '');
+        send();
+      });
       document.getElementById('actSel').addEventListener('change', send);
       document.getElementById('compSel').addEventListener('change', send);
     }());
@@ -153,6 +190,10 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
 </head>
 <body>
   <nav class="toolbar">
+    <div class="selectorGroup" style="flex:0 0 200px;min-width:180px;">
+      <label class="selLabel" for="routeSel">${escapeHtml(ui.routeFilter)}</label>
+      <select id="routeSel" class="actSelector">${routeOptions}</select>
+    </div>
     <div class="selectorGroup">
       <label class="selLabel" for="actSel">${escapeHtml(ui.activity)}</label>
       <select id="actSel" class="actSelector">${actOptions}</select>

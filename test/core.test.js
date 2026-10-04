@@ -155,7 +155,12 @@ function loadActivityWebviewForTest() {
   delete require.cache[modulePath];
   const originalLoad = Module._load;
   Module._load = function load(request, parent, isMain) {
-    if (request === 'vscode') return { env: { language: 'en' }, l10n: { t: (text) => text } };
+    if (request === 'vscode') return {
+      env: { language: 'en' },
+      l10n: { t: (text) => text },
+      workspace: { getConfiguration: () => ({ get: () => undefined }) },
+      Uri: { joinPath: (...parts) => ({ toString: () => parts.slice(1).join('/') }) },
+    };
     return originalLoad.call(this, request, parent, isMain);
   };
   try {
@@ -4687,4 +4692,28 @@ test('period block reports RPE against load when notes are present (E3)', () => 
   const { buildTrainingHistoryContext } = require('../analysis');
   const text = buildTrainingHistoryContext(context);
   assert.match(text, /RPE recorded for 3\/3 rides; median RPE 8 at median TRIMP 100; rides with RPE ≥ 8: 2 \(TRIMP 100, 120\)/);
+});
+
+test('activity list filters by route and persists the selected route (D3)', () => {
+  const { renderActivityBrowserHtml } = loadActivityWebviewForTest();
+  const activities = [
+    { id: 1, file_name: 'a.fit', start_time: '2026-09-01T10:00:00Z', sport: 'cycling', total_distance_km: 20, total_timer_s: 3600, route_name: 'Loop' },
+    { id: 2, file_name: 'b.fit', start_time: '2026-09-02T10:00:00Z', sport: 'cycling', total_distance_km: 21, total_timer_s: 3600, route_name: 'Loop' },
+    { id: 3, file_name: 'c.fit', start_time: '2026-09-03T10:00:00Z', sport: 'cycling', total_distance_km: 22, total_timer_s: 3600, route_name: null },
+  ];
+  const webview = { asWebviewUri: (uri) => ({ toString: () => uri.toString() }), cspSource: 'test-csp' };
+  const extensionUri = { fsPath: '/tmp' };
+  const render = (routeFilter) => renderActivityBrowserHtml(
+    webview, extensionUri, activities, 1, null, null, null, {}, {}, null, [], null, {}, null, 28, [], false, null, [], routeFilter
+  );
+  const html = render(null);
+  assert.match(html, /id="routeSel"/);
+  assert.match(html, /All routes/);
+  assert.match(html, /<option value="Loop"/);
+  // With a filter, only rides on that route remain in the activity selector.
+  const filtered = render('Loop');
+  assert.match(filtered, /<option value="1" data-route="Loop" selected>/);
+  assert.match(filtered, /<option value="2" data-route="Loop"/);
+  assert.doesNotMatch(filtered, /<option value="3"/); // the unrouted ride is filtered out
+  assert.match(filtered, /setRouteFilter/);
 });

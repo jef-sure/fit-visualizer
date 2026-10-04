@@ -10,6 +10,8 @@ const UI_STRINGS = {
   activity: 'Activity',
   compareWith: 'Compare with',
   noComparison: 'No comparison',
+  routeFilter: 'Route',
+  allRoutes: 'All routes',
   primary: 'primary',
   comparisonLegend: 'comparison',
   noDataForActivity: 'No data for this activity.',
