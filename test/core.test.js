@@ -4536,3 +4536,42 @@ test('analysis card shows the model signature and the format version', () => {
     { text: 'Analysis body', version: 27 }, [], null, UI_STRINGS, GLOSSARY, false, 'en', [], 27, [], null, false, 'osm', null, []);
   assert.match(bare, /let analysisMeta = null;/);
 });
+
+test('log retention compresses past-retention files and deletes only past 3x retention', async () => {
+  const { stripPromptFromLogFile, pruneLlmLogs } = require('../llm-log');
+  assert.deepEqual(stripPromptFromLogFile({ prompt: 'x', response: 'y', modelId: 'm' }), { response: 'y', modelId: 'm' });
+  assert.equal(stripPromptFromLogFile({ response: 'y' }), null); // already stripped
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fitviz-llm-log-'));
+  const day = 24 * 60 * 60 * 1000;
+  const write = (name, mtimeMs, obj) => {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, JSON.stringify(obj));
+    fs.utimesSync(file, new Date(mtimeMs), new Date(mtimeMs));
+  };
+  // Fresh file stays untouched.
+  write('fresh.json', Date.now(), { prompt: 'p', response: 'r' });
+  // Past retention but not past 3x: prompt is stripped, metrics survive.
+  write('old.json', Date.now() - 10 * day, { prompt: 'p', response: 'r', modelId: 'm', analysisVersion: 27, promptBlocks: [{ title: 'X', chars: 3 }] });
+  // Past 3x retention: deleted outright.
+  write('ancient.json', Date.now() - 40 * day, { prompt: 'p', response: 'r' });
+  // A chat log keeps its own (longer) retention window.
+  write('old-chat.json', Date.now() - 10 * day, { prompt: 'p', response: 'r' });
+
+  await pruneLlmLogs(dir, 5, 180);
+
+  const names = fs.readdirSync(dir).sort();
+  assert.deepEqual(names, ['fresh.json', 'old-chat.json', 'old.json']);
+  const fresh = JSON.parse(fs.readFileSync(path.join(dir, 'fresh.json'), 'utf8'));
+  assert.equal(fresh.prompt, 'p');
+  const old = JSON.parse(fs.readFileSync(path.join(dir, 'old.json'), 'utf8'));
+  assert.equal(old.prompt, undefined);
+  assert.equal(old.response, 'r');
+  assert.equal(old.modelId, 'm');
+  assert.equal(old.analysisVersion, 27);
+  assert.deepEqual(old.promptBlocks, [{ title: 'X', chars: 3 }]);
+  const chat = JSON.parse(fs.readFileSync(path.join(dir, 'old-chat.json'), 'utf8'));
+  assert.equal(chat.prompt, 'p');
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});

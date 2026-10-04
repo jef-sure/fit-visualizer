@@ -40,6 +40,7 @@ const { computeDataQualityFlags } = require('./data-quality');
 const { computeSegmentStretches, describeRouteFeatures } = require('./route-features');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling, mirrorConsensusProfile } = require('./altitude-quality');
 const { buildRouteSignature } = require('./route-match');
+const { pruneLlmLogs } = require('./llm-log');
 
 function safeParseJson(text, fallback) {
   try {
@@ -1987,30 +1988,7 @@ async function logLlmRequest(dbPath, entry) {
 
 // Conversations are rarer and more valuable for debugging than one-off analyses,
 // so they survive longer by default.
-async function pruneLlmLogs(logDir, analysisRetentionDays, chatRetentionDays) {
-  const analysisCutoff = analysisRetentionDays ? Date.now() - analysisRetentionDays * 24 * 60 * 60 * 1000 : null;
-  const chatCutoff = chatRetentionDays ? Date.now() - chatRetentionDays * 24 * 60 * 60 * 1000 : null;
-  try {
-    const names = await fs.readdir(logDir);
-    for (const name of names) {
-      if (!name.endsWith('.json')) {
-        continue;
-      }
-      const isConversationLog = name.endsWith('-chat.json') || name.endsWith('-comparison.json');
-      const cutoff = isConversationLog ? chatCutoff : analysisCutoff;
-      if (!cutoff) {
-        continue;
-      }
-      const filePath = path.join(logDir, name);
-      const stats = await fs.stat(filePath);
-      if (stats.mtimeMs < cutoff) {
-        await fs.unlink(filePath);
-      }
-    }
-  } catch {
-    // Log housekeeping is best effort.
-  }
-}
+// Defined in llm-log.js so tests can exercise the retention stages directly.
 
 async function reanalyzeOutdatedActivities() {
   const dbPath = await resolveActiveDbPath() || await selectDatabaseFolder();
