@@ -10,7 +10,12 @@ Open a `.fit` file from your bike computer or sports watch right in VS Code and 
 
 ## Upgrading
 
-Run **FIT: Re-analyze Outdated Analyses** after an update (analysis format 30). Derived features rebuild themselves in the background; re-indexing is not required. One-off re-indexing steps for specific old releases are noted in the changelog.
+Already using FIT Visualizer? After an update, refresh your saved AI analyses so they follow the new logic:
+
+1. Open the Command Palette (`Ctrl+Shift+P`).
+2. Run **FIT: Re-analyze Outdated Analyses** and confirm.
+
+That's the only step you need — indexing and derived-data rebuilds happen on their own. New users can skip this: it only matters once you have saved analyses.
 
 Re-indexing is local and does not change the original FIT files. Re-analysis is optional, requires GitHub Copilot, sends activity and discussion context to the model, and may consume your Copilot allowance.
 
