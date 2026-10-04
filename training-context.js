@@ -1,6 +1,7 @@
 const { asNumber, calculateRobustTrend, haversineKm } = require('./utils');
 const { computeHeartRateZones, calculatePeakHeartRates, PEAK_HEART_RATE_WINDOWS } = require('./heart-rate');
 const { localDate } = require('./activity-time');
+const { loadRhythm } = require('./trend-metrics');
 
 function compareSegmentStructures(currentSegments, priorSegments) {
   const current = (currentSegments || []).filter((segment) => segment.type !== 'stopped' && segment.durationS >= 60);
@@ -180,6 +181,51 @@ function computeMonotony(entries) {
   return { activeDays: loads.length, meanDailyTrimp: mean, monotony: mean / sd, strain: mean / sd * loads.reduce((sum, value) => sum + value, 0) };
 }
 
+// Part I, indicator 2 (lightweight): acute:chronic load rhythm from activity loads only, without
+// the full training-context pipeline. Mirrors buildTrainingContext's volume windows and monotony
+// so the route-card number equals the prompt number. `activities` entries need startTime, sport,
+// trimp and utcOffsetS.
+function computeLoadRhythm(activities, referenceTime, currentSport) {
+  const reference = new Date(referenceTime).getTime();
+  if (!Number.isFinite(reference)) return null;
+  const dated = (activities || []).filter((activity) => {
+    const time = new Date(activity.startTime).getTime();
+    return Number.isFinite(time) && time < reference && time >= reference - 90 * 86400000;
+  }).sort((left, right) => new Date(left.startTime) - new Date(right.startTime));
+  const aggregate = (days, previous = false) => {
+    const end = reference - (previous ? days : 0) * 86400000;
+    const start = end - days * 86400000;
+    const selected = dated.filter((activity) => {
+      const time = new Date(activity.startTime).getTime();
+      return time >= start && time < end;
+    });
+    return [...new Set(selected.map((activity) => activity.sport))].map((sport) => {
+      const rows = selected.filter((activity) => activity.sport === sport);
+      return { sport, activities: rows.length,
+        trimpSum: rows.reduce((sum, activity) => sum + (asNumber(activity.trimp) > 0 ? Number(activity.trimp) : 0), 0),
+        trimpActivities: rows.filter((activity) => asNumber(activity.trimp) > 0).length };
+    });
+  };
+  const weekNow = aggregate(7)[0];
+  const weekPrev = aggregate(7, true)[0];
+  const monthAvg = aggregate(28)[0];
+  const acute = weekNow?.trimpActivities ? weekNow.trimpSum : null;
+  const chronic = monthAvg?.trimpActivities && monthAvg.activities
+    ? (monthAvg.trimpSum / (28 / 7)) : null;
+  const prevRatioLow = Boolean(weekPrev?.trimpActivities) && chronic > 0 && weekPrev.trimpSum / chronic < 0.8;
+  const week = aggregate(7);
+  const weekLoads = week.find((row) => row.sport === currentSport);
+  const weekStart = reference - 7 * 86400000;
+  const monotony = computeMonotony((weekLoads ? dated.filter((activity) => {
+    const time = new Date(activity.startTime).getTime();
+    return activity.sport === currentSport && time >= weekStart && time < reference;
+  }) : []).map((activity) => ({
+    date: localDate(activity.startTime, activity.utcOffsetS), trimp: asNumber(activity.trimp),
+  })));
+  return (monotony?.monotony != null)
+    ? loadRhythm(acute, chronic, monotony.monotony, prevRatioLow) : null;
+}
+
 function attachActivityZones(activity, records, heartRateConfig) {
   return { ...activity,
     zones: Number.isFinite(heartRateConfig?.maxHeartRate)
@@ -187,4 +233,4 @@ function attachActivityZones(activity, records, heartRateConfig) {
     peakHr: calculatePeakHeartRates(records) };
 }
 
-module.exports = { attachActivityZones, buildTrainingContext, compareSegmentStructures };
+module.exports = { attachActivityZones, buildTrainingContext, compareSegmentStructures, computeLoadRhythm };

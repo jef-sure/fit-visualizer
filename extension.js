@@ -7,7 +7,7 @@ const { formatUi, localizeUi } = require('./ui-strings');
 const { buildCartesianGeometry, buildDistanceMarkers, buildTicks, formatTick, padRange, padYAxisRange } = require('./chart-geometry');
 const { computeElevationGainLoss, computeRouteDistanceKm, computeStats, extractGpsPoints, extractXYPoints } = require('./chart-data');
 const { buildSummary } = require('./activity-summary');
-const { attachActivityZones, buildTrainingContext } = require('./training-context');
+const { attachActivityZones, buildTrainingContext, computeLoadRhythm } = require('./training-context');
 const { buildGpsRoute: buildGpsRouteFromModule, buildLineChart: buildLineChartFromModule } = require('./chart-model');
 const { createChartSvgRenderer } = require('./chart-svg');
 const {
@@ -33,7 +33,7 @@ const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, loc
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
-const { loadRhythm, postClimbRecovery, routeEfficiency } = require('./trend-metrics');
+const { loadRhythm, computeRouteTrends } = require('./trend-metrics');
 const PRIOR_RIDES_FOR_TRENDS = 5;
 const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readAssignment, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
@@ -323,19 +323,85 @@ function needsDerivedFeatureRebuild(db) {
 }
 
 // Part I, UI side: the three computed indicators for the route card, same numbers as the prompt.
+// Unlike getTrainingContextFromDb (which the prompt needs), this reads cached checkpoints, segments
+// and load values instead of rebuilding every ride's feature pipeline, so switching activities
+// stays fast.
 async function getTrendsForCard(dbPath, activityId) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
-    const context = getTrainingContextFromDb(db, activityId);
-    const route = context?.routeContext;
-    if (!route && !context?.rhythm) return null;
-    return { ...route?.trends, rhythm: context?.rhythm ?? route?.trends?.rhythm ?? null };
+    return computeTrendsForCard(db, activityId);
   } catch {
     return null;
   } finally {
     db.close();
   }
+}
+
+function computeTrendsForCard(db, activityId) {
+  const readRows = (sql, params) => {
+    const statement = db.prepare(sql);
+    try {
+      statement.bind(params);
+      const rows = [];
+      while (statement.step()) rows.push(statement.getAsObject());
+      return rows;
+    } finally {
+      statement.free();
+    }
+  };
+  const selected = readRows('SELECT * FROM activities WHERE id = ?', [activityId])[0];
+  if (!selected?.start_time) return null;
+  // Load rhythm is route-independent and cheap: cached TRIMP (else the stored import-time value)
+  // for every earlier activity, without any record pipeline.
+  const loadRows = readRows(`
+    SELECT a.start_time, a.sport, a.utc_offset_s, CASE WHEN af.trimp > 0 THEN af.trimp ELSE a.trimp END AS trimp
+    FROM activities a
+    LEFT JOIN activity_features af ON af.activity_id = a.id
+    WHERE datetime(a.start_time) < datetime(?)`, [selected.start_time]);
+  const rhythm = computeLoadRhythm(loadRows.map((row) => ({
+    startTime: row.start_time, sport: row.sport, utcOffsetS: row.utc_offset_s, trimp: row.trimp,
+  })), selected.start_time, selected.sport);
+  // The efficiency/recovery indicators need a full same/reversed route; other rides show no route
+  // trends but can still show rhythm.
+  let trends = { efficiency: null, recovery: null };
+  const assignment = readAssignment(db, activityId);
+  const relation = assignment?.relation;
+  if (assignment?.routeId && ['same', 'reversed'].includes(relation)) {
+    const profile = getAthleteProfileFromDbConnection(db);
+    const settingsHash = settingsKey({ segmentation: getSegmentationOptions(), powerModel: getPowerModelOptions() });
+    const freshKey = (startTime) => featureCacheKey({
+      featuresVersion: FEATURES_VERSION, settingsHash,
+      hrProfile: attachRestingHeartRate(getProfileHeartRateConfig(db, startTime), profile),
+      athlete: profile,
+    });
+    // Cached checkpoints/segments are used only when the stored row matches the current inputs;
+    // a stale row recomputes just that one ride (the lazy path, without the full 90-day rebuild).
+    const readFeatures = (id, startTime) => {
+      let row = readRows('SELECT * FROM activity_features WHERE activity_id = ?', [id])[0] || null;
+      if (!isFeatureRowFresh(row, freshKey(startTime))) {
+        ensureFeaturesForActivity(db, id);
+        row = readRows('SELECT * FROM activity_features WHERE activity_id = ?', [id])[0] || null;
+      }
+      return {
+        segments: safeParseJson(row?.segments_json, []),
+        checkpoints: safeParseJson(row?.checkpoints_json, []),
+      };
+    };
+    const current = readFeatures(activityId, selected.start_time);
+    // Prior rides of the same route and direction, oldest first. The stored relation keeps its
+    // match detail (e.g. "same (wind-assisted)"), so compare its head.
+    const priorRows = readRows(`
+      SELECT ar.activity_id, a.start_time
+      FROM activity_routes ar
+      JOIN activities a ON a.id = ar.activity_id
+      WHERE ar.route_id = ? AND ar.relation LIKE (? || '%') AND datetime(a.start_time) < datetime(?)
+      ORDER BY datetime(a.start_time) ASC, a.id ASC`, [assignment.routeId, relation, selected.start_time]);
+    const priorSameRoute = priorRows.map((row) => readFeatures(row.activity_id, row.start_time));
+    trends = computeRouteTrends(current.checkpoints, current.segments, priorSameRoute, PRIOR_RIDES_FOR_TRENDS);
+  }
+  if (!trends.efficiency && !trends.recovery && !rhythm) return null;
+  return { ...trends, rhythm };
 }
 
 async function getRouteCard(dbPath, activityId) {
@@ -3345,43 +3411,7 @@ function buildRouteContext(currentData, activities, selected, routeNote = null) 
 
   // Part I: three computed trend indicators. Only where comparable data exists; nulls mean the
   // indicator is not shown and never reaches the prompt.
-  // Marks sit at each ride's own segment boundaries, so exact km values differ ride to ride;
-  // place identity is approximated by km within 150 m (route length differences are tiny here).
-  // The indicator uses the current ride's LAST mark that at least PRIOR_RIDES priors reach.
-  const priorMarkCounts = new Map();
-  for (const activity of priorSameRoute) {
-    for (const cp of activity.checkpoints || []) {
-      const bucket = Math.round(cp.km * 2) / 2;
-      priorMarkCounts.set(bucket, (priorMarkCounts.get(bucket) || 0) + 1);
-    }
-  }
-  const nearMark = (km) => {
-    const bucket = Math.round(km * 2) / 2;
-    return priorMarkCounts.get(bucket) || 0;
-  };
-  const currentMarks = (currentData.checkpoints || []).filter((cp) => nearMark(cp.km) >= PRIOR_RIDES_FOR_TRENDS);
-  const lastMark = currentMarks.at(-1) || null;
-  const markKm = lastMark ? lastMark.km : null;
-  const pickPrior = (checkpoints) => (checkpoints || [])
-    .reduce((best, cp) => (Number.isFinite(cp.km) && Math.abs(cp.km - markKm) <= 0.2
-      && (!best || Math.abs(cp.km - markKm) < Math.abs(best.km - markKm)) ? cp : best), null);
-  const trends = {
-    efficiency: lastMark
-      ? routeEfficiency(lastMark,
-          priorSameRoute.map((activity) => pickPrior(activity.checkpoints)).filter(Boolean))
-      : null,
-    recovery: (() => {
-      const climbs = (currentData.segments || []).filter((segment) => segment.type === 'climb');
-      const finalClimb = climbs.at(-1);
-      if (!finalClimb || !(finalClimb.durationS >= 180) || finalClimb.postClimbHrDropBpm == null) return null;
-      const priorDrops = priorSameRoute
-        .map((activity) => (activity.segments || [])
-          .filter((segment) => segment.type === 'climb' && segment.durationS >= 180)
-          .map((segment) => segment.postClimbHrDropBpm))
-        .flat().filter((drop) => Number.isFinite(drop));
-      return postClimbRecovery(finalClimb.postClimbHrDropBpm, priorDrops, finalClimb.avgHr);
-    })(),
-  };
+  const trends = computeRouteTrends(currentData.checkpoints, currentData.segments, priorSameRoute, PRIOR_RIDES_FOR_TRENDS);
   const regular = pattern && pattern.slowerCount / pattern.priorCount >= 0.6;
   const patternLine = pattern
     ? `Route-typical pattern (${pattern.priorCount} earlier rides): after km ${pattern.splitKm} the average speed is at least 3% below the first part in ${pattern.slowerCount} of ${pattern.priorCount} rides (median ${pattern.medianChangePct >= 0 ? '+' : ''}${pattern.medianChangePct}%). This ride: ${pattern.currentChangePct >= 0 ? '+' : ''}${pattern.currentChangePct}% (a bigger drop than in ${pattern.currentDropsMoreThanCount} of ${pattern.priorCount} earlier rides).${regular ? ' A pattern this regular belongs to the route, not to the day: discuss only how this ride differs from it.' : ''}`

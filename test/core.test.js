@@ -4077,6 +4077,44 @@ test('trend indicators compute verdicts at their thresholds and hide without com
   assert.ok(phrases.every((line) => !/health|fitness/i.test(line)));
 });
 
+test('the route-card trend pair matches the prompt indicators and hides without enough priors', () => {
+  const { computeRouteTrends } = require('../trend-metrics');
+  const priors = [26, 27, 25, 28, 26, 27].map((first) => ({
+    checkpoints: splitCheckpoints(first, first - 4),
+    segments: [],
+  }));
+  const current = splitCheckpoints(27, 22);
+  const trends = computeRouteTrends(current, [], priors);
+  assert.ok(trends.efficiency, 'aligned grid marks yield a shared checkpoint and an efficiency verdict');
+  assert.equal(trends.recovery, null, 'no climb segments -> no recovery indicator');
+  // Fewer than 5 priors hide the efficiency indicator even when the mark aligns.
+  assert.equal(computeRouteTrends(current, [], priors.slice(0, 4)).efficiency, null);
+  assert.deepEqual(computeRouteTrends(current, [], []), { efficiency: null, recovery: null });
+});
+
+test('the route-card rhythm is derived from the same load windows as the prompt', () => {
+  const { buildTrainingContext, computeLoadRhythm } = require('../training-context');
+  const { loadRhythm } = require('../trend-metrics');
+  const now = Date.now();
+  const day = 86400000;
+  const mk = (daysAgo, trimp) => ({
+    activityId: daysAgo, startTime: new Date(now - daysAgo * day).toISOString(), sport: 'cycling',
+    trimp, utcOffsetS: 0, durationS: 3600, distanceKm: 40, segments: [], zones: null, peakHr: [],
+    notes: null, sessionClass: null,
+  });
+  const acts = [mk(1, 100), mk(2, 120), mk(3, 130), mk(5, 110), mk(6, 90), mk(10, 80), mk(15, 70), mk(20, 60), mk(25, 50), mk(30, 40)];
+  const referenceTime = new Date(now).toISOString();
+  const ctx = buildTrainingContext(acts, referenceTime, 'cycling', []);
+  const weekNow = ctx.volume[0].sports[0];
+  const weekPrev = ctx.volume[1].sports[0];
+  const monthAvg = ctx.volume[2].sports[0];
+  const acute = weekNow?.trimpActivities ? weekNow.trimpSum : null;
+  const chronic = monthAvg?.trimpActivities && monthAvg.activities ? monthAvg.trimpSum / (28 / 7) : null;
+  const prevRatioLow = Boolean(weekPrev?.trimpActivities) && chronic > 0 && weekPrev.trimpSum / chronic < 0.8;
+  const expected = ctx.monotony?.monotony != null ? loadRhythm(acute, chronic, ctx.monotony.monotony, prevRatioLow) : null;
+  assert.deepEqual(computeLoadRhythm(acts, referenceTime, 'cycling'), expected);
+});
+
 test('route-typical second-half pattern separates the route from the day', () => {
   const { summarizeRoutePattern } = require('../route-store');
   const priors = [26, 27, 25, 28, 26, 27, 30].map((first) => ({ checkpoints: splitCheckpoints(first, first - 4) }));

@@ -86,6 +86,49 @@ function postClimbRecovery(currentDrop, priorDrops, climbPeakHr = null) {
     samples: Math.min(priors.length, PRIOR_RIDES) };
 }
 
+// The two route-dependent indicators (efficiency, recovery) as a pair. Shared by the analysis
+// prompt and the lightweight route-card path so both report the same numbers. Each priorSameRoute
+// entry carries `checkpoints` and `segments` for earlier rides of the same route and direction.
+function computeRouteTrends(currentCheckpoints, currentSegments, priorSameRoute, minPriorRides = PRIOR_RIDES) {
+  // Marks sit at each ride's own segment boundaries, so exact km values differ ride to ride;
+  // place identity is approximated by km within 150 m (route length differences are tiny here).
+  // The indicator uses the current ride's LAST mark that at least minPriorRides priors reach.
+  const priorMarkCounts = new Map();
+  for (const activity of priorSameRoute) {
+    for (const cp of activity.checkpoints || []) {
+      const bucket = Math.round(cp.km * 2) / 2;
+      priorMarkCounts.set(bucket, (priorMarkCounts.get(bucket) || 0) + 1);
+    }
+  }
+  const nearMark = (km) => {
+    const bucket = Math.round(km * 2) / 2;
+    return priorMarkCounts.get(bucket) || 0;
+  };
+  const currentMarks = (currentCheckpoints || []).filter((cp) => nearMark(cp.km) >= minPriorRides);
+  const lastMark = currentMarks.at(-1) || null;
+  const markKm = lastMark ? lastMark.km : null;
+  const pickPrior = (checkpoints) => (checkpoints || [])
+    .reduce((best, cp) => (Number.isFinite(cp.km) && Math.abs(cp.km - markKm) <= 0.2
+      && (!best || Math.abs(cp.km - markKm) < Math.abs(best.km - markKm)) ? cp : best), null);
+  return {
+    efficiency: lastMark
+      ? routeEfficiency(lastMark,
+          priorSameRoute.map((activity) => pickPrior(activity.checkpoints)).filter(Boolean))
+      : null,
+    recovery: (() => {
+      const climbs = (currentSegments || []).filter((segment) => segment.type === 'climb');
+      const finalClimb = climbs.at(-1);
+      if (!finalClimb || !(finalClimb.durationS >= 180) || finalClimb.postClimbHrDropBpm == null) return null;
+      const priorDrops = priorSameRoute
+        .map((activity) => (activity.segments || [])
+          .filter((segment) => segment.type === 'climb' && segment.durationS >= 180)
+          .map((segment) => segment.postClimbHrDropBpm))
+        .flat().filter((drop) => Number.isFinite(drop));
+      return postClimbRecovery(finalClimb.postClimbHrDropBpm, priorDrops, finalClimb.avgHr);
+    })(),
+  };
+}
+
 // One short localized phrase per indicator; no hypotheses about causes. The wording never says
 // health or fitness — it says what the number did relative to habit.
 function describeTrendVerdicts(trends, t) {
@@ -115,4 +158,4 @@ function describeTrendVerdicts(trends, t) {
   return lines;
 }
 
-module.exports = { PRIOR_RIDES, loadRhythm, postClimbRecovery, routeEfficiency, describeTrendVerdicts };
+module.exports = { PRIOR_RIDES, loadRhythm, postClimbRecovery, routeEfficiency, computeRouteTrends, describeTrendVerdicts };
