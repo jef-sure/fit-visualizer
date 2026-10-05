@@ -191,7 +191,13 @@ function computeLoadRhythm(activities, referenceTime, currentSport) {
     const time = new Date(activity.startTime).getTime();
     return activity.sport === currentSport && Number.isFinite(time) && time < reference && time >= reference - 90 * 86400000;
   }).sort((left, right) => new Date(left.startTime) - new Date(right.startTime));
-  if (!dated.length || reference - new Date(dated[0].startTime).getTime() < 14 * 86400000) return null;
+  // The usual week is an average over the days that can carry load at all: from the first ride
+  // with an HR-based load, 28 days at most. Dividing a shorter history by four weeks would make any
+  // regular rider look like a spike (one week of HR data in a three-week history reads as 4.0).
+  const firstLoad = dated.find((activity) => asNumber(activity.trimp) > 0);
+  const loadDays = firstLoad ? (reference - new Date(firstLoad.startTime).getTime()) / 86400000 : 0;
+  if (!(loadDays >= 14)) return null;
+  const chronicWeeks = Math.min(28, loadDays) / 7;
   const aggregate = (days, previous = false) => {
     const end = reference - (previous ? days : 0) * 86400000;
     const start = end - days * 86400000;
@@ -211,7 +217,7 @@ function computeLoadRhythm(activities, referenceTime, currentSport) {
   const monthAvg = aggregate(28)[0];
   const acute = weekNow?.trimpActivities ? weekNow.trimpSum : null;
   const chronic = monthAvg?.trimpActivities && monthAvg.activities
-    ? (monthAvg.trimpSum / (28 / 7)) : null;
+    ? (monthAvg.trimpSum / chronicWeeks) : null;
   const prevRatioLow = Boolean(weekPrev?.trimpActivities) && chronic > 0 && weekPrev.trimpSum / chronic < 0.8;
   const week = aggregate(7);
   const weekLoads = week.find((row) => row.sport === currentSport);

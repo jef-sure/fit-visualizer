@@ -138,6 +138,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
       comparedActivityId: entry.comparedActivityId,
       label: compared ? formatActivityLabel(compared) : `#${entry.comparedActivityId}`,
       comparisonText: entry.comparisonText,
+      outdated: Boolean(entry.outdated),
     };
   });
 
@@ -347,16 +348,28 @@ function renderActivityTable(segments, laps, ui) {
 
 function renderGroupedSegmentRows(rows, ui) {
   const headings = [ui.segment, ui.time, ui.distance, ui.terrain, ui.grade, ui.effort, ui.heartRate, ui.speed, ui.elevation];
+  // On a route with a skeleton the stretches of the road are the main division: a heading row
+  // opens each stretch and the ride's own segments follow under it.
+  let openStretch = null;
+  const stretchHeading = (segment) => {
+    if (segment?.stretchIndex == null || segment.stretchIndex === openStretch) return '';
+    openStretch = segment.stretchIndex;
+    const km = (value) => (Math.round(Number(value) * 10) / 10).toString();
+    const terrain = ui[segment.type === 'stopped' ? 'flat' : segment.type] || '';
+    const label = `${ui.routeStretch} ${openStretch + 1}: km ${km(segment.stretchFromKm)}–${km(segment.stretchToKm)}`;
+    const grade = Number.isFinite(Number(segment.stretchGradePct)) && segment.type !== 'stopped' ? `, ${terrain} ${displayNumber(segment.stretchGradePct, '%', 1)}` : '';
+    return `<tr class="segmentStretchRow"><td colspan="9">${escapeHtml(label + grade)}</td></tr>`;
+  };
   const body = rows.map((row) => {
     const members = Array.isArray(row.members) ? row.members : [];
     if (members.length !== 1) {
-      return `<tr class="segmentSummaryRow"><td>${escapeHtml(row.number)}</td><td colspan="8">${escapeHtml(row.details)}</td></tr>`;
+      return `${stretchHeading(members[0])}<tr class="segmentSummaryRow"><td>${escapeHtml(row.number)}</td><td colspan="8">${escapeHtml(row.details)}</td></tr>`;
     }
     const segment = members[0];
     const terrain = segment.technical ? ui.technical : (ui[segment.type] || ui.segment);
     const elevation = segment.type === 'climb' && Number(segment.elevGainM) > 0
       ? displayNumber(segment.elevGainM, ' m', 0, '+') : '';
-    return `<tr><td>${escapeHtml(row.number)}</td><td>${escapeHtml(row.time)}</td><td>${escapeHtml(rangeDistance(segment))}</td><td>${escapeHtml(terrain)}</td><td>${escapeHtml(displayNumber(segment.avgGrade, '%', 1))}</td><td>${displaySegmentEffort(segment, ui)}</td><td>${escapeHtml(displayNumber(segment.avgHr, ' bpm', 0))}</td><td>${escapeHtml(displayNumber(segment.avgSpeedKmh, ' km/h', 1))}</td><td>${escapeHtml(elevation)}</td></tr>`;
+    return `${stretchHeading(segment)}<tr><td>${escapeHtml(row.number)}</td><td>${escapeHtml(row.time)}</td><td>${escapeHtml(rangeDistance(segment))}</td><td>${escapeHtml(terrain)}</td><td>${escapeHtml(displayNumber(segment.avgGrade, '%', 1))}</td><td>${displaySegmentEffort(segment, ui)}</td><td>${escapeHtml(displayNumber(segment.avgHr, ' bpm', 0))}</td><td>${escapeHtml(displayNumber(segment.avgSpeedKmh, ' km/h', 1))}</td><td>${escapeHtml(elevation)}</td></tr>`;
   }).join('');
   return `<div class="activityTableWrap" data-activity-table="segments"><table class="activityTable"><thead><tr>${headings.map((heading) => `<th>${escapeHtml(heading)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
@@ -436,21 +449,21 @@ function buildWebviewAssets(webview, extensionUri, nonce) {
   return { leafletCss, leafletJs, csp };
 }
 
-const PURPOSE_UI = { commute: 'purposeCommute', endurance: 'purposeEndurance', tempo: 'purposeTempo', intervals: 'purposeIntervals', recovery: 'purposeRecovery', race: 'purposeRace', social: 'purposeSocial', other: 'purposeOther' };
+const PURPOSE_UI = { commute: 'purposeCommute', endurance: 'purposeEndurance', tempo: 'purposeTempo', intervals: 'purposeIntervals', recovery: 'purposeRecovery', race: 'purposeRace', social: 'purposeSocial', leisure: 'purposeLeisure', other: 'purposeOther' };
 const FEELING_UI = { fresh: 'feelingFresh', normal: 'feelingNormal', tired: 'feelingTired', ill: 'feelingIll' };
 const CONDITION_UI = { headwind: 'condHeadwind', tailwind: 'condTailwind', rain: 'condRain', heat: 'condHeat', cold: 'condCold', group: 'condGroup', traffic: 'condTraffic', night: 'condNight', new_route: 'condNewRoute' };
 
-function renderSessionNotesCard(notes, ui, mapId, inferred = null) {
+function renderSessionNotesCard(notes, ui, mapId, inferred = null, knownGoals = []) {
   // Merge field by field: user-declared values win, the model's inference fills only what the
   // user left blank (purpose/conditions; RPE, feeling and the note are never inferred).
   const effective = {
     rpe: notes?.rpe ?? null,
-    purpose: notes?.purpose ?? inferred?.purpose ?? null,
+    goals: notes?.goals?.length ? notes.goals : (inferred?.goals ?? (inferred?.purpose ? [inferred.purpose] : [])),
     feeling: notes?.feeling ?? null,
     conditions: notes?.conditions?.length ? notes.conditions : (inferred?.conditions ?? []),
     note: notes?.note ?? null,
   };
-  const inferredHint = inferred && ((!notes?.purpose && inferred.purpose) || (!notes?.conditions?.length && inferred.conditions?.length))
+  const inferredHint = inferred && ((!notes?.goals?.length && (inferred.goals?.length || inferred.purpose)) || (!notes?.conditions?.length && inferred.conditions?.length))
     ? `<div class="mapHint" style="margin-top:0;margin-bottom:6px;">${escapeHtml(ui.notesInferredHint)}</div>` : '';
   const options = (values, uiKeys, selected) => `<option value=""${selected ? '' : ' selected'}>${escapeHtml(ui.select)}</option>`
     + values.map((value) => `<option value="${value}"${selected === value ? ' selected' : ''}>${escapeHtml(ui[uiKeys[value]])}</option>`).join('');
@@ -460,12 +473,28 @@ function renderSessionNotesCard(notes, ui, mapId, inferred = null) {
             <input type="checkbox" name="${mapId}Condition" value="${value}" style="width:auto;"${effective?.conditions?.includes(value) ? ' checked' : ''}>
             <span>${escapeHtml(ui[CONDITION_UI[value]])}</span>
           </label>`).join('');
+  // Goals come first and may be several: the listed ones as checkboxes, the rider's own in a text
+  // field that offers the names already used on other rides.
+  const goalBoxes = PURPOSES.map((value) => `<label style="display:flex;gap:4px;align-items:center;">
+            <input type="checkbox" name="${mapId}Goal" value="${value}" style="width:auto;"${effective.goals.includes(value) ? ' checked' : ''}>
+            <span>${escapeHtml(ui[PURPOSE_UI[value]])}</span>
+          </label>`).join('');
+  const ownGoals = effective.goals.filter((goal) => !PURPOSES.includes(goal));
+  const goalSuggestions = (Array.isArray(knownGoals) ? knownGoals : []).map((goal) => `<option value="${escapeHtml(goal)}"></option>`).join('');
   return `<section class="chart manualData">
       <h2>${escapeHtml(ui.sessionNotesSection)}</h2>
       ${inferredHint}
       <form id="${mapId}NotesForm" class="manualDataForm">
+        <fieldset style="flex:1 1 100%;border:0;padding:0;margin:0 0 4px 0;">
+          <legend style="color:var(--ink);font-size:1rem;font-weight:700;padding:0 0 4px 0;">${escapeHtml(ui.purposeLabel)}${!notes?.goals?.length && effective.goals.length ? ` <span id="${mapId}GoalsSuggested" style="font-weight:400;color:var(--muted);">— ${escapeHtml(ui.goalsSuggested)}</span>` : ''}</legend>
+          <div style="display:flex;gap:6px 14px;flex-wrap:wrap;font-size:0.95rem;">${goalBoxes}</div>
+          <label style="display:block;margin-top:6px;">
+            <span>${escapeHtml(ui.goalOwnLabel)}</span>
+            <input id="${mapId}NotesOwnGoals" type="text" maxlength="200" list="${mapId}KnownGoals" style="width:320px;max-width:100%;" value="${escapeHtml(ownGoals.join(', '))}">
+            <datalist id="${mapId}KnownGoals">${goalSuggestions}</datalist>
+          </label>
+        </fieldset>
         <label><span>${escapeHtml(ui.rpeLabel)}</span><select id="${mapId}NotesRpe">${rpeOptions}</select></label>
-        <label><span>${escapeHtml(ui.purposeLabel)}</span><select id="${mapId}NotesPurpose">${options(PURPOSES, PURPOSE_UI, effective?.purpose)}</select></label>
         <label><span>${escapeHtml(ui.feelingLabel)}</span><select id="${mapId}NotesFeeling">${options(FEELINGS, FEELING_UI, effective?.feeling)}</select></label>
         <fieldset style="flex:1 1 100%;border:0;padding:0;margin:0;">
           <legend style="color:var(--muted);font-size:0.82rem;padding:0 0 4px 0;">${escapeHtml(ui.conditionsLabel)}</legend>
@@ -550,6 +579,25 @@ function renderRouteCard(route, ui, mapId) {
   // silently missing the ascent/descent/climbs rows.
   const profilePendingLine = route.profilePending
     ? `<div class="routePartial">${escapeHtml(formatUi(ui.routeProfilePending, route.profilePending))}</div>` : '';
+  // The road as the rides show it: stretches and slow-down points in travel order. Read-only,
+  // for comparing with how the route feels from the saddle.
+  const number = (value) => String(value).replace('.', ui.decimalSeparator);
+  // Stretches are the numbered items, with the same numbers as in the segment table; the point a
+  // stretch ends at is a line inside it, so it does not take a number of its own.
+  const shapeRows = [];
+  for (const item of route.shape?.items || []) {
+    if (item.kind === 'point') {
+      if (shapeRows.length) shapeRows[shapeRows.length - 1].point = formatUi(ui.routeShapePoint, number(item.km), item.minKmh, item.sharePct);
+      continue;
+    }
+    const terrain = `${ui[item.type] || item.type}${item.type === 'flat' ? '' : ` ${number(item.gradePct)}%`}`;
+    const usual = item.kmh == null ? '' : `, ${item.hr != null ? formatUi(ui.routeShapeUsuallyHr, number(item.kmh), item.hr) : formatUi(ui.routeShapeUsually, number(item.kmh))}`;
+    shapeRows.push({ range: formatUi(ui.routeShapeRange, number(item.fromKm), number(item.toKm)), text: terrain + usual, point: null });
+  }
+  const shapeItems = shapeRows.map((row) =>
+    `<li><strong>${escapeHtml(row.range)}</strong> ${escapeHtml(row.text)}${row.point ? `<div class="routeShapePoint">${escapeHtml(row.point)}</div>` : ''}</li>`).join('');
+  const shapeBlock = shapeItems
+    ? `<div class="routeShape"><div class="routeShapeTitle">${escapeHtml(ui.routeShapeTitle)}</div><div class="routeShapeInfo">${escapeHtml(formatUi(ui.routeShapeInfo, route.shape.rides, route.shape.sharePct))}</div><ol class="routeShapeList">${shapeItems}</ol></div>` : '';
   return `<section class="chart manualData">
       <h2>${escapeHtml(ui.routeSection)}</h2>
       <div class="routeHead">
@@ -563,6 +611,7 @@ function renderRouteCard(route, ui, mapId) {
       ${facts.length ? `<div class="routeFactsGrid">${facts.map((fact) => `<div class="metric"><div class="k">${escapeHtml(fact.k)}</div><div class="v">${escapeHtml(fact.v)}</div></div>`).join('')}</div>` : ''}
       ${climbLine}
       ${profilePendingLine}
+      ${shapeBlock}
       ${(route.trends && (route.trends.efficiency || route.trends.rhythm || route.trends.recovery)) ? renderTrendCards(route.trends, ui) : ''}
       <form id="${mapId}RouteForm" class="manualDataForm">
         <label>
@@ -645,6 +694,12 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     [mapId + 'AltSvg']: buildChartClientPayloadFromModule(altitudeChart, 'km', 'm', altitudeOverlays),
   });
   const hrZones = computeHeartRateZones(records, hrConfig?.maxHeartRate, hrConfig?.thresholds, { restingHeartRate: athleteProfile?.restingHeartRate });
+  // Heart rate keeps its zone colors wherever it is drawn, not only on its own chart.
+  if (hrZones.enabled && Array.isArray(hrZones.thresholds) && hrZones.thresholds.length >= 4) {
+    for (const overlays of [speedOverlays, altitudeOverlays]) {
+      if (overlays.heart_rate) overlays.heart_rate.zoneThresholds = hrZones.thresholds;
+    }
+  }
   const gpsRoutePointBudget = Math.min(6000, Math.max(1200, records.length));
   const gpsRoute = buildGpsRouteFromModule(records, 1400, 420, gpsRoutePointBudget, { noPointsText: ui.noGpsPoints });
   const compGpsPoints = hasOverlay ? safeJson(extractGpsPoints(compRecords).slice(0, gpsRoutePointBudget).map((p) => ({ lat: p.y, lon: p.x }))) : 'null';
@@ -730,12 +785,14 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       </div>` : '';
 
   const routeCardHtml = routeCard && !isComparison ? renderRouteCard(routeCard, ui, mapId) : '';
-  const notesCardHtml = isComparison ? '' : renderSessionNotesCard(fitData.sessionNotes, ui, mapId, fitData.inferredNotes);
+  const notesCardHtml = isComparison ? '' : renderSessionNotesCard(fitData.sessionNotes, ui, mapId, fitData.inferredNotes, fitData.knownGoals);
 
   // The analysis-model picker. It shows the model that produced the analysis on screen (when it
   // is still offered) and otherwise the default, named by the model it actually resolves to. It
   // only prepares a choice: the analysis runs when the athlete presses the Analyze button.
 
+  // A figure with no samples behind it was not recorded; "0" would read as a measurement.
+  const recorded = (kind, text) => (summary.samples && !(summary.samples[kind] > 0) ? 'n/a' : text);
   return `<main class="wrap">
     <section class="hero">
       <h1>${escapeHtml(ui.fitActivity)}</h1>
@@ -751,8 +808,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       ${metric(ui.durationHms, summary.durationText, 'duration', glossary)}
       ${metric(ui.avgSpeedKmh, summary.avgSpeed.toFixed(2), 'averageSpeed', glossary)}
       ${metric(ui.maxSpeedKmh, summary.maxSpeed.toFixed(2), 'maximumSpeed', glossary)}
-      ${metric(ui.avgPowerW + powerMetricSuffix, summary.avgPower.toFixed(0), 'averagePower', glossary)}
-      ${metric(ui.maxPowerW + powerMetricSuffix, summary.maxPower.toFixed(0), 'maximumPower', glossary)}
+      ${metric(ui.avgPowerW + powerMetricSuffix, recorded('power', summary.avgPower.toFixed(0)), 'averagePower', glossary)}
+      ${metric(ui.maxPowerW + powerMetricSuffix, recorded('power', summary.maxPower.toFixed(0)), 'maximumPower', glossary)}
       ${metric(ui.normalizedPowerW + powerMetricSuffix, summary.normalizedPower?.toFixed(0) ?? 'n/a', 'normalizedPower', glossary)}
       ${metric(ui.intensityFactorIf + powerMetricSuffix, summary.intensityFactor > 0 ? summary.intensityFactor.toFixed(2) : 'n/a', 'intensityFactor', glossary)}
       ${metric(ui.tssScore + powerMetricSuffix, summary.trainingStressScore > 0 ? summary.trainingStressScore.toFixed(1) : 'n/a', 'trainingStressScore', glossary)}
@@ -762,10 +819,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       ${metric(ui.decouplingIntervals + powerMetricSuffix, Number.isFinite(summary.decouplingPct) ? summary.decouplingPct.toFixed(1) + '%' : 'n/a', 'decoupling', glossary)}
       ${metric(ui.trimp, Number.isFinite(summary.trimp) ? summary.trimp.toFixed(1) : 'n/a', 'trimp', glossary)}
       ${metric(ui.hrTss, summary.hrTss > 0 ? summary.hrTss.toFixed(1) : 'n/a', 'hrTss', glossary)}
-      ${metric(ui.avgHrBpm, summary.avgHr.toFixed(0), 'averageHeartRate', glossary)}
-      ${metric(ui.maxHrBpm, summary.maxHr.toFixed(0), 'maximumHeartRate', glossary)}
-      ${metric(ui.elevationGainM, summary.elevationGainM.toFixed(0), 'elevationGain', glossary)}
-      ${metric(ui.elevationLossM, summary.elevationLossM.toFixed(0), 'elevationLoss', glossary)}
+      ${metric(ui.avgHrBpm, recorded('heartRate', summary.avgHr.toFixed(0)), 'averageHeartRate', glossary)}
+      ${metric(ui.maxHrBpm, recorded('heartRate', summary.maxHr.toFixed(0)), 'maximumHeartRate', glossary)}
+      ${metric(ui.elevationGainM, recorded('altitude', summary.elevationGainM.toFixed(0)), 'elevationGain', glossary)}
+      ${metric(ui.elevationLossM, recorded('altitude', summary.elevationLossM.toFixed(0)), 'elevationLoss', glossary)}
       ${metric(ui.gpsPointsLabel, gpsRoute.pointCount, 'gpsPoints', glossary)}
     </section>
     ${renderSessionChips({ ...fitData, qualityFlags }, ui)}
@@ -893,6 +950,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             <option value="speed">${escapeHtml(ui.speed)}</option>
             <option value="heart_rate">${escapeHtml(ui.heartRate)}</option>
             <option value="segment" selected>${escapeHtml(ui.segment)}</option>
+            <option value="km">${escapeHtml(ui.kilometreSplits)}</option>
           </select>
         </div>
         <div id="${mapId}SegmentLegend" class="segmentLegend" style="display:none"></div>
@@ -1024,6 +1082,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           + '<strong style="font-size:0.9rem;">' + escapeHtml(entry.label) + '</strong>'
           + '<button class="removeComparisonBtn" data-compared-id="' + entry.comparedActivityId + '" style="padding:4px 10px;background:transparent;color:var(--ink);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.8rem;">' + escapeHtml(ui.removeComparison) + '</button>'
           + '</div>'
+          + (entry.outdated
+            ? '<div style="margin:0 0 10px 0;padding:8px 10px;border-left:4px solid #ffc107;background:rgba(255,193,7,0.1);font-size:0.92rem;">' + escapeHtml(ui.olderComparison) + '</div>'
+            : '')
           + '<div style="color:var(--ink);font-size:1.08rem;line-height:1.6;word-break:break-word;">' + renderMarkdown(entry.comparisonText) + '</div>'
           + '</div>';
       }
@@ -1155,6 +1216,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         } else if (msg.type === 'manualDataError') {
           manualDataStatus.textContent = msg.error;
           manualDataStatus.classList.add('error');
+        } else if (msg.type === 'notesSaved') {
+          if (notesStatus) { notesStatus.textContent = ui.notesSavedShort; notesStatus.classList.remove('error'); }
+          const suggested = document.getElementById('${mapId}GoalsSuggested');
+          if (suggested) suggested.remove();
         } else if (msg.type === 'notesError') {
           if (notesStatus) {
             notesStatus.textContent = msg.error;
@@ -1244,19 +1309,44 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         });
       });
 
+      // The notes as they stand in the form. Ticking a goal is a decision, not a draft: it is saved
+      // at once, without the Save button and without redrawing the page. Anything else changed in
+      // the form is saved before an analysis starts, so the analysis never runs on stale notes.
+      let notesDirty = false;
+      function currentNotes() {
+        return {
+          rpe: document.getElementById('${mapId}NotesRpe').value,
+          goals: Array.from(document.querySelectorAll('input[name="${mapId}Goal"]:checked')).map((input) => input.value)
+            .concat(document.getElementById('${mapId}NotesOwnGoals').value.split(',').map((goal) => goal.trim()).filter(Boolean)),
+          feeling: document.getElementById('${mapId}NotesFeeling').value,
+          conditions: Array.from(document.querySelectorAll('input[name="${mapId}Condition"]:checked')).map((input) => input.value),
+          note: document.getElementById('${mapId}NotesText').value,
+        };
+      }
+      function saveNotesQuietly() {
+        if (!notesForm) return;
+        notesDirty = false;
+        notesStatus.textContent = ui.saving;
+        notesStatus.classList.remove('error');
+        vscode.postMessage({ type: 'updateActivityNotes', id: window.currentActivityId, quiet: true, ...currentNotes() });
+      }
+      window.saveNotesIfChanged = function () { if (notesDirty) saveNotesQuietly(); };
+      notesForm?.addEventListener('input', () => { notesDirty = true; });
+      notesForm?.addEventListener('change', (event) => {
+        notesDirty = true;
+        const target = event.target;
+        if (target && (target.name === '${mapId}Goal' || target.id === '${mapId}NotesOwnGoals')) saveNotesQuietly();
+      });
       notesForm?.addEventListener('submit', (event) => {
         event.preventDefault();
+        notesDirty = false;
         notesStatus.textContent = ui.saving;
         notesStatus.classList.remove('error');
         vscode.postMessage({
           type: 'updateActivityNotes',
           id: window.currentActivityId,
           compId: document.getElementById('compSel')?.value || null,
-          rpe: document.getElementById('${mapId}NotesRpe').value,
-          purpose: document.getElementById('${mapId}NotesPurpose').value,
-          feeling: document.getElementById('${mapId}NotesFeeling').value,
-          conditions: Array.from(document.querySelectorAll('input[name="${mapId}Condition"]:checked')).map((input) => input.value),
-          note: document.getElementById('${mapId}NotesText').value,
+          ...currentNotes(),
         });
       });
 
@@ -1350,6 +1440,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           }
           setAnalyzeBusy(true);
           const modelSel = document.getElementById('modelSel');
+          // Notes changed but not saved yet go in first: the analysis reads them from the database.
+          if (window.saveNotesIfChanged) window.saveNotesIfChanged();
           vscode.postMessage({ type: 'analyzeActivity', id: window.currentActivityId, force: hasAnalysis, modelId: modelSel ? modelSel.value : '' });
         });
       }
@@ -1550,6 +1642,53 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           if (mode === 'heart_rate') return '<strong>' + escapeSegmentHtml(ui.heartRate) + '</strong><br>' + Math.round(value) + ' bpm';
           return '';
         }
+        // Kilometre splits, as sports watches show them: the track alternates between two colors
+        // every kilometre of ridden distance, each kilometre boundary carries its number, and a
+        // kilometre's tooltip gives its time, speed and heart rate.
+        const KM_COLORS = ['#1e88e5', '#fb8c00'];
+        function drawKilometres() {
+          const startKm = routePoints.find((p) => Number.isFinite(p.distanceKm))?.distanceKm;
+          if (!Number.isFinite(startKm)) return false;
+          const splits = [];
+          for (const p of routePoints) {
+            if (!Number.isFinite(p.distanceKm)) continue;
+            const index = Math.max(0, Math.floor(p.distanceKm - startKm + 1e-9));
+            const split = splits[index] || (splits[index] = { firstTime: p.elapsedTime, lastTime: p.elapsedTime, firstKm: p.distanceKm, lastKm: p.distanceKm, hrSum: 0, hrCount: 0 });
+            split.lastTime = p.elapsedTime;
+            split.lastKm = p.distanceKm;
+            if (Number.isFinite(p.heart_rate) && p.heart_rate > 0) { split.hrSum += p.heart_rate; split.hrCount += 1; }
+          }
+          const clock = (seconds) => Math.floor(seconds / 60) + ':' + String(Math.round(seconds % 60)).padStart(2, '0');
+          const tooltipFor = (index) => {
+            const split = splits[index];
+            if (!split) return '';
+            // A split runs to the first point of the next one, so no time is lost between them.
+            const next = splits[index + 1];
+            const seconds = (next ? next.firstTime : split.lastTime) - split.firstTime;
+            const km = (next ? next.firstKm : split.lastKm) - split.firstKm;
+            const parts = ['<strong>' + escapeSegmentHtml(ui.kilometreSplitLabel.replace('{0}', String(index + 1))) + '</strong>'];
+            if (seconds > 0 && km > 0) parts.push(clock(seconds) + ' · ' + (km / (seconds / 3600)).toFixed(1).replace('.', ui.decimalSeparator) + ' km/h');
+            if (split.hrCount) parts.push(Math.round(split.hrSum / split.hrCount) + ' bpm');
+            return parts.join('<br>');
+          };
+          let previousIndex = null;
+          for (let i = 1; i < routePoints.length; i++) {
+            const a = routePoints[i - 1], b = routePoints[i];
+            if (!Number.isFinite(b.distanceKm)) continue;
+            const index = Math.max(0, Math.floor(b.distanceKm - startKm + 1e-9));
+            const line = L.polyline([[a.lat, a.lon], [b.lat, b.lon]], { color: KM_COLORS[index % 2], weight: 4, opacity: 0.92, lineCap: 'round' }).addTo(map);
+            const tooltip = tooltipFor(index);
+            if (tooltip) line.bindTooltip(tooltip, { sticky: true, className: 'segmentLeafletTooltip' });
+            segments.push(line);
+            if (previousIndex != null && index > previousIndex) {
+              const label = L.marker([b.lat, b.lon], { interactive: false, keyboard: false,
+                icon: L.divIcon({ className: 'kmSplitLabel', html: String(index), iconSize: [22, 22], iconAnchor: [11, 11] }) }).addTo(map);
+              segments.push(label);
+            }
+            previousIndex = index;
+          }
+          return true;
+        }
         function drawSegments(mode) {
           clearSegments();
           const legend = document.getElementById('${mapId}SegmentLegend');
@@ -1566,6 +1705,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
               }).join('');
             }
           }
+          if (mode === 'km' && drawKilometres()) return;
           const vals = routePoints
             .map((p) => p[mode])
             .filter((value) => value != null && Number.isFinite(Number(value)))
@@ -1777,6 +1917,19 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
 
       // Max 2 at once: more than that on top of the main line becomes unreadable.
       var OVERLAY_PALETTE = ['#e67e22', '#00acc1'];
+      // An overlay must not look like a line the chart already has: altitude is drawn in orange,
+      // and the compared ride on the speed chart in purple. Each chart takes the first two colors
+      // that are free on it.
+      var OVERLAY_COLORS = ['#e67e22', '#00acc1', '#ab47bc'];
+      var OVERLAY_TAKEN = { AltSvg: ['#e67e22'], SpeedSvg: ['#ab47bc'] };
+      function overlayPalette(svg) {
+        var id = String((svg && svg.id) || '');
+        var taken = [];
+        Object.keys(OVERLAY_TAKEN).forEach(function (suffix) {
+          if (id.slice(-suffix.length) === suffix) taken = OVERLAY_TAKEN[suffix];
+        });
+        return OVERLAY_COLORS.filter(function (color) { return taken.indexOf(color) === -1; }).slice(0, OVERLAY_PALETTE.length);
+      }
       // Gutter is always sized for every overlay axis so toggling overlays never resizes the plot.
       var TICK_FONT_PX = 13;
       var AXIS_TITLE_FONT_PX = 14;
@@ -1812,7 +1965,30 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             return px.toFixed(1) + ',' + py.toFixed(1);
           }).join(' ');
           var existing = instance.overlayGroup.querySelector('#' + overlayLineId(metricKey));
-          if (existing) {
+          var zones = Array.isArray(series.zoneThresholds) && series.zoneThresholds.length >= 4 ? series.zoneThresholds : null;
+          if (zones) {
+            // Heart rate is drawn in its zone colors here as on its own chart: one short line per
+            // step, classed by the zone of its mean value.
+            if (existing) existing.parentNode.removeChild(existing);
+            var group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+            group.setAttribute('id', overlayLineId(metricKey));
+            group.setAttribute('opacity', '0.9');
+            for (var step = 1; step < series.points.length; step += 1) {
+              var from = series.points[step - 1];
+              var to = series.points[step];
+              var mean = (from[1] + to[1]) / 2;
+              var zone = 0;
+              for (var z = 0; z < zones.length; z += 1) { if (mean >= zones[z]) zone = z + 1; }
+              var piece = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+              piece.setAttribute('class', 'zoneLine zoneLine' + (Math.min(zone, 4) + 1));
+              piece.setAttribute('x1', scaleX(payload, from[0]).toFixed(1));
+              piece.setAttribute('x2', scaleX(payload, to[0]).toFixed(1));
+              piece.setAttribute('y1', (payload.plotBottom - ((from[1] - series.min) / range) * (payload.plotBottom - payload.plotTop)).toFixed(1));
+              piece.setAttribute('y2', (payload.plotBottom - ((to[1] - series.min) / range) * (payload.plotBottom - payload.plotTop)).toFixed(1));
+              group.appendChild(piece);
+            }
+            instance.overlayGroup.appendChild(group);
+          } else if (existing) {
             existing.setAttribute('points', pts);
             existing.setAttribute('stroke', color);
           } else {
@@ -1894,7 +2070,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           if (!(xScale > 0)) return;
           // Each palette color owns a fixed column, so one axis never moves when the other toggles.
           var previousRight = 0;
-          OVERLAY_PALETTE.forEach(function (color, slot) {
+          overlayPalette(svg).forEach(function (color, slot) {
             var metricKey = Object.keys(active).filter(function (key) { return active[key] === color; })[0];
             if (!metricKey) return;
             var axisX = Math.max(payload.plotRight + (8 + slot * OVERLAY_AXIS_COLUMN_PX) / xScale, previousRight + 6 / xScale);
@@ -1928,7 +2104,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
                 return;
               }
               var usedColors = Object.keys(active).map(function (key) { return active[key]; });
-              var color = OVERLAY_PALETTE.filter(function (c) { return usedColors.indexOf(c) === -1; })[0] || OVERLAY_PALETTE[0];
+              var palette = overlayPalette(svg);
+              var color = palette.filter(function (c) { return usedColors.indexOf(c) === -1; })[0] || palette[0];
               active[metricKey] = color;
               redrawActiveOverlayAxes();
               checkbox.parentElement.style.color = color;
@@ -2244,6 +2421,8 @@ function sharedCss() {
     .overlayYAxis { color:var(--muted); }
     .overlayAxisLine, .overlayAxisTick { stroke:currentColor; stroke-width:1; vector-effect:non-scaling-stroke; }
     .overlayTick { fill:currentColor; font-size:13px; }
+    .stretchMarker { stroke:color-mix(in srgb,var(--ink) 55%,transparent); stroke-width:1; stroke-dasharray:6 4; vector-effect:non-scaling-stroke; pointer-events:none; }
+    .kmSplitLabel { display:flex; align-items:center; justify-content:center; border-radius:50%; background:var(--vscode-editor-background, #1e1e1e); color:var(--vscode-editor-foreground, #fff); border:2px solid var(--vscode-editor-foreground, #fff); font:700 11px/1 system-ui, sans-serif; box-sizing:border-box; }
     .segmentBand { pointer-events:all; cursor:help; }
     .segmentBandClimb { fill:#d35400; fill-opacity:0.72; } .segmentBandDescent { fill:#2980b9; fill-opacity:0.72; }
     .segmentBandFlat { fill:#3d8b40; fill-opacity:0.66; } .segmentBandStopped { fill:#7f8c8d; fill-opacity:0.72; }
@@ -2273,8 +2452,20 @@ function sharedCss() {
     .legend { margin-top:6px; color:var(--muted); font-size:0.9rem; }
     .zones { border:1px solid var(--border); border-radius:10px; padding:10px; background:color-mix(in srgb,var(--card) 84%,var(--bg)); margin:8px 0 10px; }
     .zonesHead { color:var(--muted); font-size:0.85rem; margin-bottom:8px; }
-    .zoneRow { display:grid; grid-template-columns:58px 1fr auto; gap:10px; align-items:center; margin:6px 0; }
-    .zoneLabel { color:var(--ink); font-weight:700; font-size:0.84rem; }
+    /* One grid for all rows: the label column is as wide as the longest zone name in the current
+       language, so a bar never runs under its own label. */
+    /* Reading text, sized like the analysis below it rather than like a caption. */
+    .routeShape { margin:14px 0; }
+    .routeShapeTitle { color:var(--ink); font-size:1.08rem; font-weight:700; }
+    .routeShapeInfo { color:var(--muted); font-size:0.98rem; margin-top:2px; }
+    .routeShapeList { margin:8px 0 0; padding-left:1.8em; font-size:1.08rem; line-height:1.6; }
+    .routeShapeList li { margin:2px 0; }
+    /* Full-contrast text: the marker and the indent set these lines apart, not a fainter color. */
+    .routeShapePoint { color:var(--ink); font-size:1em; padding-left:0.2em; }
+    .routeShapePoint::before { content:'\\25CF  '; color:var(--vscode-charts-yellow, #d7ba7d); }
+    .zoneRows { display:grid; grid-template-columns:max-content 1fr auto; column-gap:10px; row-gap:12px; align-items:center; margin:6px 0; }
+    .zoneRow { display:contents; }
+    .zoneLabel { color:var(--ink); font-weight:700; font-size:0.84rem; white-space:nowrap; }
     .zoneBar { height:10px; border-radius:999px; background:color-mix(in srgb,var(--ink) 12%,transparent); overflow:hidden; min-width:60px; }
     .zoneFill { height:100%; border-radius:999px; }
     .zoneMeta { color:var(--muted); font-size:0.78rem; min-width:130px; text-align:right; white-space:nowrap; }
@@ -2449,7 +2640,7 @@ function renderHeartRateZones(zoneData, ui) {
 
   return `<div class="zones">
     <div class="zonesHead">${escapeHtml(formatUi(zoneData.customThresholds ? ui.heartRateZonesCustomInfo : ui.heartRateZonesInfo, zoneData.maxHeartRate).replace('bpm', ui.beatsPerMinute))}</div>
-    ${rows}
+    <div class="zoneRows">${rows}</div>
   </div>`;
 }
 

@@ -42,12 +42,15 @@ function profileFor(sport, subSport = '') {
 function formatPace(kmh, speedUnit) {
   const speed = Number(kmh);
   if (!Number.isFinite(speed) || speed <= 0) return null;
+  // Whole seconds first, then minutes: rounding the seconds on their own turns 4:59.6 into "4:60".
+  const clock = (minutes) => {
+    const seconds = Math.round(minutes * 60);
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  };
   if (speedUnit === 'minPer100m') {
-    const minPer100m = 6 / speed; // 100 m / (speed km/h) = 6 / speed minutes
-    return `${Math.floor(minPer100m)}:${String(Math.round((minPer100m % 1) * 60)).padStart(2, '0')} /100 m`;
+    return `${clock(6 / speed)} /100 m`; // 100 m / (speed km/h) = 6 / speed minutes
   }
-  const minPerKm = 60 / speed;
-  return `${Math.floor(minPerKm)}:${String(Math.round((minPerKm % 1) * 60)).padStart(2, '0')} /km`;
+  return `${clock(60 / speed)} /km`;
 }
 
 // A speed-or-pace field for the workout block: cycling/hiking keep km/h, running/walking become

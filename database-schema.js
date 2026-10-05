@@ -249,6 +249,14 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'activity_features', 'checkpoints_json', 'TEXT');
   addColumnIfMissing(db, 'routes', 'note', 'TEXT');
   addColumnIfMissing(db, 'routes', 'features_json', 'TEXT');
+  // Which version of the derived data the database was last rebuilt for as a whole (see
+  // needsDerivedFeatureRebuild in extension.js). Feature rows alone cannot say that: they are
+  // also refreshed one by one when a page needs them, and that path does not re-derive routes.
+  db.run('CREATE TABLE IF NOT EXISTS derived_state (key TEXT PRIMARY KEY, value TEXT)');
+  addColumnIfMissing(db, 'routes', 'skeleton_json', 'TEXT');
+  // A saved comparison is a model answer like an analysis: it needs to say which format wrote it.
+  addColumnIfMissing(db, 'activity_comparisons', 'analysis_version', 'INTEGER');
+  addColumnIfMissing(db, 'activity_features', 'route_frame_json', 'TEXT');
 }
 
 function addColumnIfMissing(db, table, column, type) {

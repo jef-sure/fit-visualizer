@@ -148,14 +148,46 @@ function calculateMeanMaximalPower(records, durations = [60, 300, 600, 1200, 180
     .filter((sample) => Number.isFinite(sample.t) && Number.isFinite(sample.p) && sample.p >= 0)
     .sort((left, right) => left.t - right.t || left.index - right.index);
 
+  // A recording that writes a sample every 7 s is as continuous as one at 1 Hz; only a gap well
+  // beyond the usual step (a pause, a dropout) breaks an effort.
+  const steps = [];
+  for (let index = 1; index < samples.length; index += 1) {
+    const step = samples[index].t - samples[index - 1].t;
+    if (step > 0 && step <= 30) steps.push(step);
+  }
+  steps.sort((left, right) => left - right);
+  const typicalStep = steps.length ? steps[Math.floor(steps.length / 2)] : 1;
+  const maxGap = Math.max(5, typicalStep * 2.5);
   const segments = [];
   let segmentStart = 0;
   for (let index = 1; index <= samples.length; index += 1) {
-    if (index === samples.length || samples[index].t - samples[index - 1].t > 5) {
+    if (index === samples.length || samples[index].t - samples[index - 1].t > maxGap) {
       segments.push(samples.slice(segmentStart, index));
       segmentStart = index;
     }
   }
+
+  // Each sample holds until the next one, so the work done up to any instant is known exactly and
+  // a window need not start and end on a sample: the mean over D seconds is work(t + D) - work(t)
+  // over D. Requiring samples exactly D apart gave 0 W for 60 s on a 7 s recording.
+  const curves = segments.map((segment) => {
+    const times = segment.map((sample) => sample.t);
+    times.push(times[times.length - 1] + typicalStep);
+    const work = [0];
+    for (let index = 0; index < segment.length; index += 1) {
+      work.push(work[index] + segment[index].p * (times[index + 1] - times[index]));
+    }
+    const workAt = (time) => {
+      let low = 0;
+      let high = times.length - 1;
+      while (high - low > 1) {
+        const middle = (low + high) >> 1;
+        if (times[middle] <= time) low = middle; else high = middle;
+      }
+      return work[low] + segment[Math.min(low, segment.length - 1)].p * (Math.min(time, times[high]) - times[low]);
+    };
+    return { times, workAt, start: times[0], end: times[times.length - 1] };
+  });
 
   return durations.map((durationSec) => {
     if (!Number.isFinite(durationSec) || durationSec <= 0) {
@@ -163,26 +195,15 @@ function calculateMeanMaximalPower(records, durations = [60, 300, 600, 1200, 180
     }
 
     let bestAverage = 0;
-    for (const segment of segments) {
-      const prefix = new Array(segment.length + 1).fill(0);
-      for (let index = 0; index < segment.length; index += 1) {
-        prefix[index + 1] = prefix[index] + segment[index].p;
-      }
-
-      let end = 0;
-      for (let start = 0; start < segment.length; start += 1) {
-        if (end < start) {
-          end = start;
+    for (const curve of curves) {
+      if (curve.end - curve.start < durationSec) continue;
+      // With power constant between samples the best window starts or ends on a sample.
+      for (const time of curve.times) {
+        if (time + durationSec <= curve.end + 1e-9) {
+          bestAverage = Math.max(bestAverage, (curve.workAt(time + durationSec) - curve.workAt(time)) / durationSec);
         }
-        while (end < segment.length && segment[end].t - segment[start].t <= durationSec) {
-          end += 1;
-        }
-
-        const last = end - 1;
-        const span = last >= start ? segment[last].t - segment[start].t : 0;
-        if (span >= durationSec) {
-          const windowAverage = (prefix[end] - prefix[start]) / (end - start);
-          bestAverage = Math.max(bestAverage, windowAverage);
+        if (time - durationSec >= curve.start - 1e-9) {
+          bestAverage = Math.max(bestAverage, (curve.workAt(time) - curve.workAt(time - durationSec)) / durationSec);
         }
       }
     }
@@ -1221,14 +1242,16 @@ function buildActivitySegments(records, context = {}) {
   };
   const athlete = context.athlete || {};
 
-  const ranges = segmentByEffort(records, { ...options, grades, stops, altitudesM: shared.altitudesM })
+  const ownRanges = segmentByEffort(records, { ...options, grades, stops, altitudesM: shared.altitudesM })
     || segmentByGrade(records, { ...options, grades, stops });
+  const ranges = applyRouteFrame(ownRanges, records, context.routeFrame);
 
   const segments = ranges.map((range) => {
     const summary = summarizeSegmentRange(records, range, shared, options);
     const effort = selectEffortSignal(summary, context);
     return {
       ...summary,
+      ...(range.stretch ? { stretchIndex: range.stretch.stretchIndex, stretchFromKm: range.stretch.fromKm, stretchToKm: range.stretch.toKm, stretchGradePct: range.stretch.gradePct } : {}),
       effortBasis: effort.basis,
       effortReason: effort.reason,
       hrDriftPct: segmentHrDrift(records, range, summary, effort.basis, athlete, options),
@@ -1236,6 +1259,54 @@ function buildActivitySegments(records, context = {}) {
   });
 
   return segments.map((segment, index) => ({ ...segment, index }));
+}
+
+// On a route with a skeleton the road's stretches frame the ride's segments: a segment is cut
+// where the ride enters a stretch, so each one lies inside a single stretch, and its terrain is
+// the stretch's - the same road is then a climb on every ride, not only when a segment happens to
+// be steep on average. What the effort did inside a stretch still splits it further.
+// frame: { cuts: [{ startElapsed, stretchIndex, type, ... }] } on this ride's own clock.
+const FRAME_SLIVER_SECONDS = 20;
+
+function applyRouteFrame(ranges, records, frame) {
+  const cuts = (Array.isArray(frame?.cuts) ? frame.cuts : []).map((cut) => {
+    const index = records.findIndex((record) => asNumber(record?.elapsed_time) >= cut.startElapsed);
+    return index < 0 ? null : { ...cut, index };
+  }).filter(Boolean).sort((a, b) => a.index - b.index);
+  if (!cuts.length) return ranges;
+  const stretchAt = (index) => {
+    let found = cuts[0];
+    for (const cut of cuts) { if (cut.index <= index) found = cut; else break; }
+    return found;
+  };
+  const pieces = [];
+  for (const range of ranges) {
+    if (range.type === 'stopped') {
+      pieces.push({ ...range, stretch: stretchAt(range.startIndex) });
+      continue;
+    }
+    let start = range.startIndex;
+    for (const cut of cuts) {
+      if (cut.index <= start || cut.index > range.endIndex) continue;
+      pieces.push({ startIndex: start, endIndex: cut.index - 1 });
+      start = cut.index;
+    }
+    pieces.push({ startIndex: start, endIndex: range.endIndex });
+  }
+  const seconds = (piece) => asNumber(records[piece.endIndex]?.elapsed_time) - asNumber(records[piece.startIndex]?.elapsed_time);
+  const framed = [];
+  for (const piece of pieces) {
+    if (piece.type === 'stopped') { framed.push(piece); continue; }
+    const stretch = stretchAt(piece.startIndex);
+    const current = { startIndex: piece.startIndex, endIndex: piece.endIndex, type: stretch.type, stretch };
+    const previous = framed[framed.length - 1];
+    // A few seconds left over by a cut join the neighbour in the same stretch.
+    const joinable = previous && previous.type !== 'stopped' && previous.stretch.stretchIndex === stretch.stretchIndex
+      && previous.endIndex + 1 === current.startIndex;
+    if (joinable && (seconds(current) < FRAME_SLIVER_SECONDS || seconds(previous) < FRAME_SLIVER_SECONDS)) previous.endIndex = current.endIndex;
+    else framed.push(current);
+  }
+  return framed;
 }
 
 // Segments follow how the effort felt, not the terrain: change points of heart rate and power,
@@ -1961,6 +2032,7 @@ module.exports = {
   calculateMeanMaximalPower,
   calculateNormalizedPower,
   bottomUpSegment,
+  applyRouteFrame,
   buildActivitySegments,
   collapseShortStops,
   computeGpsDerivedSpeed,

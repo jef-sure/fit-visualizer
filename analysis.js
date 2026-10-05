@@ -104,11 +104,7 @@ function describeSegment(segment, records, profile = null) {
       ? `VAM ~${Math.round(segment.elevGainM / (segment.durationS - (segment.pausedS || 0)) * 3600)} m/h` : null,
     segment.pausedS != null ? `interrupted by a ${formatClock(segment.pausedS)} stop` : null,
     segment.hrCoveragePct != null && segment.hrCoveragePct < 100 ? `HR coverage ${segment.hrCoveragePct}%` : null,
-    // Grade/vpower diagnostics only matter where vpower is the quoted effort.
-    segment.effortBasis === 'vpower' && segment.gradeWindowM != null ? `grade window ~${segment.gradeWindowM} m, residual ~${segment.gradeResidualM} m, coverage ${segment.gradeCoveragePct}%` : null,
     segment.effortBasis !== 'vpower' && segment.gradeCoveragePct != null && segment.gradeCoveragePct < 80 ? `grade coverage ${segment.gradeCoveragePct}%` : null,
-    segment.effortBasis === 'vpower' && segment.vpowerUse && segment.vpowerUse !== 'not assessed' ? `vpower use: ${segment.vpowerUse}; power coverage ${segment.powerCoveragePct}%` : null,
-    segment.effortBasis === 'vpower' && segment.gradeSensitivityWPerPct != null ? `local uncapped sensitivity ~${segment.gradeSensitivityWPerPct} W per grade percentage point, ~${segment.massSensitivityWPerKg} W/kg mass (not error bounds)` : null,
     segment.routeStretches
       ? joinNonEmpty([
         `by route stretch (this ride / typical for this direction): ${segment.routeStretches.map((stretch) => `km ${stretch.fromKm}-${stretch.toKm} ${stretch.kmh}${stretch.typicalKmh != null ? ` / ${stretch.typicalKmh}` : ''} km/h${stretch.hr != null ? `, HR ${stretch.hr}` : ''}`).join('; ')}`,
@@ -284,40 +280,132 @@ function buildRecentHistoryContext(entries, options = {}) {
 function formatConversation(history) {
   return (Array.isArray(history) ? history : [])
     .filter((entry) => entry && (entry.role === 'user' || entry.role === 'assistant') && String(entry.content || '').trim())
-    .slice(-24).map((entry) => `${entry.role === 'user' ? 'User report' : 'Assistant hypothesis'} (${entry.ts || 'message date unknown'}): ${String(entry.content).trim()}`).join('\n');
+    .map((entry) => `${entry.role === 'user' ? 'User report' : 'Assistant hypothesis'} (${entry.ts || 'message date unknown'}): ${String(entry.content).trim()}`).join('\n');
 }
 
 // Part I: the three computed trend indicators. Numbers and one-line verdicts are code output;
-// the model explains movement, it does not recompute or rename them.
+// the model explains movement, it does not recompute or rename them. The wording says which way
+// a number moved, never that the move is good: time x HR drops for a slower ride at a much lower
+// heart rate just as it does for a faster one, and the load ratio says nothing about rest.
+const TREND_VERDICT_TEXT = Object.freeze({
+  usual: 'within 3% of the median',
+  'better-once': 'lower than the median on this ride',
+  'tendency-better': 'lower than the median on the last 3 rides',
+  'worse-once': 'higher than the median on this ride',
+  'tendency-worse': 'higher than the median on the last 3 rides',
+  steady: 'close to the usual week',
+  'above-habit': 'above the usual week',
+  'spike-monotonous': 'well above the usual week, with a similar load on each loaded day',
+  'below-habit': 'below the usual week',
+  'below-habit-weeks': 'below the usual week for a second week',
+  slower: 'a smaller drop than usual',
+  faster: 'a larger drop than usual',
+});
+
 function buildTrendsBlock(trends) {
-  if (!trends || !(trends.efficiency || trends.rhythm || trends.recovery)) return '';
+  // Time x HR at the last mark stays on the route card only: both of its inputs are in the
+  // route table as separate numbers, and answers used it once in twenty prompts.
+  if (!trends || !(trends.rhythm || trends.recovery)) return '';
+  const word = (verdict) => TREND_VERDICT_TEXT[verdict] || verdict;
   const rows = [];
-  if (trends.efficiency) {
-    const e = trends.efficiency;
-    rows.push(`Route efficiency at km ${e.km}: effort (time x HR) ${e.effort} vs median ${e.medianEffort} of ${e.samples} prior rides (${e.deltaPct > 0 ? '+' : ''}${e.deltaPct}%), ${e.verdict}. Lower is better.`);
-  }
   if (trends.rhythm) {
     const r = trends.rhythm;
-    rows.push(`Load rhythm: 7-day TRIMP / 28-day weekly average = ${r.ratio}, monotony ${r.monotony}, ${r.verdict}.`);
+    rows.push(`Load rhythm: TRIMP of the 7 days before this ride / weekly average of the 28 days before it = ${r.ratio}, ${word(r.verdict)}. This sport only; this ride is not in either window, so its own load does not explain the ratio.`);
   }
   if (trends.recovery) {
     const c = trends.recovery;
-    rows.push(`Post-climb HR recovery: −${c.drop} bpm in 60 s vs median −${c.medianDrop} of ${c.samples} prior rides (${c.delta > 0 ? '+' : ''}${c.delta} bpm), ${c.verdict}${c.climbPeakHr != null ? `; HR at the climb top ${c.climbPeakHr} bpm` : ''}. Faster drop is better.`);
+    rows.push(`Post-climb HR recovery: −${c.drop} bpm in 60 s vs median −${c.medianDrop} of ${c.samples} prior rides (${c.delta > 0 ? '+' : ''}${c.delta} bpm), ${c.verdict === 'usual' ? 'within 5 bpm of the median' : word(c.verdict)}${c.climbPeakHr != null ? `; HR at the climb top ${c.climbPeakHr} bpm` : ''}. The drop depends on the HR at the top and on what the road does next.`);
   }
   if (!rows.length) return '';
-  return `**Trends on this route (computed):**\n${rows.join('\n')}\nTrends are computed facts about this route. Explain in one or two sentences what moved and the most likely reason from this ride's data (conditions, route stretch, notes), without re-deriving the numbers. Do not call any of them health or fitness.`;
+  return `**Trends (computed):**\n${rows.join('\n')}\nThese are computed numbers. Say in one or two sentences what moved and the most likely reason from this ride's data (conditions, route stretch, notes), without re-deriving them. None of them measures health, form, cardiovascular state, recovery or overload, in either direction: a value does not show that overload is absent either.`;
+}
+
+// The ride on a known route: one line per stretch of the route's skeleton with this ride against
+// the usual one, the route's slow-down points, and under a stretch only those of the ride's own
+// segments that stand out from it. Every ride of a route is described by the same rows, whatever
+// its own segmentation was.
+const SECTION_OUTLIER_HR_BPM = 8;
+const SECTION_OUTLIERS_PER_ROW = 3;
+
+function buildRouteSectionsBlock(sections, segments) {
+  const rows = sections?.stretches;
+  if (!Array.isArray(rows) || !rows.length) return '';
+  const km = (value) => (Math.round(value * 10) / 10).toString();
+  const signed = (seconds) => `${seconds < 0 ? '-' : '+'}${formatClock(Math.abs(seconds))}`;
+  const own = (Array.isArray(segments) ? segments : []).filter((segment) => segment && segment.type !== 'stopped');
+  const lines = rows.map((row, index) => {
+    const road = joinNonEmpty([
+      `${row.type}${row.type === 'flat' ? '' : ` ${row.gradePct > 0 ? '+' : ''}${row.gradePct}%`}`,
+      row.gainM >= 10 ? `+${row.gainM} m` : null,
+      row.endsAtPoint ? 'ends at a slow-down point' : null,
+    ]);
+    const head = `${index + 1}. km ${km(row.fromKm)}-${km(row.toKm)} (${road})`;
+    if (row.absent) return `${head}: not ridden on this ride`;
+    if (row.detour) return `${head}: ridden partly on another road, so not compared (${formatClock(Math.round(row.movingS))} for the stretch)`;
+    const ride = joinNonEmpty([
+      `${formatClock(Math.round(row.movingS))}${row.timeDeltaS != null ? ` (${signed(row.timeDeltaS)})` : ''}`,
+      `${row.speedKmh.toFixed(1)} km/h`,
+      row.avgHr != null ? `HR ${Math.round(row.avgHr)}` : 'HR not covered',
+      row.stoppedS >= 20 ? `stopped ${formatClock(Math.round(row.stoppedS))} (not in the moving time)` : null,
+    ]);
+    const reached = row.reachedS != null
+      ? `; reached at ${formatClock(Math.round(row.reachedS))}${row.usual?.reachedS != null ? ` (usual ${formatClock(Math.round(row.usual.reachedS))})` : ''}` : '';
+    const usual = row.usual
+      ? `usual ${row.usual.speedKmh.toFixed(1)} km/h${row.usual.avgHr != null ? `, HR ${Math.round(row.usual.avgHr)}` : ''}${row.usual.rides < 5 ? ` (${row.usual.rides} rides)` : ''}`
+      : 'no earlier ride on this stretch';
+    const line = `${head}: ${ride}${reached} | ${usual}${row.verdict ? ` — ${row.verdict}` : ''}`;
+    const outliers = row.avgHr == null || row.startElapsed == null || row.endElapsed == null ? [] : own
+      // Segments are cut at the stretch boundaries; older cached ones are placed by their start.
+      .filter((segment) => (segment.stretchIndex != null ? segment.stretchIndex === row.index
+        : segment.startElapsed >= row.startElapsed && segment.startElapsed < row.endElapsed)
+        && segment.durationS >= 60 && segment.avgHr != null && Math.abs(segment.avgHr - row.avgHr) >= SECTION_OUTLIER_HR_BPM)
+      .sort((a, b) => Math.abs(b.avgHr - row.avgHr) - Math.abs(a.avgHr - row.avgHr))
+      .slice(0, SECTION_OUTLIERS_PER_ROW)
+      .sort((a, b) => a.startElapsed - b.startElapsed)
+      .map((segment) => joinNonEmpty([
+        `${formatHms(Math.round(segment.startElapsed))} for ${formatClock(Math.round(segment.durationS))}`,
+        `HR ${segment.avgHr} (${segment.avgHr > row.avgHr ? '+' : '-'}${Math.round(Math.abs(segment.avgHr - row.avgHr))})`,
+        segment.avgSpeedKmh != null ? `${segment.avgSpeedKmh} km/h` : null,
+      ]));
+    return outliers.length ? `${line}\n   stands out inside: ${outliers.join('; ')}` : line;
+  });
+  const points = sections.points || [];
+  const pointList = points.length
+    ? `Slow-down points of the route (places where nearly every ride slows down; why is not in the data. The speed there is the road's, so only time spent against the usual passage means anything): ${points.map((point) => `km ${km(point.km)} (down to ~${Math.round(point.typicalMinKmh)} km/h)`).join(', ')}.`
+    : null;
+  const lost = points.filter((point) => point.notable).map((point) =>
+    `km ${km(point.km)} +${formatClock(point.lostS)}${point.minKmh != null ? `, down to ${Math.round(point.minKmh)} km/h` : ''}${point.stoppedS >= 5 ? `, stopped ${formatClock(Math.round(point.stoppedS))}` : ''}`);
+  const lostLine = !points.length ? null
+    : lost.length ? `On this ride more time than usual was spent at: ${lost.join('; ')}. Waiting or slowing at such a place is ordinary on any ride. It explains part of a time difference and nothing else: it is not effort, not a finding and not something to advise on.`
+      : 'On this ride no point took 10 s or more over its usual passage.';
+  const character = sections.character?.kind === 'easy'
+    ? `This ride as a whole: slower than the route's rides on ${sections.character.sharePct}% of the comparable road (median ${sections.character.speedPct}%) at a heart rate ${Math.abs(sections.character.hrDelta)} bpm lower${sections.stoppedS >= 60 ? `, with ${formatClock(Math.round(sections.stoppedS))} stopped` : ''}. An unusually easy ride for this route: riding with company, a recovery spin or a deliberate choice - the data cannot say which. Its slower times are not a loss of form, and it is left out of the usual values of later rides.`
+    : null;
+  const excluded = sections.excludedEasyRides > 0
+    ? `${sections.excludedEasyRides} unusually easy earlier ride${sections.excludedEasyRides > 1 ? 's are' : ' is'} left out of the usual values.` : null;
+  return joinNonEmpty([
+    `**Route Sections (this ride against its usual on this route):**\nThe route as its ${sections.rides} rides show it, cut where at least ${sections.sharePct}% of them slow down and where the terrain changes; this ride's own segments are merged into these stretches. Each line is one stretch of the same road: this ride | usual = median of the last rides that rode it. Time is moving time and its difference from usual; "reached at" is time since the start at the end of the stretch.`,
+    lines.join('\n'),
+    character,
+    excluded,
+    pointList,
+    lostLine,
+    'The verdict after each line is computed: quote it, do not re-derive it. "Usual" describes earlier rides; it is not a target. Terrain is the route\'s own. The stretches and points together are a description of the route: use them to say where on the road something happened.',
+  ], '\n');
 }
 
 function buildRouteContextBlock(routeContext) {
   if (!routeContext || !(routeContext.checkpointLines?.length || routeContext.climbLine || routeContext.patternLine || routeContext.routeNote || routeContext.trends)) return '';
-  const lines = (routeContext.checkpointLines || []).join('\n');
+  // With route sections the comparison by place is in the Route Sections block of the workout.
+  const sectioned = Boolean(routeContext.sections?.stretches?.length);
+  const lines = sectioned ? '' : (routeContext.checkpointLines || []).join('\n');
   return joinNonEmpty([
     `**Same-Route Context (GPS-confirmed):**\nRoute "${routeContext.routeName}" (${routeContext.relation}); ${routeContext.priorRideCount} earlier comparable rides (same direction).`,
     routeContext.routeNote ? `User note about this route (user-declared, applies to every ride on it): ${routeContext.routeNote}` : null,
     lines ? `Checkpoint splits at this ride's segment boundaries (plus every 2 km inside long segments); prior rides are matched by place on the road, so differing segmentation does not break the comparison. Each line is one place with its own delta; quote places separately, never as a range summary. Median of up to 5 prior same-route rides:\n${lines}` : null,
     routeContext.patternLine,
-    routeContext.verdictLine,
-    routeContext.climbLine,
+    sectioned ? null : routeContext.verdictLine,
+    sectioned ? null : routeContext.climbLine,
     buildTrendsBlock(routeContext.trends),
     routeContext.note,
   ], '\n');
@@ -336,10 +424,10 @@ function buildRouteProfileBlock(routeProfile) {
   const effects = described.asymmetric.map((stretch) =>
     `- km ${stretch.fromKm}-${stretch.toKm} is near-flat, yet about ${stretch.ownKmh} km/h here vs ${stretch.otherKmh} km/h in the opposite direction`).join('\n');
   return joinNonEmpty([
-    `**Route Profile (derived from earlier rides of this route${routeProfile.rideCounts ? `: ${routeProfile.rideCounts.same} in the first-ride direction, ${routeProfile.rideCounts.reversed} opposite` : ''}; riding ${reversed ? 'opposite to the first ride' : 'in the first-ride direction'}):**`,
+    `**Route Profile (derived from earlier rides of this route${routeProfile.rideCounts?.reversed ? `: ${routeProfile.rideCounts.same} in the first-ride direction, ${routeProfile.rideCounts.reversed} opposite` : ''}; riding ${reversed ? 'opposite to the first ride' : 'in the first-ride direction'}):**`,
     `Length ${routeProfile.lengthKm} km, ascent ~${ascent} m, descent ~${descent} m. Climbs in this direction: ${climbs}.`,
     effects ? `Direction effects on near-flat ground (grade does not explain them; consistent with prevailing wind, surface or junctions, not with fitness):\n${effects}` : null,
-    'These are medians of earlier rides, not the conditions of this day. When this ride\'s slow stretch coincides with a listed direction effect, say so and do not list wind as an open question.',
+    effects ? 'These are medians of earlier rides, not the conditions of this day. When this ride\'s slow stretch coincides with a listed direction effect, say so and do not list wind as an open question.' : null,
   ], '\n');
 }
 
@@ -363,7 +451,7 @@ function buildTrainingHistoryContext(context) {
       row.rpeCount ? `RPE recorded for ${row.rpeCount}/${row.activities} rides${row.medianRpe != null ? `; median RPE ${row.medianRpe}${row.medianTrimpOfRpeRides != null ? ` at median TRIMP ${Math.round(row.medianTrimpOfRpeRides)}` : ''}` : ''}${row.highRpeRides?.length ? `; rides with RPE ≥ 8: ${row.highRpeRides.length} (TRIMP ${row.highRpeRides.join(', ')})` : ''} (descriptive, no correlation at n < 6)` : null,
       row.classMix && Object.keys(row.classMix).length
         ? `session classes: ${Object.entries(row.classMix).map(([label, count]) => `${label} ${count}`).join(', ')}` : null,
-      row.zonedActivities ? `${row.zonedActivities}/${row.activities} activities with covered HR zones; covered time ${formatHms(Math.round(row.coveredHrSeconds))}; zone 1-5 seconds ${row.zoneSeconds.map(Math.round).join(', ')}; ${intensityDistribution(row.zoneSeconds)}`
+      row.zonedActivities ? `${row.zonedActivities}/${row.activities} activities with covered HR zones; covered time ${formatHms(Math.round(row.coveredHrSeconds))}; ${intensityDistribution(row.zoneSeconds)}`
         : 'HR-zone distribution unavailable, not zero intensity',
     ])).join('\n');
     return `${period.days}-day period ${dates}:\n${sports || 'No imported activities; this does not establish rest.'}`;
@@ -386,14 +474,10 @@ function buildTrainingHistoryContext(context) {
   }).join('\n\n');
   const interruptions = context.interruptions.map((gap) =>
     `No imported same-sport activity between ${String(gap.before).slice(0, 10)} and ${String(gap.after).slice(0, 10)} (~${gap.gapDays.toFixed(0)} days); possible change of phase or missing records, cause unknown.`).join('\n');
-  const monotony = context.monotony
-    ? `Week monotony (Foster, TRIMP-based, imported days only): mean daily ${context.monotony.meanDailyTrimp.toFixed(0)} over ${context.monotony.activeDays} active days, monotony ${context.monotony.monotony.toFixed(2)}, strain ${Math.round(context.monotony.strain)}; descriptive, not a validated readiness measure.`
-    : null;
   const reports = (context.userReports || []).map((report) =>
-    `Activity ${String(report.startTime).slice(0, 10)}, message ${report.ts || 'date unknown'}, user report: ${report.content}`).join('\n');
+    `Activity ${String(report.startTime).slice(0, 10)}, message ${report.ts || 'date unknown'}, ${report.role === 'assistant' ? 'assistant reply (AI hypothesis)' : 'user report'}: ${report.content}`).join('\n');
   return joinNonEmpty([
-    `**Training Volume and Covered Intensity:**\nHistorical baseline anchored at ${context.windowEnd}: all periods end at or before the current activity start; the current activity is excluded from every historical total. These are rolling windows, not calendar weeks.\n${volume}\n${context.intensityNote}\n${context.coverageNote}`,
-    `**Adaptive Observation Window:**\n${context.windowDays} days: ${context.windowStart.slice(0, 10)} to ${context.windowEnd.slice(0, 10)}; ${context.activities} same-sport activities. Window selection is not evidence of fitness.\n${describeTrend('Duration pattern', context.durationTrend)}\n${describeTrend('Distance pattern', context.distanceTrend)}\n${joinNonEmpty([interruptions, monotony], '\n')}`,
+    `**Training Volume and Covered Intensity:**\nHistorical baseline anchored at ${context.windowEnd}: all periods end at or before the current activity start; the current activity is excluded from every historical total. These are rolling windows, not calendar weeks.\n${volume}\n${context.intensityNote}\n${context.coverageNote}${interruptions ? `\n${interruptions}` : ''}`,
     context.routeContext
       ? null
       : matches ? `**Candidate Segment Comparisons:**\n${matches}\nMatching uses ordered terrain, duration and distance, not equal HR/power. Similar structure does not establish identical route, intent, weather or training stimulus; consider intensity separately.` : '**Candidate Segment Comparisons:** No eligible matches; training-volume context remains available.',
@@ -402,7 +486,7 @@ function buildTrainingHistoryContext(context) {
     // Altitude consensus only: the data-quality flags are printed once, in the workout body, so
     // they are present even without history and never duplicated.
     buildAltitudeQualityBlock(context.altitudeQuality, []),
-    reports ? `**Dated User Context Across Activities:**\n${reports}\nMessage date and activity date are different. Reports may describe another effective period; do not apply later circumstances retrospectively without support.` : null,
+    reports ? `**Dated User Context Across Activities:**\n${reports}\nThese are the complete earlier conversations, oldest first. User reports are the user's own words; assistant replies are earlier AI hypotheses, shown so that the user's answers can be understood, and are not evidence. Message date and activity date are different. Reports may describe another effective period; do not apply later circumstances retrospectively without support.` : null,
   ], '\n\n');
 }
 
@@ -498,6 +582,11 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
   const maxRetries = Number.isInteger(options.maxRetries) && options.maxRetries >= 0
     ? options.maxRetries
     : 1;
+  // An answer with no text in it is not a verdict on the request: the same prompt goes through on
+  // the next try. It happened once or twice in every batch of 39, and each time the whole batch
+  // ended "1 failed" and had to be started again by hand.
+  const emptyRetries = Number.isInteger(options.emptyRetries) && options.emptyRetries >= 0 ? options.emptyRetries : 2;
+  let emptyAnswers = 0;
   const vendor = String(options.vendor || '').trim() || 'copilot';
   const wantedId = String(options.modelId || '').trim();
   // A pinned or picked model id may belong to another vendor (BYOK providers register under
@@ -540,7 +629,14 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
       }
 
       if (!analysis.trim()) {
-        throw new Error('Copilot returned an empty analysis.');
+        if (emptyAnswers < emptyRetries) {
+          emptyAnswers += 1;
+          await delay(retryDelayMs * emptyAnswers);
+          // An empty answer does not use up a rate-limit retry.
+          attempt -= 1;
+          continue;
+        }
+        throw new Error(`Copilot returned an empty analysis${emptyRetries ? ` (${emptyRetries + 1} attempts)` : ''}.`);
       }
       await report({ response: analysis.trim() });
       return analysis.trim();
@@ -655,9 +751,9 @@ function describeLanguageModelError(vscode, error) {
 // Character budgets per block (reference: a ~1 h, 1 Hz ride). Matching is by heading prefix; the
 // log shows budget/actual and an overshoot is reported as a warning, never truncated.
 const PROMPT_BLOCK_BUDGETS = Object.freeze([
-  ['This Workout', 1500], ['Segment Breakdown', 4000], ['Same-Route Context', 2200], ['Route Profile', 1000], ['Altitude Quality', 1800], ['Heuristic Session Class', 400],
+  ['This Workout', 1500], ['Segment Breakdown', 4000], ['Route Sections', 4500], ['Same-Route Context', 2200], ['Route Profile', 1000], ['Altitude Quality', 1800], ['Heuristic Session Class', 400],
   ['Time in Heart-Rate Zones', 900], ['Peak Sustained', 900], ['Recent Activity History', 4500],
-  ['Training Volume and Covered Intensity', 3200], ['Dated User Context', 3200], ['Principles', 4400],
+  ['Training Volume and Covered Intensity', 3200], ['Principles', 5400],
   ['Questions for Analysis', 1800],
 ]);
 
@@ -799,8 +895,6 @@ function buildWorkoutFields(session, records, altitudeSettlingWindow = null) {
     ['BikeStress (GC)', showPower && !wholeRidePowerIsEstimated ? formatPositive(session.bike_stress_score, 1) : null],
     ['Power:HR decoupling (EF)', showPower && !wholeRidePowerIsEstimated ? formatFinite(session.decoupling_pct, 1) : null],
     ['TRIMP', formatPositive(session.trimp, 1)],
-    ['hrTSS', formatPositive(session.hr_tss, 1)],
-    ['Estimated threshold HR used for hrTSS', formatPositive(session.lactate_threshold_hr, 0), 'bpm'],
     ['Avg Heart Rate', formatPositive(session.avg_hr, 0), 'bpm'],
     ['Max Heart Rate', formatPositive(session.max_hr, 0), 'bpm'],
     ['Elevation Gain', showElevation && ascentText ? `${ascentText} m${settlingNote ? ` (${settlingNote})` : ''}${elevationNote ? ` (${elevationNote})` : ''}` : null],
@@ -816,12 +910,12 @@ function buildHeartRateProfileContext(heartRateConfig) {
     return '**Heart Rate Profile:** No personal maximum HR or zone thresholds are available.';
   }
   const zoneMethod = heartRateConfig?.lthr
-    ? `user-tested lactate threshold HR ${heartRateConfig.lthr} bpm (dated ${heartRateConfig.effectiveDate || 'profile'}); hrTSS threshold uses this value`
+    ? `user-tested lactate threshold HR ${heartRateConfig.lthr} bpm (dated ${heartRateConfig.effectiveDate || 'profile'})`
     : Array.isArray(heartRateConfig.thresholds)
-      ? 'zone starts from the dated profile; hrTSS threshold is estimated as the middle of the Threshold zone, not a tested LTHR'
+      ? 'zone starts from the dated profile'
       : Number.isFinite(Number(heartRateConfig?.restingHeartRate))
-        ? `thresholds derived from Karvonen reserve (resting ${heartRateConfig.restingHeartRate} bpm); hrTSS threshold is estimated, not a tested LTHR`
-        : 'thresholds derived at 60%, 70%, 80%, and 90% of max HR; hrTSS threshold is estimated, not a tested LTHR';
+        ? `thresholds derived from Karvonen reserve (resting ${heartRateConfig.restingHeartRate} bpm)`
+        : 'thresholds derived at 60%, 70%, 80%, and 90% of max HR';
   const maxSource = heartRateConfig?.observedMaxSource
     ? `observed 15 s window ${heartRateConfig.observedMaxSource.bpm} bpm on ${heartRateConfig.observedMaxSource.date}${heartRateConfig.formulaMaxHeartRate ? ` / formula ${heartRateConfig.formulaMaxHeartRate}` : ''}`
     : heartRateConfig?.formulaMaxHeartRate ? `formula ${heartRateConfig.formulaMaxHeartRate}` : null;
@@ -865,25 +959,26 @@ const ANALYSIS_PRINCIPLES = Object.freeze([
   'Hierarchy of evidence: measurement > calculation > data-quality flag > user message > code heuristic > earlier AI hypothesis. Back each important claim with a number from the data. Repeated AI claims are not independent corroboration.',
   'Every number you quote is copied from the supplied data at its own place: the same mark, segment or date. Do not generalize a split to a stretch it does not cover, average in your head, flip a sign (slower/faster), or shift a location (segment numbers and km marks are different axes and a ride cannot reference km beyond its length). If the data does not carry a number for a point, the point is made without one or not made.',
   'Explain mechanisms (heat, drift, wind, fatigue) as hypotheses and say what observation would tell them apart.',
-  'Compare only what is comparable: the same route and signal source. Without that, speed and HR are description, not a judgement of form.',
-  'Separate behaviour (what was done), stimulus (what the load resembles) and form (needs repeatable comparable data; faster speed or lower HR alone does not establish it). Goals may be absent, multiple, or change over time: infer the training direction from repeated patterns, not intentions. Do not infer recovery status, aerobic control, fatigue or overreaching from average and maximum HR alone.',
-  'Session type: confirm or dispute the computed class in one sentence with evidence; do not re-derive the zone distribution. Without a computed class, classify session type (recovery, endurance, tempo, threshold, VO2max/anaerobic, mixed or unstructured) only from HR zone distribution, peak sustained HR, measured power and segment structure, citing the evidence; without HR or measured power say it cannot be determined.',
+  'Compare only what is comparable: the same route and signal source. Separate behaviour (what was done), stimulus (what the load resembles) and form (needs repeatable comparable data; faster speed or lower HR alone is description, not a judgement of form). Goals may be absent, multiple, or change over time: infer the training direction from repeated patterns, not intentions.',
+  'No physiological state is measured here. Do not state recovery status, fatigue, overreaching, cardiovascular adaptation, fat metabolism or the absence of overload as facts, nor derive them from HR, a load ratio or a trend value; describe the work by time in zones and structure. What a session does inside the body - blood flow, mobility, metabolism, muscular or metabolic fatigue or its absence - is not in the data either: leave it out.',
+  'Session type: confirm or dispute the computed class in one sentence with evidence; do not re-derive the zone distribution. Without a computed class, classify session type (recovery, endurance, tempo, threshold, VO2max/anaerobic, mixed or unstructured) only from HR zone distribution, peak sustained HR, measured power and segment structure; without HR or measured power say it cannot be determined.',
   'Periods: use the supplied session-class mix and period load; missing imported activities are unknown, not rest, and TSS, hrTSS and TRIMP are different scales that are never added or compared. Judge the stimulus mix over periods from covered intensity distribution and the variety of session types; partial HR coverage limits this.',
-  'Continuity: honour "revised" and the earlier advice categories; repeat a category only when new data requires it and say what changed. Revise earlier hypotheses only on relevant new facts. Missing detail in the current summary does not disprove an earlier observation. Relative periods in an earlier analysis are anchored to that activity\'s date; before declaring an earlier aggregate wrong, verify identical start/end boundaries, sport, inclusion rules and data coverage, otherwise mark the comparison unverified, not erroneous.',
+  'Continuity: honour "revised" and the earlier advice categories; repeat a category only when new data requires it and say what changed. Revise earlier hypotheses only on relevant new facts. Missing detail in the current summary does not disprove an earlier observation. Periods in an earlier analysis are anchored to that activity\'s date; call an earlier aggregate wrong only after verifying identical start/end boundaries, sport, inclusion rules and data coverage, otherwise mark the comparison unverified, not erroneous.',
   'User messages are dated and describe their own periods. Reported medical restrictions take priority; FIT data cannot establish postoperative healing, medical clearance or safe load progression.',
   'Estimates (vpower, hrTSS, TRIMP) are approximations on their own scales; vpower limits apply per segment and never support absolute performance or FTP claims.',
-  'Device temperature, absent fields and partial coverage can change a conclusion: mention each once, where it matters. Temperature may be the device\'s, not ambient air. Absent fields may be unmeasured, withheld, unavailable or inapplicable; treat unknown as unknown rather than zero. Quality flags are measured facts that explain discrepancies, not hedges.',
-  'Do not prescribe bpm targets from a peak; phrase effort advice through RPE and comparable stretches, labelled as general guidance.',
-  'Do not fill missing data with plausible claims; say once what is missing. Never present an invented instruction, promise or preference as the user\'s own words; only the supplied session notes and user context are the user\'s. If recent analyses already pointed out the same missing sensor or data gap, mention it at most briefly and do not make it the practical step again.',
+  'Device temperature (it may be the device\'s, not ambient air), absent fields and partial coverage can change a conclusion: mention each once, where it matters. An absent field is unknown, not zero. Quality flags are measured facts that explain discrepancies, not hedges.',
+  'Set no numeric targets: no heart rate, speed, time or power to hit, hold or stay under next time, whether taken from a peak, from this ride or from a usual value. A usual value describes earlier rides; it is not a goal. Phrase effort advice through RPE and by naming the stretch, labelled as general guidance.',
+  'Advise only on what the rider controls on the bike: effort, pacing, where to push or ease, what to record. Traffic, traffic lights, junctions, crossings, weather, daylight, the time of the ride and the profile of the route are given, not chosen: a stop or a slow-down at a fixed place of the route is an ordinary part of riding - never call it a hitch, a loss or a problem, never build advice on it, and never suggest another start time, another route or other conditions to avoid it. A stop anywhere else is not a flaw either: people stop to wait, to rest, to talk, to change something. State it as a fact that explains the time; treat stops as something to reduce only when a declared goal requires riding without them (a race, a timed effort).',
+  'Do not fill missing data with plausible claims; say once what is missing. Never present an invented instruction, promise or preference as the user\'s own words; only the supplied session notes and user context are the user\'s. A missing sensor or data gap that recent analyses already pointed out gets a brief mention at most and is not the practical step again.',
   'Ask the user only when the answer would change the advice and was not asked before; otherwise state the working assumption. Most analyses need no question.',
-  'Focus on what is new relative to earlier summaries. Do not repeat advice, caveats or questions already given there unless this activity adds new evidence; do not retell tables. Attribute period statistics to their stated date range, never to one activity.',
-  'Answer in the interface language. Translate every term, including the zone and class names that appear in English in the data (recovery, endurance, tempo, threshold, VO2max, mixed, unstructured, undetermined); keep only the abbreviations HR, VAM, TRIMP, RPE, bpm and units such as km/h. Never leave an English word inside a sentence in another language.',
+  'Focus on what is new relative to earlier summaries; do not repeat their advice, caveats or questions unless this activity adds evidence, and do not retell tables. Attribute period statistics to their stated date range, never to one activity.',
+  'Answer in the interface language. Translate every term, including the zone and class names that appear in English in the data; keep only the abbreviations HR, VAM, TRIMP, RPE, bpm and units such as km/h. Never leave an English word inside a sentence in another language.',
 ]);
 
 // How the answer should sound: a coach talking to the athlete, not a report about "the user".
 // Shared by the analysis, chat and comparison prompts.
 const ANALYSIS_VOICE = `**Voice:**
-- Speak to the athlete directly in the second person and keep one register throughout (in languages with a polite form, use it consistently). Never say "the user" or "the athlete" about the person you are writing to.
+- Speak to the athlete directly in the second person. In languages that have an informal and a polite form use the informal one (in Russian «ты»), always and throughout: one register in every sentence, whatever the tone of earlier analyses or conversations. Never say "the user" or "the athlete" about the person you are writing to.
 - Plain sentences: one idea each, short, concrete. Write as you would speak to someone standing next to you after the ride.
 - A caveat is said once, where it changes the conclusion. Do not close every sentence or paragraph with a disclaimer such as "this does not prove", "this is a description, not a judgement", "conditions were not controlled". If a limit applies to the whole section, state it in one sentence at the start or end, then move on.
 - Quote at most the two or three numbers that carry the point; do not recite rows of a table or every peak window.
@@ -945,14 +1040,16 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
     : '';
   const zoneContext = buildZoneContext(fitData.records, heartRateConfig);
   const sessionClassContext = buildSessionClassContext(fitData.sessionClass, heartRateConfig);
-  const segmentContext = buildSegmentContext(fitData.segments, { records: fitData.records, sport: session.sport }).text;
+  const routeSections = progressSummary?.trainingContext?.routeContext?.sections;
+  const segmentContext = buildRouteSectionsBlock(routeSections, fitData.segments)
+    || buildSegmentContext(fitData.segments, { records: fitData.records, sport: session.sport }).text;
   const historyContext = buildRecentHistoryContext(recentHistory);
   const hasSegments = Boolean(segmentContext);
   const hasRouteStretches = Boolean(fitData.segments?.some((segment) => segment.routeStretches?.length));
 
   // Data first, interpretation rules last: without a system role, closeness to the question is the only lever.
   const body = joinNonEmpty([
-    joinNonEmpty([`**This Workout:**\n${workoutFields}`, buildSessionNotesBlock(fitData.sessionNotes), buildInferredNotesBlock(fitData.inferredNotes, fitData.sessionNotes), segmentContext], '\n\n'),
+    joinNonEmpty([`**This Workout:**\n${workoutFields}`, buildSessionNotesBlock(fitData.sessionNotes), segmentContext], '\n\n'),
     buildLapContext(fitData),
     powerSource === 'estimated from motion data'
       ? '**Data Quality Note:** Whole-ride power is estimated from motion and is not supplied as a reliable training-load metric. Any vpower shown for climbs is only a rough terrain-specific estimate; do not treat it as measured power.'
@@ -963,7 +1060,6 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
     sessionClassContext,
     buildPeakHeartRateContext(fitData.records, progressSummary?.trainingContext),
     buildAltitudeQualityBlock(null, fitData.qualityFlags),
-    buildDataQualityContext(fitData, heartRateConfig),
     reportedHeartRateContext,
     historyContext,
     priorAnalysisContext,
@@ -983,9 +1079,6 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
     reportedHeartRateContext
       ? 'User-reported HR values are a summary from another device, not a measurement of this recording: treat them as an approximate indication of internal response and never as zone time, peaks or load.'
       : null,
-    heartRateConfig?.lthr
-      ? 'hrTSS uses the user-tested lactate threshold HR from the dated profile.'
-      : 'hrTSS uses an estimated threshold HR (middle of the Threshold zone), not a tested LTHR; treat it as approximate.',
     historyContext
       ? 'Entries under Recent Activity History include facts and past analyses of other workouts, not measurements of this one; past analyses are revisable hypotheses. User messages about other workouts appear only under Dated User Context.'
       : null,
@@ -996,7 +1089,12 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
       ? null
       : notesSuggestedRecently(recentHistory)
         ? 'No session notes for this ride. Notes were already suggested in recent analyses; do not suggest them again.'
-        : 'No session notes (RPE, purpose, conditions) are recorded for this ride. They are entered in the Session Notes section of the activity page. Suggest recording them only when that is the most useful next step, and then as a data suggestion, not as pacing advice.',
+        : 'No session notes (RPE, goal, conditions) are recorded for this ride. They are entered in the Session Notes section of the activity page. Suggest recording them only when that is the most useful next step, and then as a data suggestion, not as pacing advice.',
+    // Advice has to serve some goal. Without a declared one the model names the one it assumes,
+    // instead of quietly steering towards a goal the rider never had.
+    fitData.sessionNotes?.goals?.length
+      ? null
+      : 'No goal is declared for this ride. Take the goal that its session type suggests and say plainly that it was derived automatically from the type of the ride, not declared by the athlete: a ride that looks like tempo may have been meant as a stroll. A goal derived from the ride is met by the ride by construction, so do not judge the ride against it and do not conclude from it that nothing needs changing. In the last section give an observation instead of a step: what in this ride differed from the athlete\'s usual on this route - or from the recent rides when there is no route comparison - in one or two sentences, without saying what to do about it. If nothing differed, say that.',
     hasRouteStretches
       ? 'Where a flat segment is broken down by route stretch, the speed change between stretches belongs to the route; treat only the deviation from typical speed and the HR change as this ride\'s facts. Do not list the cause of a route-typical speed change as an open question.'
       : null,
@@ -1023,10 +1121,10 @@ ${SUMMARY_TAIL_INSTRUCTION}`;
   const data = `${body}
 
 **Questions for Analysis:**
-1. **Session Character and Stimulus**: Classify the session type from the evidence and name the qualities it likely stimulates. Distinguish observed work from inferred direction and stated intentions.
+1. **Session Character and Stimulus**: Classify the session type from the evidence and say what kind of work it was, by time in zones and structure - what was done, not what it does to the body. Name the goal of the ride: the declared one - each of them when several are declared - and whether the ride served it, or, when none is declared, the one derived automatically from the session type, said to be exactly that. Distinguish observed work from inferred direction and stated intentions.
 2. **Execution and Comparable Segments**: What matters about pacing, sustained work, changes within segments, repeats and interruptions? Use peak sustained HR against prior bests where it adds information. Explain differences and limits of any candidate comparisons.
 3. **Current Training Direction**: What patterns, stimulus mix across session types and intensity distribution, or possible phase changes are supported by the dated history? Consider multiple simultaneous priorities; discuss fitness or recovery only where evidence permits.
-4. **Practical Next Step**: Recommend the option best supported by the observed pattern and dated user context, with the reason. Choose what this activity most informs: execution (pacing, climbs, starts, stops), route or format choice, data capture, or next-session load. If recent analyses already gave the same load advice and the pattern is unchanged, do not restate it; pick another relevant point. Add one number worth watching next time on this route when same-route data exist. Add an alternative only if a specific plausible circumstance would change the advice; do not branch on hypothetical goals by default. Not a universal progression plan.
+4. **Practical Next Step**: Recommend the option best supported by the observed pattern and dated user context, with the reason, and consistent with the goal named in the first answer: say which goal the step serves. If the ride served its declared goal and nothing in the data calls for a change, say exactly that in one sentence and stop there: a step invented to fill this section is worse than none. When no goal is declared this section is an observation, not a step, as the notes above say. Choose what this activity most informs: execution (pacing, climbs, starts, stops), route or format choice, data capture, or next-session load. If recent analyses already gave the same load advice and the pattern is unchanged, do not restate it; pick another relevant point. Name a stretch to watch next time on this route only when it bears on that goal - something to observe, not a value to hit; a stretch that was merely slower than usual on an easy ride is not one. Add an alternative only if a specific plausible circumstance would change the advice; do not branch on hypothetical goals by default. Not a universal progression plan.
 
 Answer the four questions in order under your own short headings, 2-4 plain sentences each, in the voice described above. Explain what the numbers mean for the athlete rather than retelling the input. Do not fill unsupported topics with boilerplate or mandatory recovery claims.`;
   return { instructions, data };
@@ -1127,7 +1225,6 @@ ${ANALYSIS_VOICE}
 
 Rules:
 - Use provided workout/history facts; do not invent personal circumstances or later activities.
-- hrTSS uses an estimated threshold HR (middle of the Threshold zone), not a directly tested LTHR value; treat it as approximate.
 - User-reported HR values, when present, are a summary from another device, not a measurement of this recording: treat them as an approximate indication and never as zone time, peaks or load.
 - If the user says the route was not flat, explicitly use elevation gain/loss context and explain what can and cannot be inferred without full grade distribution.
 - Do not end your answer with a SUMMARY tail; answer in prose only.${segmentContext ? '\n- Never compare a vpower-based segment with an HR-based segment by raw numbers, and draw no effort conclusions on segments marked technical or stopped.' : ''}${hasRouteStretches ? '\n- When asked why speed changed inside a flat segment, first use the route-stretch breakdown: a change that matches the typical speed for this direction belongs to the route, and only the deviation from typical and the HR change are this ride\'s facts.' : ''}
@@ -1255,6 +1352,7 @@ module.exports = {
   buildTrainingHistoryContext,
   buildAltitudeQualityBlock,
   buildRouteContextBlock,
+  buildRouteSectionsBlock,
   buildTrendsBlock,
   buildRouteProfileBlock,
   formatFieldsSkippingEmpty,

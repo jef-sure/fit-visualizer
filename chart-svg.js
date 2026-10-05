@@ -29,6 +29,10 @@ function createChartSvgRenderer({ buildDistanceMarkers, escapeHtml, formatTick, 
     }
 
     const svgIdAttr = options.svgId ? ` id="${escapeHtml(options.svgId)}"` : '';
+    // Where the ride passes from one stretch of its route to the next: a thin line over the whole
+    // plot, so the route's division is visible behind the ride's own segments.
+    let openStretch = null;
+    const stretchMarkers = [];
     const segmentBands = (Array.isArray(options.segmentBands) ? options.segmentBands : []).map((segment) => {
       const start = Number(segment.startDistanceKm);
       const end = Number(segment.endDistanceKm);
@@ -37,6 +41,12 @@ function createChartSvgRenderer({ buildDistanceMarkers, escapeHtml, formatTick, 
       const scaleX = (value) => chart.plotLeft + ((value - chart.xMin) / range) * (chart.plotRight - chart.plotLeft);
       const x1 = Math.max(chart.plotLeft, Math.min(chart.plotRight, scaleX(start)));
       const x2 = Math.max(chart.plotLeft, Math.min(chart.plotRight, scaleX(end)));
+      if (Number.isInteger(segment.stretchIndex) && segment.stretchIndex !== openStretch) {
+        if (openStretch != null && x1 > chart.plotLeft && x1 < chart.plotRight) {
+          stretchMarkers.push(`<line class="stretchMarker" x1="${x1.toFixed(1)}" y1="${chart.plotTop}" x2="${x1.toFixed(1)}" y2="${chart.plotBottom}" />`);
+        }
+        openStretch = segment.stretchIndex;
+      }
       if (x2 <= x1) return '';
       const type = segment.technical ? 'technical' : segment.type;
       const bandClass = { climb: 'Climb', descent: 'Descent', flat: 'Flat', stopped: 'Stopped', technical: 'Technical' }[type];
@@ -73,7 +83,7 @@ function createChartSvgRenderer({ buildDistanceMarkers, escapeHtml, formatTick, 
     <rect class="crosshairCapture" x="${chart.plotLeft}" y="${chart.plotTop}" width="${chart.plotRight - chart.plotLeft}" height="${chart.plotBottom - chart.plotTop}" fill="transparent" />` : '';
 
     return `<svg${svgIdAttr} viewBox="0 0 ${chart.width} ${chart.height}" preserveAspectRatio="none" role="img" aria-label="line chart">
-    <g class="chartDataLayer"><g class="segmentBandGroup">${segmentBands}</g>${markerSvg}</g>
+    <g class="chartDataLayer"><g class="segmentBandGroup">${segmentBands}</g>${markerSvg}<g class="stretchMarkerGroup">${stretchMarkers.join('')}</g></g>
     ${xTicks}
     ${yTicks}
     <line class="axis axisLineX" x1="${chart.plotLeft}" y1="${chart.plotBottom}" x2="${chart.plotRight}" y2="${chart.plotBottom}" />

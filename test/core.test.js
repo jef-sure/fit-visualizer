@@ -192,7 +192,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -272,9 +272,11 @@ test('batch re-analysis includes stale and missing analyses together and respect
   fs.writeFileSync(dbPath, Buffer.from(db.export()));
   db.close();
   let accept = false;
+  let selectedRun = false;
   let requests = 0;
   const reports = [];
   const messages = [];
+  const warnings = [];
   const internals = loadExtensionInternalsForTest({
     workspace: { getConfiguration: () => ({ get: (key) => key === 'logLlmRequests' ? false : undefined }) },
     l10n: { t: (text, ...values) => text.replace(/\{(\d+)\}/g, (_, index) => values[index]) },
@@ -288,12 +290,13 @@ test('batch re-analysis includes stale and missing analyses together and respect
     }] },
     window: {
       showQuickPick: () => { throw new Error('No mode selection should be shown'); },
+      showWarningMessage: (message) => { warnings.push(message); },
       tabGroups: { activeTabGroup: { activeTab: null } },
       showInformationMessage: async (message, options, action) => {
         messages.push(message);
         if (options?.modal) {
-          assert.match(message, /for 2 activities/);
-          assert.match(message, /outdated and missing/);
+          assert.match(message, selectedRun ? /Re-analyze 2 selected activities/ : /for 2 activities/);
+          assert.match(message, selectedRun ? /replaces their saved analyses/ : /outdated and missing/);
           return accept ? action : undefined;
         }
       },
@@ -322,6 +325,16 @@ test('batch re-analysis includes stale and missing analyses together and respect
     await internals.reanalyzeOutdatedActivities();
     assert.equal(requests, 2);
     assert.equal(messages.at(-1), `All analyses already use version ${currentVersion}.`);
+
+    // A chosen set is re-analyzed even when current, by id or by part of the file name, oldest first.
+    reports.length = 0;
+    selectedRun = true;
+    await internals.reanalyzeSelectedActivities('3, old, 77');
+    assert.equal(requests, 4);
+    assert.deepEqual(reports.map((report) => report.message), ['1/2: old.fit', '2/2: current.fit']);
+    assert.deepEqual(warnings, ['No activity matches: 77']);
+    await internals.reanalyzeSelectedActivities('  ');
+    assert.equal(requests, 4, 'an empty selection does nothing');
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -922,6 +935,17 @@ test('metric overlays reuse computeGrade once, exclude the chart\'s own metric a
   const overlaySource = fs.readFileSync(path.join(__dirname, '..', 'chart-overlays.js'), 'utf8');
   assert.match(overlaySource, /const grades = records\.some[\s\S]*?computeGrade\(records\)/);
   assert.match(source, /var OVERLAY_PALETTE = \['#e67e22', '#00acc1'\];/);
+  // An overlay never takes a color the chart already uses: orange on the altitude chart,
+  // purple (the compared ride) on the speed chart.
+  const paletteSource = /var OVERLAY_COLORS[\s\S]*?function overlayPalette\(svg\) \{[\s\S]*?\n      \}/.exec(source)[0];
+  const overlayPalette = new Function(`var OVERLAY_PALETTE = ['#e67e22', '#00acc1']; ${paletteSource}; return overlayPalette;`)();
+  assert.deepEqual(overlayPalette({ id: 'map1AltSvg' }), ['#00acc1', '#ab47bc']);
+  assert.deepEqual(overlayPalette({ id: 'map1SpeedSvg' }), ['#e67e22', '#00acc1']);
+  assert.deepEqual(overlayPalette({ id: 'map1HrSvg' }), ['#e67e22', '#00acc1']);
+  // Heart rate keeps its zone colors as an overlay: the thresholds travel with the series and the
+  // page draws it with the same classes as the heart-rate chart itself.
+  assert.match(source, /overlays\.heart_rate\.zoneThresholds = hrZones\.thresholds/);
+  assert.match(source, /piece\.setAttribute\('class', 'zoneLine zoneLine' \+ \(Math\.min\(zone, 4\) \+ 1\)\)/);
   assert.match(source, /if \(Object\.keys\(active\)\.length >= 2\) \{/);
   assert.doesNotMatch(source, /occupiedLabelYs/);
   assert.match(source, /value >= series\.min - tickEpsilon && value <= series\.max \+ tickEpsilon/);
@@ -1711,7 +1735,7 @@ test('activity glossary localizes visible metric descriptions from one source', 
   assert.match(source, /const translate = \(message\) => generatedTranslations\?\.\[message\] \|\| vscode\.l10n\.t\(message\);/);
   assert.match(source, /const glossary = localizeGlossary\(translate\);/);
   assert.match(source, /class="term" title="\$\{escapeHtml\(description\)\}"/);
-  assert.match(source, /metric\(ui\.avgPowerW \+ powerMetricSuffix, summary\.avgPower\.toFixed\(0\), 'averagePower', glossary\)/);
+  assert.match(source, /metric\(ui\.avgPowerW \+ powerMetricSuffix, recorded\('power', summary\.avgPower\.toFixed\(0\)\), 'averagePower', glossary\)/);
   assert.match(source, /\[ui\.maxHrBpm, a\.maxHr\.toFixed\(0\), b\.maxHr\.toFixed\(0\), 'maximumHeartRate'\]/);
   assert.match(source, /metric\(ui\.tssScore \+ powerMetricSuffix,[\s\S]*?'trainingStressScore', glossary\)/);
 });
@@ -2296,7 +2320,7 @@ test('database schema creates only extension-owned tables', async () => {
     const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")[0]
       .values
       .flat();
-    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'activity_comparisons', 'activity_features', 'activity_notes', 'activity_routes', 'athlete_profile', 'heart_rate_profiles', 'records', 'routes', 'sqlite_sequence', 'wheel_calibration_samples']);
+    assert.deepEqual(tables, ['activities', 'activity_analysis', 'activity_analysis_chat', 'activity_comparisons', 'activity_features', 'activity_notes', 'activity_routes', 'athlete_profile', 'derived_state', 'heart_rate_profiles', 'records', 'routes', 'sqlite_sequence', 'wheel_calibration_samples']);
   } finally {
     db.close();
   }
@@ -2515,7 +2539,22 @@ test('Copilot analysis reports unavailable and empty models', async () => {
     },
     LanguageModelChatMessage: { User: (content) => content },
   };
-  await assert.rejects(() => requestCopilotAnalysis(emptyResponse, 'test'), /empty analysis/);
+  await assert.rejects(() => requestCopilotAnalysis(emptyResponse, 'test', { retryDelayMs: 0 }), /empty analysis \(3 attempts\)/);
+
+  // An empty answer is tried again: the same prompt goes through the second time, and the ride
+  // does not end up as the one failure of a whole batch.
+  let requests = 0;
+  const emptyOnce = {
+    lm: { selectChatModels: async () => [{ id: 'm', sendRequest: async () => { requests += 1; return { text: asyncChunks([requests === 1 ? ' ' : 'Answer']) }; } }] },
+    LanguageModelChatMessage: { User: (content) => content },
+  };
+  const reports = [];
+  assert.equal(await requestCopilotAnalysis(emptyOnce, 'test', { retryDelayMs: 0, onCompleted: (result) => reports.push(result) }), 'Answer');
+  assert.equal(requests, 2);
+  assert.deepEqual(reports.map((report) => report.response || report.error), ['Answer'], 'only the outcome is logged, not the empty try');
+  // Retrying can be switched off.
+  requests = 0;
+  await assert.rejects(() => requestCopilotAnalysis(emptyResponse, 'test', { retryDelayMs: 0, emptyRetries: 0 }), /empty analysis\./);
 });
 
 test('Copilot analysis explains language model permission and policy failures', async () => {
@@ -2711,7 +2750,7 @@ test('analysis prompt treats the first workout as an initial baseline', () => {
   assert.match(prompt, /No earlier activities within 75%-125%/);
   assert.match(prompt, /There are 0 earlier activities within 75%-125%/);
   assert.match(prompt, /not enough history to claim improvement, decline, stability, consistency, or a plateau/);
-  assert.match(prompt, /Do not infer recovery status/);
+  assert.match(prompt, /Do not state recovery status, fatigue, overreaching/);
   assert.match(prompt, /Do not assign HR zones/);
   assert.doesNotMatch(prompt, /A limited baseline comparison is possible/);
 });
@@ -2757,9 +2796,9 @@ test('AI prompts omit whole-ride power estimates and label the hrTSS threshold a
 
   for (const text of [prompt, chat]) {
     assert.doesNotMatch(text, /Average Power: 220|Normalized Power: 250|Intensity Factor: 1\.39|TSS: 190|xPower \(GC\): 240/);
-    assert.match(text, /hrTSS: 88/);
-    assert.match(text, /Estimated threshold HR used for hrTSS: 160 bpm/);
-    assert.match(text, /hrTSS uses an estimated threshold HR \(middle of the Threshold zone\)/);
+    // hrTSS is a second load scale on the same heart-rate series as TRIMP, with nothing to
+    // compare it against in the prompt; one answer in 39 ever used it.
+    assert.doesNotMatch(text, /hrTSS: \d|threshold HR used for hrTSS|hrTSS uses/);
   }
 });
 
@@ -2786,7 +2825,7 @@ test('empty fields are dropped from the prompt instead of becoming N/A', () => {
   assert.doesNotMatch(sparse, /Avg Cadence/);
   assert.doesNotMatch(sparse, /xPower/);
   assert.match(sparse, /- Distance: 20\.10 km/);
-  assert.match(sparse, /Absent fields may be unmeasured, withheld, unavailable or inapplicable/);
+  assert.match(sparse, /An absent field is unknown, not zero/);
 
   const chat = generateAnalysisChatPrompt({ sessions: [{ total_distance_km: 20.1 }] }, {}, {}, '', [], 'why?');
   assert.doesNotMatch(chat, /N\/A/);
@@ -2882,11 +2921,11 @@ test('analysis prompts use the VS Code language and leave unknown locales alone'
   assert.match(prompt, /Respond in Russian[\s\S]*Questions for Analysis:/);
   assert.match(prompt, /no new user question that can override the selected language/);
   assert.match(prompt, /not an answer to an archived question/);
-  assert.match(prompt, /Do not repeat advice, caveats or questions already given there/);
+  assert.match(prompt, /do not repeat their advice, caveats or questions/);
   assert.match(prompt, /Most analyses need no question/);
   assert.match(prompt, /do not branch on hypothetical goals by default/);
   assert.match(prompt, /already gave the same load advice and the pattern is unchanged, do not restate it/);
-  assert.match(prompt, /same missing sensor or data gap, mention it at most briefly/);
+  assert.match(prompt, /missing sensor or data gap that recent analyses already pointed out gets a brief mention at most/);
   assert.match(prompt, /Attribute period statistics to their stated date range/);
   assert.match(prompt, /Use peak sustained HR against prior bests where it adds information/);
   assert.match(prompt, /Translate technical terms from this prompt/);
@@ -3018,7 +3057,9 @@ test('segment lines keep grade and vpower diagnostics only where vpower is the q
   assert.doesNotMatch(text[1], /coverage|grade window|vpower use|sensitivity/);
   assert.match(text[2], /HR coverage 49%, grade coverage 60%/);
   assert.doesNotMatch(text[2], /grade window|vpower use|sensitivity/);
-  assert.match(text[3], /grade window ~53 m.*vpower use: rough description only; power coverage 99%.*sensitivity ~62\.6 W/);
+  // The estimate's diagnostics stay on the page; the prompt carries the number and its label.
+  assert.match(text[3], /vpower ~220 W/);
+  assert.doesNotMatch(text[3], /grade window|vpower use|sensitivity/);
 });
 
 test('segment line budget scales with duration and never truncates', () => {
@@ -3188,16 +3229,15 @@ test('prompt names the zone method and honours a tested LTHR', () => {
     null, [], [], 'en'
   );
   assert.match(withLthr, /Zone method: user-tested lactate threshold HR 158 bpm/);
-  assert.match(withLthr, /hrTSS uses the user-tested lactate threshold HR from the dated profile/);
-  assert.doesNotMatch(withLthr, /hrTSS uses an estimated threshold HR/);
+  assert.doesNotMatch(withLthr, /hrTSS: \d|hrTSS uses|hrTSS threshold/);
 
   const estimated = generateAnalysisPrompt(
     { sessions: [session], records: [], segments: [] }, { total_activities: 0 },
     { effectiveDate: '2026-08-19', maxHeartRate: 171, thresholds: [127, 138, 149, 160], restingHeartRate: 62 },
     null, [], [], 'en'
   );
-  assert.match(estimated, /zone starts from the dated profile; hrTSS threshold is estimated as the middle of the Threshold zone/);
-  assert.match(estimated, /hrTSS uses an estimated threshold HR/);
+  assert.match(estimated, /Zone method: zone starts from the dated profile/);
+  assert.doesNotMatch(estimated, /hrTSS uses|hrTSS threshold/);
 });
 
 test('heart-rate profiles store and compare an optional LTHR', async () => {
@@ -3352,7 +3392,10 @@ test('period volume includes TRIMP sum, session class mix and week monotony', ()
   const text = buildTrainingHistoryContext(context);
   assert.match(text, /TRIMP sum \d+ \(7\/7 activities with HR-based load\)/);
   assert.match(text, /session classes: endurance 7/);
-  assert.match(text, /Week monotony \(Foster, TRIMP-based, imported days only\)/);
+  // The mean/SD of daily load is not printed: computed over loaded days only, it was read as
+  // "no rest days" whatever the caveat beside it said. Active days per period carry that fact.
+  assert.doesNotMatch(text, /Sameness of daily load|monotony|Adaptive Observation Window|zone 1-5 seconds/i);
+  assert.match(text, /recorded active days/);
 
   // A single active day is not monotony.
   const lonely = buildTrainingContext([activities[0]], '2026-08-03T10:00:00.000Z', 'cycling');
@@ -3378,7 +3421,45 @@ test('route signatures identify the same loop, a reversed ride, a partial ride a
   // Same geometry, opposite direction.
   const reversed = loop.map((p, i) => ({ ...p, position_lat: loop[loop.length - 1 - i].position_lat, position_long: loop[loop.length - 1 - i].position_long, distance: (i / 400) * 10 }));
   const reversedMatch = matchRoutes(buildRouteSignature(reversed), loopSig);
-  assert.ok(['same', 'reversed'].includes(reversedMatch.type), 'reversed geometry still matches the route');
+  assert.equal(reversedMatch.type, 'reversed');
+  assert.equal(matchRoutes(loopSig, loopSig).type, 'same');
+  assert.ok(reversedMatch.oppositeOrderM < 20 && reversedMatch.sameOrderM > 200, 'the travel order decides, not the geometry');
+
+  // The loop entered elsewhere AND ridden the other way is still reversed; entered at several
+  // other places in the original order it is still same.
+  const shiftedReversed = [...reversed.slice(40), ...reversed.slice(0, 40)].map((p, i) => ({ ...p, distance: (i / 400) * 10 }));
+  assert.equal(matchRoutes(buildRouteSignature(shiftedReversed), loopSig).type, 'reversed');
+  for (const cut of [90, 200, 310]) {
+    const moved = [...loop.slice(cut), ...loop.slice(0, cut)].map((p, i) => ({ ...p, distance: (i / 400) * 10 }));
+    assert.equal(matchRoutes(buildRouteSignature(moved), loopSig).type, 'same', `start moved by ${cut / 4}%`);
+    const movedBack = [...reversed.slice(cut), ...reversed.slice(0, cut)].map((p, i) => ({ ...p, distance: (i / 400) * 10 }));
+    assert.equal(matchRoutes(buildRouteSignature(movedBack), loopSig).type, 'reversed', `reversed, start moved by ${cut / 4}%`);
+  }
+  // A wheel sensor reading 3% long does not change the verdict.
+  assert.equal(matchRoutes(buildRouteSignature(reversed.map((p) => ({ ...p, distance: p.distance * 1.03 }))), loopSig).type, 'reversed');
+  assert.equal(matchRoutes(buildRouteSignature(loop.map((p) => ({ ...p, distance: p.distance * 1.03 }))), loopSig).type, 'same');
+
+  // An out-and-back on one road fits both orders and stays "same".
+  const outAndBack = [];
+  for (let i = 0; i <= 400; i += 1) {
+    const d = i / 400;
+    outAndBack.push({ position_lat: 52 + (d < 0.5 ? d : 1 - d) * 0.1, position_long: 13, distance: d * 11 });
+  }
+  const backAndOut = outAndBack.map((p, i) => ({ ...p, position_lat: outAndBack[400 - i].position_lat }));
+  assert.equal(matchRoutes(buildRouteSignature(backAndOut), buildRouteSignature(outAndBack)).type, 'same');
+
+  // Records before the first GPS lock (null or 0/0) are not part of the track.
+  const lateLock = [
+    ...Array.from({ length: 30 }, (_, i) => ({ position_lat: i % 2 ? null : 0, position_long: i % 2 ? null : 0, distance: i * 0.0001 })),
+    ...loop.map((p) => ({ ...p, distance: p.distance + 0.003 })),
+  ];
+  const lateSig = buildRouteSignature(lateLock);
+  assert.ok(lateSig.track.every((p) => p.lat > 50) && lateSig.start.lat > 50 && lateSig.points[0].lat > 50);
+  assert.equal(matchRoutes(lateSig, loopSig).type, 'same');
+  assert.equal(matchRoutes(loopSig, lateSig).type, 'same');
+  // A signature stored before the fix, with (0, 0) vertices, still compares by its real points.
+  const legacy = { ...loopSig, track: [{ lat: 0, lon: 0, distance: 0 }, ...loopSig.track], start: { lat: 0, lon: 0 } };
+  assert.equal(matchRoutes(buildRouteSignature(reversed), legacy).type, 'reversed');
 
   // Half the loop is a partial.
   const half = loop.slice(0, 240).map((p, i) => ({ ...p, distance: (i / 400) * 10 }));
@@ -3483,6 +3564,96 @@ test('ride-to-route assignment creates a route once and attaches later rides wit
     const cutShort = loop.slice(0, 140).map((p, i) => ({ ...p, distance: (i / 200) * 10 }));
     const short = assignRoute(db, { activityId: 4, signature: buildRouteSignature(cutShort), createdAt: '2026-08-04T10:00:00Z' });
     assert.equal(short.relation, 'partial', 'the shorter ride stays a partial of the loop');
+
+    // The loop ridden the other way joins the same route as reversed.
+    db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (5, ?, ?, ?, ?)', ['e', 'e', '2026-08-05T10:00:00Z', 'fit']);
+    const backwards = loop.map((p, i) => ({ ...loop[loop.length - 1 - i], distance: p.distance }));
+    const opposite = assignRoute(db, { activityId: 5, signature: buildRouteSignature(backwards), createdAt: '2026-08-05T10:00:00Z' });
+    assert.equal(opposite.routeId, first.routeId);
+    assert.equal(opposite.relation, 'reversed');
+  } finally {
+    db.close();
+  }
+});
+
+test('route names and notes survive a rebuild that re-derives the routes table', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { assignRoute, readRoutes, setRouteName, setRouteNote, snapshotRouteLabels, restoreRouteLabels } = require('../route-store');
+    const { buildRouteSignature } = require('../route-match');
+    const ring = (lat, radius) => Array.from({ length: 201 }, (_, i) => ({
+      position_lat: lat + Math.sin((i / 200) * Math.PI * 2) * radius, position_long: 13 + Math.cos((i / 200) * Math.PI * 2) * radius * 1.5, distance: (i / 200) * 10,
+    }));
+    const tracks = { 1: ring(52, 0.02), 2: ring(52.5, 0.02), 3: ring(53, 0.02) };
+    const assignAll = (order) => order.forEach((id) => {
+      db.run('INSERT OR IGNORE INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)', [id, `f${id}`, `f${id}`, `2026-08-0${id}T10:00:00Z`, 'fit']);
+      assignRoute(db, { activityId: id, signature: buildRouteSignature(tracks[id]), createdAt: `2026-08-0${id}T10:00:00Z` });
+    });
+    assignAll([1, 2, 3]);
+    const [first, second] = readRoutes(db);
+    setRouteName(db, first.id, 'Home loop');
+    setRouteNote(db, first.id, 'headwind on the dyke');
+    setRouteNote(db, second.id, 'gravel after rain');
+
+    const labels = snapshotRouteLabels(db);
+    assert.equal(labels.length, 2, 'the route with an automatic name and no note carries nothing to keep');
+    db.run('DELETE FROM activity_routes');
+    db.run('DELETE FROM routes');
+    // Re-derived in another order, so ids cannot be what pairs a label with its route.
+    assignAll([3, 2, 1]);
+    assert.deepEqual(restoreRouteLabels(db, labels), { restored: 2, lost: 0 });
+    const byLat = (lat) => readRoutes(db).find((route) => Math.abs(JSON.parse(route.canonical_signature).track[0].lat - lat) < 0.1);
+    assert.equal(byLat(52).name, 'Home loop');
+    assert.equal(byLat(52).note, 'headwind on the dyke');
+    assert.equal(byLat(52.5).note, 'gravel after rain');
+    assert.match(byLat(52.5).name, /^Route \d/, 'an automatic name stays automatic');
+    assert.equal(byLat(53).note, null);
+
+    // A label whose road no longer exists is reported, not attached to a stranger.
+    assert.deepEqual(restoreRouteLabels(db, [{ name: 'Gone', note: null, signature: buildRouteSignature(ring(60, 0.02)) }]), { restored: 0, lost: 1 });
+  } finally {
+    db.close();
+  }
+});
+
+test('a mirrored altitude ride starts where the original ended', () => {
+  const { buildAltitudeRide, mirrorAltitudeRide } = require('../altitude-quality');
+  const records = Array.from({ length: 60 }, (_, i) => ({
+    elapsed_time: i * 10, distance: i * 0.1, altitude: (100 + i) / 1000,
+    // No fix for the first records: null and 0/0 are not a start point.
+    position_lat: i < 3 ? (i === 1 ? 0 : null) : 52 + i * 0.001, position_long: i < 3 ? (i === 1 ? 0 : null) : 13,
+  }));
+  const ride = buildAltitudeRide(records);
+  assert.ok(Math.abs(ride.start.lat - 52.003) < 1e-9, 'the first real fix is the start');
+  const mirrored = mirrorAltitudeRide(ride);
+  assert.deepEqual(mirrored.start, ride.end);
+  assert.deepEqual(mirrored.end, ride.start);
+  assert.ok(mirrored.altitudes[0].altitude > mirrored.altitudes.at(-1).altitude, 'the profile is reversed too');
+});
+
+test('a ride joins the closest matching route, not the first one within tolerance', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { assignRoute } = require('../route-store');
+    const { buildRouteSignature } = require('../route-match');
+    // Two parallel roads 70 m apart (0.00063 deg of latitude), each 12 km long.
+    const road = (offsetM) => Array.from({ length: 301 }, (_, i) => ({
+      position_lat: 52 + offsetM / 111320, position_long: 13 + (i / 300) * 0.175, distance: (i / 300) * 12,
+    }));
+    const add = (id, offsetM) => {
+      db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)', [id, `f${id}`, `f${id}`, `2026-08-0${id}T10:00:00Z`, 'fit']);
+      return assignRoute(db, { activityId: id, signature: buildRouteSignature(road(offsetM)), createdAt: `2026-08-0${id}T10:00:00Z` });
+    };
+    const north = add(1, 0);
+    const south = add(2, 70);
+    assert.notEqual(south.routeId, north.routeId, '70 m apart is two routes');
+    // 55 m from the first road and 15 m from the second: both are within tolerance.
+    assert.equal(add(3, 55).routeId, south.routeId);
+    assert.equal(add(4, 12).routeId, north.routeId);
   } finally {
     db.close();
   }
@@ -3535,7 +3706,7 @@ test('prompt places data before rules and carries segment guidance', () => {
   const { instructions, data } = generateAnalysisPromptParts({ sessions: [{ total_distance_km: 20 }], segments }, { total_activities: 0 }, {}, null, [], []);
   assert.doesNotMatch(instructions, /\*\*This Workout:\*\*/);
   assert.match(data, /\*\*Questions for Analysis:\*\*/);
-  assert.equal((instructions.match(/^\d+\. /gm) || []).length, 16, 'sixteen principles');
+  assert.equal((instructions.match(/^\d+\. /gm) || []).length, 17, 'seventeen principles');
   assert.match(prompt, /never compare vpower numbers against HR numbers directly/);
   assert.match(prompt, /past analyses of other workouts/);
 
@@ -4251,7 +4422,7 @@ test('lazy card features persist once and concurrent route saves cannot overwrit
     assert.equal(writes, 1, 'fresh cache read must not write again');
     const stored = new SQL.Database(fs.readFileSync(dbPath));
     const routeId = stored.exec('SELECT route_id FROM activity_routes WHERE activity_id = 1')[0].values[0][0];
-    assert.equal(stored.exec('SELECT features_version FROM activity_features')[0].values[0][0], 8);
+    assert.equal(stored.exec('SELECT features_version FROM activity_features')[0].values[0][0], 11);
     stored.close();
     pause = true;
     const writeStarted = new Promise((resolve) => { started = resolve; });
@@ -4487,9 +4658,9 @@ test('activity page shows an editable route card from the first ride on a route 
 test('session notes are normalized from untrusted input, stored per activity and deleted when emptied', async () => {
   const { buildSessionNotesBlock, describeNotesShort, normalizeNotes, readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('../activity-notes');
   assert.equal(normalizeNotes({}), null);
-  assert.equal(normalizeNotes({ rpe: '', purpose: 'nonsense', conditions: ['bogus'], note: '   ' }), null);
+  assert.equal(normalizeNotes({ rpe: '', purpose: '  ', conditions: ['bogus'], note: '   ' }), null);
   assert.deepEqual(normalizeNotes({ rpe: '7', purpose: 'Endurance', feeling: 'tired', conditions: ['headwind', 'heat', 'headwind', 'x'], note: ' legs heavy ' }),
-    { rpe: 7, purpose: 'endurance', feeling: 'tired', conditions: ['headwind', 'heat'], note: 'legs heavy' });
+    { rpe: 7, goals: ['endurance'], purpose: 'endurance', feeling: 'tired', conditions: ['headwind', 'heat'], note: 'legs heavy' });
   assert.equal(normalizeNotes({ rpe: 11, purpose: 'race' }).rpe, null, 'RPE outside 1-10 is dropped');
   assert.equal(normalizeNotes({ rpe: 6.5, purpose: 'race' }).rpe, null);
   assert.equal(normalizeNotes({ note: 'x'.repeat(5000) }).note.length, 1000);
@@ -4502,7 +4673,13 @@ test('session notes are normalized from untrusted input, stored per activity and
     assert.equal(readActivityNotes(db, 1), null);
     saveActivityNotes(db, 1, { rpe: 7, purpose: 'endurance', conditions: ['headwind'] });
     saveActivityNotes(db, 1, { rpe: 8, purpose: 'endurance', conditions: ['headwind', 'rain'], note: 'second save' });
-    assert.deepEqual(readActivityNotes(db, 1), { rpe: 8, purpose: 'endurance', feeling: null, conditions: ['headwind', 'rain'], note: 'second save' });
+    assert.deepEqual(readActivityNotes(db, 1), { rpe: 8, goals: ['endurance'], purpose: 'endurance', feeling: null, conditions: ['headwind', 'rain'], note: 'second save' });
+    assert.equal(db.exec('SELECT purpose FROM activity_notes WHERE activity_id = 1')[0].values[0][0], 'endurance', 'one listed goal is stored as before');
+    // Several goals at once, one of them in the rider's own words; they come back in order.
+    saveActivityNotes(db, 1, { goals: ['Race', 'endurance', 'проверка нового седла', 'race'] });
+    assert.deepEqual(readActivityNotes(db, 1).goals, ['race', 'endurance', 'проверка нового седла']);
+    assert.deepEqual(require('../activity-notes').readKnownGoals(db), ['проверка нового седла'], 'own goal names are offered again on other rides');
+    saveActivityNotes(db, 1, { rpe: 8, purpose: 'endurance', conditions: ['headwind', 'rain'], note: 'second save' });
     assert.equal(readAllActivityNotes(db).size, 1);
     saveActivityNotes(db, 1, {});
     assert.equal(readActivityNotes(db, 1), null);
@@ -4510,24 +4687,34 @@ test('session notes are normalized from untrusted input, stored per activity and
     db.close();
   }
 
-  const notes = { rpe: 7, purpose: 'new_route', feeling: 'tired', conditions: ['headwind', 'new_route'], note: 'first time here' };
+  const notes = { rpe: 7, goals: ['new_route'], purpose: 'new_route', feeling: 'tired', conditions: ['headwind', 'new_route'], note: 'first time here' };
   assert.equal(describeNotesShort(notes), 'RPE 7, new_route, tired');
   assert.equal(describeNotesShort({ rpe: null, purpose: null, feeling: 'normal', conditions: [], note: null }), null);
   const block = buildSessionNotesBlock(notes);
   assert.match(block, /Session Notes \(user-declared for this ride\)/);
-  assert.match(block, /RPE 7\/10; purpose: new route; conditions: headwind, new route; feeling: tired\./);
-  assert.match(block, /Note: first time here/);
-  assert.match(block, /declared purpose replaces any inferred training direction/);
+  assert.match(block, /RPE 7\/10; goal: new route; conditions: headwind, new route; feeling: tired\./);
+  assert.match(block, /The athlete's own account of this ride: "first time here"/);
+  assert.match(block, /This goal is the yardstick for this ride/);
   assert.equal(buildSessionNotesBlock(null), '');
 });
 
 test('session notes reach the analysis and chat prompts and the history rows', () => {
-  const notes = { rpe: 7, purpose: 'endurance', feeling: null, conditions: ['heat'], note: null };
+  const notes = { rpe: 7, goals: ['endurance'], purpose: 'endurance', feeling: null, conditions: ['heat'], note: null };
   const withNotes = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], sessionNotes: notes }, { total_activities: 0 }, {}, null, [], [], 'en');
-  assert.match(withNotes, /RPE 7\/10; purpose: endurance; conditions: heat\./);
-  assert.doesNotMatch(withNotes, /No session notes \(RPE, purpose, conditions\)/);
+  assert.match(withNotes, /RPE 7\/10; goal: endurance; conditions: heat\./);
+  assert.match(withNotes, /This goal is the yardstick for this ride: say whether the ride served it and by what evidence\. The practical step must serve what is declared here/);
+  assert.doesNotMatch(withNotes, /No goal is declared for this ride/);
+  assert.doesNotMatch(withNotes, /No session notes \(RPE, goal, conditions\)/);
   const without = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [] }, { total_activities: 0 }, {}, null, [], [], 'en');
-  assert.match(without, /No session notes \(RPE, purpose, conditions\) are recorded for this ride/);
+  assert.match(without, /No session notes \(RPE, goal, conditions\) are recorded for this ride/);
+  // Without a declared goal the model names the one it assumes instead of steering silently.
+  // Without a declared goal the model says the goal was derived from the ride's type, does not
+  // judge the ride against a goal taken from the ride itself, and ends with an observation.
+  assert.match(without, /No goal is declared for this ride\. Take the goal that its session type suggests and say plainly that it was derived automatically from the type of the ride, not declared by the athlete/);
+  assert.match(without, /met by the ride by construction, so do not judge the ride against it and do not conclude from it that nothing needs changing/);
+  assert.match(without, /give an observation instead of a step: what in this ride differed from the athlete's usual on this route/);
+  assert.match(without, /If the ride served its declared goal and nothing in the data calls for a change/);
+  assert.match(without, /say which goal the step serves/);
   assert.doesNotMatch(without, /Athlete's Session Notes/);
   const chat = generateAnalysisChatPrompt({ sessions: [{ sport: 'cycling' }], sessionNotes: notes }, {}, {}, '', [], 'why?');
   assert.match(chat, /RPE 7\/10/);
@@ -4541,10 +4728,12 @@ test('activity page renders session notes with the saved values and escapes the 
   const base = { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] };
   const render = (sessionNotes) => renderActivityContentHtml({}, {}, { ...base, sessionNotes }, null, 'n', false, null, {}, null, [], null,
     UI_STRINGS, GLOSSARY, false, 'en', [], null, [], null, false, 'osm', null);
-  const html = render({ rpe: 7, purpose: 'race', feeling: 'ill', conditions: ['rain'], note: '<i>cold</i>' });
+  const html = render({ rpe: 7, goals: ['race', 'проба'], purpose: 'race', feeling: 'ill', conditions: ['rain'], note: '<i>cold</i>' });
   assert.match(html, />Session Notes<\/h2>/);
   assert.match(html, /<option value="7" selected>7<\/option>/);
-  assert.match(html, /<option value="race" selected>Race<\/option>/);
+  assert.match(html, /name="fitMapGoal" value="race" style="width:auto;" checked>/);
+  assert.doesNotMatch(html, /name="fitMapGoal" value="tempo" style="width:auto;" checked>/);
+  assert.match(html, /id="fitMapNotesOwnGoals"[^>]*value="проба"/);
   assert.match(html, /<option value="ill" selected>Unwell<\/option>/);
   assert.match(html, /value="rain" style="width:auto;" checked>/);
   assert.match(html, /&lt;i&gt;cold&lt;\/i&gt;<\/textarea>/);
@@ -4686,7 +4875,10 @@ test('reversed rides join the elevation consensus mirrored onto the canonical ax
 test('parser kilometre ascent/descent is stored in metres', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
   assert.match(source, /const toDeviceMetres = \(value\) => \{/);
-  assert.match(source, /return number < 5 \? number \* 1000 : number;/);
+  // The parser's length unit is fixed (km) and both callers pass its output, so the conversion is
+  // unconditional. Guessing by size stored a 5000 m day as 5 m and a 3 m device figure as 3 km.
+  assert.match(source, /return Number\.isFinite\(number\) \? number \* 1000 : NaN;/);
+  assert.doesNotMatch(source, /number < 5 \? number \* 1000/);
 });
 
 test('checkpoint summaries carry prior median HR and best, and the verdict states effort vs time', () => {
@@ -4859,7 +5051,7 @@ test('a stale derived-feature version triggers one background rebuild with progr
   assert.match(source, /if \(\(silent \|\| background\) && !skipStaleCheck && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
   assert.match(source, /reason: 'auto'/);
   assert.match(source, /WHERE features_version != \$\{FEATURES_VERSION\}/);
-  assert.equal(require('../activity-features').FEATURES_VERSION, 8, 'the version bump is what makes existing caches stale');
+  assert.equal(require('../activity-features').FEATURES_VERSION, 11, 'the version bump is what makes existing caches stale');
 
   const { needsDerivedFeatureRebuild } = loadExtensionInternalsForTest();
   const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
@@ -4870,7 +5062,13 @@ test('a stale derived-feature version triggers one background rebuild with progr
     db.run("INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (1, 'a', 'a', '2026-08-01T10:00:00Z', 'fit')");
     assert.equal(needsDerivedFeatureRebuild(db), true, 'an activity without feature rows is not covered');
     db.run(`INSERT INTO activity_features (activity_id, features_version, feature_cache_key) VALUES (1, ${require('../activity-features').FEATURES_VERSION}, 'k')`);
-    assert.equal(needsDerivedFeatureRebuild(db), false, 'a fresh row for every activity needs nothing');
+    // Rows refreshed one by one do not make a rebuilt database: the routes were never re-derived.
+    assert.equal(needsDerivedFeatureRebuild(db), true, 'fresh rows without a rebuild of the whole are not enough');
+    db.run(`INSERT INTO derived_state (key, value) VALUES ('features_version', '${require('../activity-features').FEATURES_VERSION}')`);
+    assert.equal(needsDerivedFeatureRebuild(db), false, 'a fresh row for every activity after a whole rebuild needs nothing');
+    db.run("UPDATE derived_state SET value = '1'");
+    assert.equal(needsDerivedFeatureRebuild(db), true, 'a database rebuilt for an earlier version needs it again');
+    db.run(`UPDATE derived_state SET value = '${require('../activity-features').FEATURES_VERSION}'`);
     db.run('UPDATE activity_features SET features_version = 1');
     assert.equal(needsDerivedFeatureRebuild(db), true, 'a stale version triggers the rebuild');
   } finally {
@@ -4994,20 +5192,22 @@ test('inferred notes from the summary tail reach the prompt as revisable and pre
   assert.doesNotMatch(buildInferredNotesBlock(summary, { purpose: 'race' }), /purpose: commute/);
   assert.match(buildInferredNotesBlock(summary, { purpose: 'race' }), /conditions: headwind/);
   assert.equal(buildInferredNotesBlock(summary, { purpose: 'race', conditions: ['headwind'] }), '');
-  assert.deepEqual(inferNotesPreFill(summary), { purpose: 'commute', conditions: ['headwind'] });
+  assert.deepEqual(inferNotesPreFill(summary), { goals: ['commute'], purpose: 'commute', conditions: ['headwind'] });
+  assert.deepEqual(inferNotesPreFill({ purpose: ['race', 'endurance'], conditions: [] }).goals, ['race', 'endurance']);
   assert.equal(inferNotesPreFill({ purpose: [], conditions: [] }), null);
 
   const prompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], inferredNotes: summary }, { total_activities: 0 }, {}, null, [], [], 'en');
-  assert.match(prompt, /AI-inferred from this ride's data, revisable/);
+  // The model's own earlier guess is not fed back to it as data; it only pre-fills the form.
+  assert.doesNotMatch(prompt, /AI-inferred/);
   const withUser = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], sessionNotes: { rpe: 7, purpose: 'race' }, inferredNotes: summary }, { total_activities: 0 }, {}, null, [], [], 'en');
   assert.match(withUser, /user-declared for this ride/);
   assert.doesNotMatch(withUser, /purpose: commute \(inferred/); // declared purpose suppresses the inference
-  assert.match(withUser, /conditions: headwind \(inferred/); // undeclared condition is still suggested
+  assert.doesNotMatch(withUser, /\(inferred/);
   const fullOverride = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [], sessionNotes: { purpose: 'race', conditions: ['headwind'] }, inferredNotes: summary }, { total_activities: 0 }, {}, null, [], [], 'en');
   assert.doesNotMatch(fullOverride, /AI-inferred from this ride's data/);
 
   const { parseAnalysisSummary, SUMMARY_TAIL_INSTRUCTION } = require('../analysis-summary');
-  assert.match(SUMMARY_TAIL_INSTRUCTION, /purpose: <the purpose this ride's data best supports/);
+  assert.match(SUMMARY_TAIL_INSTRUCTION, /purpose: <the goal or goals this ride's data best supports, comma-separated when more than one/);
   assert.match(SUMMARY_TAIL_INSTRUCTION, /conditions: <conditions this ride's data suggest/);
   assert.deepEqual(parseAnalysisSummary('A.\n---\nSUMMARY\ntype: tempo\npurpose: commute\nconditions: headwind').summary.purpose, ['commute']);
 
@@ -5015,7 +5215,7 @@ test('inferred notes from the summary tail reach the prompt as revisable and pre
   const base = { records: [{ elapsed_time: 0, distance: 0 }, { elapsed_time: 60, distance: 0.5 }], sessions: [{}], laps: [] };
   const html = renderActivityContentHtml({}, {}, { ...base, inferredNotes: { purpose: 'commute', conditions: ['headwind'] } }, null, 'n', false, null, {}, null, [], null,
     UI_STRINGS, GLOSSARY, false, 'en', [], null, [], null, false, 'osm', null, []);
-  assert.match(html, /<option value="commute" selected>/);
+  assert.match(html, /name="fitMapGoal" value="commute" style="width:auto;" checked>/);
   assert.match(html, /value="headwind" style="width:auto;" checked>/);
   assert.match(html, /Fields marked below are the AI/);
 
@@ -5023,7 +5223,7 @@ test('inferred notes from the summary tail reach the prompt as revisable and pre
   // declared conditions win over the inferred ones.
   const mixed = renderActivityContentHtml({}, {}, { ...base, sessionNotes: { rpe: null, purpose: null, feeling: null, conditions: ['rain'], note: null }, inferredNotes: { purpose: 'commute', conditions: ['headwind'] } }, null, 'n', false, null, {}, null, [], null,
     UI_STRINGS, GLOSSARY, false, 'en', [], null, [], null, false, 'osm', null, []);
-  assert.match(mixed, /<option value="commute" selected>/);
+  assert.match(mixed, /name="fitMapGoal" value="commute" style="width:auto;" checked>/);
   assert.match(mixed, /value="rain" style="width:auto;" checked>/);
   assert.doesNotMatch(mixed, /value="headwind" style="width:auto;" checked>/);
 });
@@ -5501,4 +5701,664 @@ test('the generated page script carries the same markdown renderer the server us
   // The page uses it for the analysis text and chat, not the old escaped pre-wrap.
   assert.match(html, /renderMarkdown\(text\)/);
   assert.match(html, /renderMarkdown\(entry\.content \|\| ''\)/);
+});
+
+test('log selection takes the last attempt per activity for one format and reports failures', () => {
+  const { selectLatestAttempts, evaluateEntries } = require('../prompt-eval');
+  const entry = (activityId, timestamp, extra = {}) => ({
+    file: `${activityId}-${timestamp}`, activityId, timestamp, kind: 'analysis', analysisVersion: 36, modelId: 'm1',
+    prompt: 'p', response: 'answer', ...extra,
+  });
+  const selection = selectLatestAttempts([
+    entry(1, '2026-10-04T10:00'), entry(1, '2026-10-04T12:00', { response: 'second' }),
+    entry(2, '2026-10-04T11:00', { response: 'ok' }), entry(2, '2026-10-04T13:00', { response: '', error: 'Copilot returned an empty analysis.' }),
+    entry(3, '2026-10-04T09:00', { analysisVersion: 35 }),
+    entry(4, '2026-10-04T14:00', { prompt: ['first part', { role: 'user', content: 'second part' }], modelId: 'm2' }),
+    { file: 'cmp', kind: 'comparison', analysisVersion: 36, prompt: 'p', response: 'r' },
+  ]);
+  assert.equal(selection.analysisVersion, 36, 'the newest format found is the default');
+  assert.deepEqual(selection.versionsFound, [35, 36]);
+  assert.deepEqual(selection.entries.map((item) => [item.activityId, item.response]), [[1, 'second'], [4, 'answer']]);
+  assert.equal(selection.entries[1].prompt, 'first part\nsecond part', 'a prompt logged as messages is joined');
+  assert.deepEqual(selection.failed, [{ file: '2-2026-10-04T13:00', activityId: 2, error: 'Copilot returned an empty analysis.' }],
+    'a failed last attempt is not replaced by the earlier success');
+  assert.deepEqual(selection.models, { m1: 2, m2: 1 });
+  assert.equal(selectLatestAttempts([entry(3, 't', { analysisVersion: 35 })], { analysisVersion: 36 }).entries.length, 0);
+  assert.equal(evaluateEntries(selection.entries).length, 2);
+});
+
+test('thousands separators and ordinary rounding are not invented numbers; real inventions still are', () => {
+  const { findUnsupportedNumbers } = require('../prompt-eval');
+  const prompt = 'effort (time x HR) 386897 vs median 409266 of 5 prior rides\nanother 382024, speed 27.6 km/h';
+  assert.deepEqual(findUnsupportedNumbers('снизился (386 897 против 409 266), около 382000, скорость 28 км/ч', prompt), []);
+  assert.deepEqual(findUnsupportedNumbers('386 897 и 409 266', prompt), []);
+  // A different value is not a rounding of a supplied one, with or without a separator.
+  assert.deepEqual(findUnsupportedNumbers('около 395000', prompt), [395000]);
+  assert.deepEqual(findUnsupportedNumbers('было 386 987', prompt), [386987]);
+  assert.deepEqual(findUnsupportedNumbers('скорость 29 км/ч', prompt), [29]);
+  // Two separate numbers side by side are not glued into one supported value.
+  assert.deepEqual(findUnsupportedNumbers('в 2026 году 120 заездов', 'year 2026'), [120]);
+  // A supplied length in km quoted in metres is the same number; other metre values are not.
+  assert.deepEqual(findUnsupportedNumbers('подъём 500 м и ещё 700 м', 'climb 0.5 km, HR 148'), [700]);
+});
+
+test('trend use is measured per supplied indicator, with untested indicators reported as such', () => {
+  const { aggregateChecks, checkAnalysisResponse, formatAggregate, trendUse } = require('../prompt-eval');
+  const prompt = [
+    '**Trends on this route (computed):**',
+    'Route effort at km 19.5: time x HR 386897 vs median 409266 of 5 prior rides (-5.5%), below-once.',
+    'Load rhythm: 7-day TRIMP / 28-day weekly average = 2.29, monotony 11.45, spike-monotonous.',
+  ].join('\n');
+  assert.deepEqual(trendUse(prompt, 'Пульс был 144 bpm, недельный объём вырос.'), { effort: false, load: false, recovery: null },
+    'heart rate and weekly volume in general are not the indicators');
+  assert.deepEqual(trendUse(prompt, 'Время × пульс ниже медианы на 5,5%.'), { effort: true, load: false, recovery: null });
+  assert.deepEqual(trendUse(prompt, 'Нагрузка недели в 2,29 раза выше привычной.'), { effort: false, load: true, recovery: null });
+  assert.deepEqual(trendUse(prompt, 'Неделя была монотонной.'), { effort: false, load: true, recovery: null });
+  assert.deepEqual(trendUse('no trends here', 'Монотонность.'), { effort: null, load: null, recovery: null });
+
+  const tail = '\n---\nSUMMARY\ntype: mixed\nfinding: f\nadvice_category: none\nadvice: none\nopen: none\nrevised: none';
+  const aggregate = aggregateChecks([
+    checkAnalysisResponse({ prompt, response: `Неделя была монотонной.${tail}` }),
+    checkAnalysisResponse({ prompt, response: `Пульс был 144 bpm.${tail}` }),
+    checkAnalysisResponse({ prompt: 'no trends', response: `Ровный заезд.${tail}` }),
+  ]);
+  assert.deepEqual(aggregate.trends, { prompts: 2, usedAny: 1, usedAnyPct: 50,
+    indicators: { effort: { present: 2, used: 0 }, load: { present: 2, used: 1 }, recovery: { present: 0, used: 0 } } });
+  const text = formatAggregate(aggregate);
+  assert.match(text, /at least one supplied trend indicator: 1\/2 \(50%\)/);
+  assert.match(text, /recovery: in 0 prompts, used in not tested/);
+});
+
+test('health and form statements are separated from sentences that decline the inference', () => {
+  const { findStateClaims } = require('../prompt-eval');
+  const found = findStateClaims([
+    'Нагрузка прошла без перегрузки сердечно-сосудистой системы.',
+    'Это не доказывает изменение формы.',
+    'Пульс 144 bpm на отметке 19,5 км.',
+    'Faster time alone is not evidence of fitness.',
+    'Your fitness has clearly improved.',
+  ].join(' '));
+  assert.equal(found.candidates.length, 2);
+  assert.match(found.candidates[0], /без перегрузки/);
+  assert.match(found.candidates[1], /clearly improved/);
+  assert.equal(found.denials.length, 2);
+});
+
+test('the usual week is averaged over the days that carry load, and needs two weeks of them', () => {
+  const { computeLoadRhythm } = require('../training-context');
+  const reference = '2026-08-02T18:00:00.000Z';
+  const ride = (daysAgo, trimp) => ({
+    startTime: new Date(new Date(reference).getTime() - daysAgo * 86400000).toISOString(), sport: 'cycling', trimp, utcOffsetS: 0,
+  });
+  // Seventeen days of rides, heart rate only in the last seven: no usual week to compare with yet.
+  // Dividing that single week by four used to report a ratio of exactly 4.
+  const lateStrap = [...[16, 15, 14, 12, 10, 9, 8].map((d) => ride(d, null)), ...[7, 6, 5, 4, 3, 2, 1].map((d, i) => ride(d - 0.5, 80 + i * 10))];
+  assert.equal(computeLoadRhythm(lateStrap, reference, 'cycling'), null);
+  // Twenty-one days of the same daily load: three weeks alike, so the last one is a usual week.
+  const steady = Array.from({ length: 21 }, (_, i) => ride(i + 0.5, 80 + (i % 3) * 10));
+  const rhythm = computeLoadRhythm(steady, reference, 'cycling');
+  assert.ok(Math.abs(rhythm.ratio - 1) < 0.06, `ratio ${rhythm.ratio}`);
+  assert.notEqual(rhythm.verdict, 'spike-monotonous');
+});
+
+test('the trends block describes which way a number moved without calling it good or healthy', () => {
+  const { buildTrendsBlock } = require('../analysis');
+  const text = buildTrendsBlock({
+    efficiency: { km: 19.5, effort: 386897, medianEffort: 409266, deltaPct: -5.5, verdict: 'better-once', samples: 5 },
+    rhythm: { ratio: 2.29, monotony: 11.45, verdict: 'spike-monotonous' },
+    recovery: { drop: 20, medianDrop: 12, delta: 8, verdict: 'faster', samples: 5, climbPeakHr: 160 },
+  });
+  assert.match(text, /^\*\*Trends \(computed\):\*\*/);
+  // Time x HR stays on the card: its two inputs are in the route table as separate numbers.
+  assert.doesNotMatch(text, /Route effort|time x HR/);
+  assert.match(text, /Load rhythm: TRIMP of the 7 days before this ride \/ weekly average of the 28 days before it = 2\.29/);
+  assert.match(text, /this ride is not in either window/);
+  assert.match(text, /Post-climb HR recovery: −20 bpm in 60 s vs median −12 of 5 prior rides \(\+8 bpm\), a larger drop than usual; HR at the climb top 160 bpm/);
+  assert.doesNotMatch(text, /is better|efficiency|better-once|spike-monotonous|monotony/i);
+  assert.match(text, /does not show that overload is absent/);
+  assert.match(buildTrendsBlock({ recovery: { drop: 12, medianDrop: 12, delta: 0, verdict: 'usual', samples: 5 } }), /within 5 bpm of the median/);
+  assert.equal(buildTrendsBlock({ efficiency: { km: 1, effort: 1, medianEffort: 1, deltaPct: 0, verdict: 'usual', samples: 5 } }), '');
+  assert.equal(buildTrendsBlock({}), '');
+});
+
+// A synthetic 6 km road running north (1 km = 0.009 deg of latitude), sampled every second:
+// flat to km 2, a junction at km 2 where every ride brakes, flat to km 4.5, then a 6% climb.
+function skeletonRide({ flatKmh = 30, climbKmh = 12, hr = [130, 135, 150], junctionKmh = 12, stopS = 0, detour = null, startKm = 0, altitudeOffset = 0 } = {}) {
+  const records = [];
+  let t = 0;
+  let km = startKm;
+  let stop = stopS;
+  while (km < 6) {
+    const nearJunction = Math.abs(km - 2) < 0.08;
+    const kmh = km >= 4.5 ? climbKmh : nearJunction ? junctionKmh : flatKmh;
+    const part = km < 2 ? 0 : km < 4.5 ? 1 : 2;
+    const sideways = detour && km >= detour[0] && km < detour[1] ? 0.003 : 0; // ~200 m to the east
+    records.push({
+      elapsed_time: t, distance: km - startKm, speed: kmh, heart_rate: hr[part],
+      altitude: 100 + altitudeOffset + Math.max(0, km - 4.5) * 60,
+      position_lat: 52 + km * 0.009, position_long: 13 + sideways,
+    });
+    if (stop && Math.abs(km - 3) < 0.005) { t += stop; stop = 0; }
+    t += 1;
+    km += kmh / 3600;
+  }
+  return { records };
+}
+
+test('the route skeleton finds the slow-down every ride shares and the change of terrain', () => {
+  const { buildRouteSkeleton, SKELETON } = require('../route-sections');
+  // Rides differ in speed and barometer offset; all brake at km 2.
+  const rides = Array.from({ length: 8 }, (_, i) => skeletonRide({ flatKmh: 28 + i, climbKmh: 11 + (i % 3), altitudeOffset: i * 7 }));
+  const skeleton = buildRouteSkeleton(rides);
+  assert.equal(skeleton.rides, 8);
+  assert.equal(skeleton.toleranceM, SKELETON.roadToleranceM);
+  assert.equal(skeleton.points.length, 1);
+  assert.ok(Math.abs(skeleton.points[0].km - 2) <= 0.1, `point at km ${skeleton.points[0].km}`);
+  assert.equal(skeleton.points[0].sharePct, 100);
+  assert.ok(skeleton.points[0].typicalMinKmh < 20);
+  // Three stretches: up to the junction, on to the foot of the climb, the climb.
+  assert.deepEqual(skeleton.stretches.map((stretch) => stretch.type), ['flat', 'flat', 'climb']);
+  assert.ok(Math.abs(skeleton.stretches[1].toKm - 4.5) <= 0.15, `climb starts at km ${skeleton.stretches[1].toKm}`);
+  assert.ok(skeleton.stretches[0].endsAtPoint && !skeleton.stretches[1].endsAtPoint);
+  assert.ok(Math.abs(skeleton.stretches[2].gradePct - 6) < 1 && skeleton.stretches[2].gainM > 60, 'the barometer offsets are removed');
+
+  // A slow-down only three rides in eight have is the day's, not the route's.
+  const some = rides.map((ride, i) => (i < 3 ? skeletonRide({ flatKmh: 28 + i, junctionKmh: 12 }) : skeletonRide({ flatKmh: 28 + i, junctionKmh: 28 + i })));
+  assert.equal(buildRouteSkeleton(some).points.length, 0);
+  // Seven in eight is 88%: below 90, found when the share is relaxed, not found when that is off.
+  const most = rides.map((ride, i) => (i === 0 ? skeletonRide({ flatKmh: 28, junctionKmh: 28 }) : ride));
+  assert.equal(buildRouteSkeleton(most).sharePct, 80);
+  assert.equal(buildRouteSkeleton(most).points.length, 1);
+  assert.equal(buildRouteSkeleton(most, { autoAdjust: false }).points.length, 0);
+  // Too few rides, unless the setting says otherwise.
+  assert.equal(buildRouteSkeleton(rides.slice(0, 4)), null);
+  assert.ok(buildRouteSkeleton(rides.slice(0, 4), { minRides: 3 }));
+});
+
+test('a ride is measured on the skeleton stretch by stretch; a detour or a stop does not distort the rest', () => {
+  const { buildRouteSkeleton, measureRideOnSkeleton, summarizeSections } = require('../route-sections');
+  const usualRides = Array.from({ length: 6 }, () => skeletonRide());
+  const skeleton = buildRouteSkeleton(usualRides);
+  const priors = usualRides.map((ride) => measureRideOnSkeleton(ride.records, skeleton));
+  const judge = (ride) => summarizeSections(skeleton, measureRideOnSkeleton(ride.records, skeleton), priors);
+
+  const same = judge(skeletonRide());
+  assert.deepEqual(same.stretches.map((row) => row.verdict), ['as usual', 'as usual', 'as usual']);
+  assert.ok(same.stretches.every((row) => Math.abs(row.timeDeltaS) <= 2));
+  assert.equal(same.points[0].notable, false);
+
+  // Same speed at a higher heart rate on the middle stretch; a slower climb at the same heart rate.
+  const harder = judge(skeletonRide({ hr: [130, 146, 150], climbKmh: 10.5 }));
+  assert.equal(harder.stretches[0].verdict, 'as usual');
+  assert.match(harder.stretches[1].verdict, /similar speed at higher HR/);
+  assert.equal(harder.stretches[2].verdict, 'slower at similar HR');
+  assert.ok(harder.stretches[2].timeDeltaS > 30);
+  assert.ok(harder.stretches[2].reachedS > harder.stretches[2].usual.reachedS, 'time since the start at the top of the climb');
+
+  // Waiting at the junction: time lost at the point, the stretches' moving speed unchanged.
+  const waited = judge(skeletonRide({ junctionKmh: 2 }));
+  assert.equal(waited.points[0].notable, true);
+  assert.ok(waited.points[0].lostS >= 10 && waited.points[0].minKmh <= 2);
+  // An auto-paused stop in the middle stretch is reported and taken out of the moving time.
+  const paused = judge(skeletonRide({ stopS: 90 }));
+  assert.ok(Math.abs(paused.stretches[1].stoppedS - 90) <= 2);
+  assert.equal(paused.stretches[1].verdict, 'as usual');
+
+  // 600 m of the middle stretch on a parallel road: that stretch is not compared, the others are,
+  // and time since the start is no longer comparable from there on.
+  const around = judge(skeletonRide({ detour: [3, 3.6] }));
+  assert.equal(around.stretches[1].detour, true);
+  assert.equal(around.stretches[1].verdict, null);
+  assert.equal(around.stretches[0].verdict, 'as usual');
+  assert.equal(around.stretches[2].verdict, 'as usual');
+  assert.notEqual(around.stretches[0].reachedS, null);
+  assert.equal(around.stretches[2].reachedS, null);
+  // ... and such a ride does not count towards the usual values of that stretch.
+  const mixed = summarizeSections(skeleton, measureRideOnSkeleton(skeletonRide().records, skeleton),
+    [...priors.slice(0, 2), ...Array.from({ length: 4 }, () => measureRideOnSkeleton(skeletonRide({ detour: [3, 3.6] }).records, skeleton))]);
+  assert.equal(mixed.stretches[1].usual.rides, 2);
+  assert.equal(mixed.stretches[0].usual.rides, 5);
+
+  // A ride slower nearly everywhere at a clearly lower heart rate is an easy outing, not a bad day:
+  // it is named, and it does not enter the usual values of the rides after it.
+  const outing = skeletonRide({ flatKmh: 24, climbKmh: 9.5, hr: [112, 116, 128] });
+  const outingMeasured = measureRideOnSkeleton(outing.records, skeleton);
+  assert.equal(outingMeasured.character.kind, 'easy');
+  assert.ok(outingMeasured.character.speedPct <= -12 && outingMeasured.character.hrDelta <= -8);
+  assert.equal(measureRideOnSkeleton(skeletonRide().records, skeleton).character, null);
+  assert.equal(measureRideOnSkeleton(skeletonRide({ flatKmh: 24, climbKmh: 9.5 }).records, skeleton).character, null, 'slower at the usual heart rate is a hard day, not an easy one');
+  const afterOuting = summarizeSections(skeleton, measureRideOnSkeleton(skeletonRide().records, skeleton), [...priors, outingMeasured]);
+  assert.equal(afterOuting.excludedEasyRides, 1);
+  assert.deepEqual(afterOuting.stretches.map((row) => row.verdict), ['as usual', 'as usual', 'as usual']);
+  assert.equal(judge(outing).character.kind, 'easy');
+
+  // A ride that starts 1 km down the road has not ridden the first stretch in full.
+  const late = judge(skeletonRide({ startKm: 1 }));
+  assert.equal(late.stretches[0].absent, true);
+  assert.equal(late.stretches[1].verdict, 'as usual');
+  // No heart rate: speed is still compared, the effort behind it is not judged.
+  assert.match(judge(skeletonRide({ hr: [null, null, null], flatKmh: 33 })).stretches[1].verdict, /faster; heart rate cannot be compared/);
+  assert.equal(measureRideOnSkeleton([], skeleton), null);
+});
+
+test('the route sections block replaces the segment list and names only the segments that stand out', () => {
+  const { buildRouteSectionsBlock, buildRouteContextBlock } = require('../analysis');
+  const sections = { rides: 34, sharePct: 90, stretches: [
+    { index: 0, fromKm: 0, toKm: 3, type: 'flat', gradePct: 0.4, gainM: 14, endsAtPoint: true, startElapsed: 0, endElapsed: 480, movingS: 432, stoppedS: 48, speedKmh: 25, avgHr: 121,
+      reachedS: 480, timeDeltaS: -14, verdict: 'faster at similar HR', usual: { rides: 5, speedKmh: 24.2, avgHr: 123, reachedS: 500 } },
+    { index: 1, fromKm: 3, toKm: 4, type: 'flat', gradePct: 0, gainM: 0, detour: true, movingS: 150, stoppedS: 0, speedKmh: 24, avgHr: 130, verdict: null, usual: null },
+    { index: 2, fromKm: 4, toKm: 5, type: 'climb', gradePct: 5.5, gainM: 55, startElapsed: 700, endElapsed: 1000, movingS: 300, stoppedS: 0, speedKmh: 12, avgHr: null,
+      reachedS: null, timeDeltaS: null, verdict: null, usual: null },
+    { index: 3, absent: true, fromKm: 5, toKm: 6, type: 'descent', gradePct: -4, gainM: 0 },
+  ], points: [
+    { km: 3, typicalMinKmh: 13.8, lostS: 25, minKmh: 2.4, stoppedS: 12, notable: true },
+    { km: 4.9, typicalMinKmh: 25.7, lostS: 1, minKmh: 24, stoppedS: 0, notable: false },
+  ] };
+  const segments = [
+    { type: 'flat', startElapsed: 0, durationS: 200, avgHr: 119, avgSpeedKmh: 28 },
+    { type: 'flat', startElapsed: 200, durationS: 120, avgHr: 135, avgSpeedKmh: 31.5 },
+    { type: 'flat', startElapsed: 320, durationS: 40, avgHr: 150, avgSpeedKmh: 33 }, // shorter than a minute
+    { type: 'stopped', startElapsed: 360, durationS: 48 },
+  ];
+  const text = buildRouteSectionsBlock(sections, segments);
+  assert.match(text, /^\*\*Route Sections/);
+  assert.match(text, /The route as its 34 rides show it, cut where at least 90% of them slow down and where the terrain changes/);
+  assert.match(text, /1\. km 0-3 \(flat, \+14 m, ends at a slow-down point\): 7:12 \(-0:14\), 25\.0 km\/h, HR 121, stopped 0:48 \(not in the moving time\); reached at 8:00 \(usual 8:20\) \| usual 24\.2 km\/h, HR 123 — faster at similar HR/);
+  assert.match(text, /stands out inside: 00:03:20 for 2:00, HR 135 \(\+14\), 31\.5 km\/h/);
+  assert.doesNotMatch(text, /HR 150|HR 119/, 'a short or ordinary segment is not listed');
+  assert.match(text, /2\. km 3-4 \(flat\): ridden partly on another road, so not compared \(2:30 for the stretch\)/);
+  assert.match(text, /3\. km 4-5 \(climb \+5\.5%, \+55 m\): 5:00, 12\.0 km\/h, HR not covered \| no earlier ride on this stretch/);
+  assert.match(text, /4\. km 5-6 \(descent -4%\): not ridden on this ride/);
+  assert.match(text, /Slow-down points of the route \(places where nearly every ride slows down; why is not in the data[^\n]*km 3 \(down to ~14 km\/h\), km 4\.9 \(down to ~26 km\/h\)\./);
+  assert.match(text, /more time than usual was spent at: km 3 \+0:25, down to 2 km\/h, stopped 0:12\. Waiting or slowing at such a place is ordinary on any ride/);
+  assert.match(buildRouteSectionsBlock({ ...sections, points: [sections.points[1]] }, []), /no point took 10 s or more/);
+  assert.equal(buildRouteSectionsBlock(null, segments), '');
+  // An unusually easy ride is named as such; earlier ones left out of the usual values are counted.
+  const easy = buildRouteSectionsBlock({ ...sections, character: { kind: 'easy', speedPct: -13, hrDelta: -22, sharePct: 84 }, stoppedS: 420, excludedEasyRides: 1 }, []);
+  assert.match(easy, /slower than the route's rides on 84% of the comparable road \(median -13%\) at a heart rate 22 bpm lower, with 7:00 stopped/);
+  assert.match(easy, /not a loss of form/);
+  assert.match(easy, /1 unusually easy earlier ride is left out of the usual values/);
+  assert.doesNotMatch(text, /unusually easy/);
+
+  // With sections the checkpoint table and its verdict leave the same-route block.
+  const context = { routeName: 'Loop', relation: 'same', priorRideCount: 33, checkpointLines: ['- km 1.1: 00:01:49'], verdictLine: 'at km 19.5: similar', climbLine: 'Final climb 3:00', patternLine: 'Route-typical pattern', note: 'Route identity' };
+  assert.match(buildRouteContextBlock(context), /km 1\.1.*[\s\S]*at km 19\.5[\s\S]*Final climb/);
+  const sectioned = buildRouteContextBlock({ ...context, sections });
+  assert.doesNotMatch(sectioned, /km 1\.1|at km 19\.5|Final climb|Checkpoint splits/);
+  assert.match(sectioned, /Route-typical pattern/);
+});
+
+test('the route skeleton is cached per direction and rebuilt when a ride joins', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { ensureRouteSkeleton } = require('../route-store');
+    db.run("INSERT INTO routes (id, name, canonical_signature, ride_count) VALUES (1, 'Loop', '{}', 5)");
+    const add = (id) => {
+      db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)', [id, `f${id}`, `f${id}`, `2026-08-${String(id).padStart(2, '0')}T10:00:00Z`, 'fit']);
+      db.run("INSERT INTO activity_routes (activity_id, route_id, relation) VALUES (?, 1, 'same (test)')", [id]);
+      const insert = db.prepare('INSERT INTO records (activity_id, record_index, elapsed_s, distance_km, speed_kmh, heart_rate, altitude_m, latitude, longitude) VALUES (?,?,?,?,?,?,?,?,?)');
+      skeletonRide({ flatKmh: 28 + id }).records.filter((_, index) => index % 2 === 0).forEach((record, index) =>
+        insert.run([id, index, record.elapsed_time, record.distance, record.speed, record.heart_rate, record.altitude, record.position_lat, record.position_long]));
+      insert.free();
+    };
+    [1, 2, 3, 4].forEach(add);
+    assert.equal(ensureRouteSkeleton(db, 1, 'same'), null, 'four rides are not enough');
+    add(5);
+    const skeleton = ensureRouteSkeleton(db, 1, 'same');
+    assert.equal(skeleton.rides, 5);
+    assert.equal(skeleton.points.length, 1);
+    const stored = JSON.parse(db.exec('SELECT skeleton_json FROM routes WHERE id = 1')[0].values[0][0]);
+    assert.deepEqual(stored.same.skeleton, skeleton);
+    // Served from the cache while nothing changed; rebuilt when a ride joins or a setting changes.
+    db.run("UPDATE routes SET skeleton_json = replace(skeleton_json, '\"rides\":5', '\"rides\":555')");
+    assert.equal(ensureRouteSkeleton(db, 1, 'same').rides, 555);
+    add(6);
+    assert.equal(ensureRouteSkeleton(db, 1, 'same').rides, 6);
+    assert.equal(ensureRouteSkeleton(db, 1, 'same', { minRides: 7 }), null);
+    assert.equal(ensureRouteSkeleton(db, 1, 'reversed'), null, 'no ride in the other direction');
+  } finally {
+    db.close();
+  }
+});
+
+test('on a route with a skeleton the ride is cut at its stretches and takes their terrain', () => {
+  const { buildRouteSkeleton, rideFrame } = require('../route-sections');
+  const skeleton = buildRouteSkeleton(Array.from({ length: 6 }, (_, i) => skeletonRide({ flatKmh: 28 + i })));
+  // The synthetic climb is steady, so an effort segmentation alone finds one moving segment per
+  // level of heart rate; the frame adds the junction and the foot of the climb.
+  const ride = skeletonRide({ hr: [130, 130, 130] });
+  const records = ride.records.map((record) => ({ ...record, altitude: record.altitude / 1000 }));
+  const frame = rideFrame(ride.records, skeleton);
+  assert.equal(frame.frameKey, skeleton.frameKey);
+  assert.deepEqual(frame.cuts.map((cut) => cut.stretchIndex), [0, 1, 2]);
+  assert.deepEqual(frame.cuts.map((cut) => cut.type), ['flat', 'flat', 'climb']);
+
+  const plain = buildActivitySegments(records, {});
+  const framed = buildActivitySegments(records, { routeFrame: frame });
+  assert.ok(framed.length >= 3 && framed.length >= plain.length);
+  assert.deepEqual([...new Set(framed.map((segment) => segment.stretchIndex))], [0, 1, 2], 'every segment lies in one stretch, in route order');
+  for (const segment of framed) {
+    const cut = frame.cuts[segment.stretchIndex];
+    const next = frame.cuts[segment.stretchIndex + 1];
+    assert.ok(segment.startElapsed >= cut.startElapsed - 1, 'a segment starts inside its stretch');
+    if (next) assert.ok(segment.endElapsed <= next.startElapsed, 'and ends before the next one');
+    assert.equal(segment.type, cut.type, 'terrain is the stretch\'s');
+    assert.equal(segment.stretchFromKm, cut.fromKm);
+  }
+  assert.equal(framed.at(-1).type, 'climb');
+  // No frame, no change: rides on routes without a skeleton are segmented as before.
+  assert.deepEqual(buildActivitySegments(records, { routeFrame: null }), plain);
+  assert.ok(plain.every((segment) => segment.stretchIndex === undefined));
+
+  // A cut a few seconds from an effort boundary does not leave a sliver behind.
+  const { applyRouteFrame } = require('../utils');
+  const tiny = applyRouteFrame([{ startIndex: 0, endIndex: 99, type: 'flat' }, { startIndex: 100, endIndex: 400, type: 'flat' }],
+    Array.from({ length: 401 }, (_, i) => ({ elapsed_time: i })),
+    { cuts: [{ startElapsed: 0, stretchIndex: 0, type: 'flat' }, { startElapsed: 105, stretchIndex: 1, type: 'climb' }] });
+  assert.deepEqual(tiny.map((range) => [range.startIndex, range.endIndex, range.type]), [[0, 104, 'flat'], [105, 400, 'climb']]);
+});
+
+test('the skeleton keeps its road and its boundaries when a ride is added, and says when they moved', async () => {
+  const { buildRouteSkeleton } = require('../route-sections');
+  const rides = Array.from({ length: 6 }, (_, i) => skeletonRide({ flatKmh: 28 + i }));
+  const first = buildRouteSkeleton(rides);
+  // One more ordinary ride: same road, same cuts, same key - nothing downstream needs redoing.
+  const grown = buildRouteSkeleton([...rides, skeletonRide({ flatKmh: 31, climbKmh: 13 })], {}, first);
+  assert.deepEqual(grown.ref, first.ref);
+  assert.equal(grown.frameKey, first.frameKey);
+  assert.equal(grown.rides, 7);
+  // Without the stored skeleton the reference is picked afresh; the structure is still the same.
+  assert.deepEqual(buildRouteSkeleton([...rides, skeletonRide()]).stretches.map((stretch) => stretch.type), ['flat', 'flat', 'climb']);
+  // The junction is gone from every ride (the road was rebuilt): the boundaries change, and so does the key.
+  const rebuilt = buildRouteSkeleton(Array.from({ length: 6 }, (_, i) => skeletonRide({ flatKmh: 28 + i, junctionKmh: 28 + i })), {}, first);
+  assert.equal(rebuilt.points.length, 0);
+  assert.notEqual(rebuilt.frameKey, first.frameKey);
+
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { ensureRouteSkeleton } = require('../route-store');
+    db.run("INSERT INTO routes (id, name, canonical_signature, ride_count) VALUES (1, 'Loop', '{}', 5)");
+    const add = (id, ride) => {
+      db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)', [id, `f${id}`, `f${id}`, `2026-08-${String(id).padStart(2, '0')}T10:00:00Z`, 'fit']);
+      db.run("INSERT INTO activity_routes (activity_id, route_id, relation) VALUES (?, 1, 'same (test)')", [id]);
+      db.run("INSERT INTO activity_features (activity_id, features_version, feature_cache_key) VALUES (?, 10, 'fresh')", [id]);
+      const insert = db.prepare('INSERT INTO records (activity_id, record_index, elapsed_s, distance_km, speed_kmh, heart_rate, altitude_m, latitude, longitude) VALUES (?,?,?,?,?,?,?,?,?)');
+      ride.records.forEach((record, index) => insert.run([id, index, record.elapsed_time, record.distance, record.speed, record.heart_rate, record.altitude, record.position_lat, record.position_long]));
+      insert.free();
+    };
+    const keys = () => db.exec('SELECT feature_cache_key FROM activity_features ORDER BY activity_id')[0].values.map((value) => value[0]);
+    [1, 2, 3, 4, 5].forEach((id) => add(id, skeletonRide({ flatKmh: 28 + id })));
+    const stored = ensureRouteSkeleton(db, 1, 'same');
+    assert.deepEqual(keys(), [null, null, null, null, null], 'a route that gets its skeleton has its rides\' segments redone');
+    db.run("UPDATE activity_features SET feature_cache_key = 'fresh'");
+    add(6, skeletonRide({ flatKmh: 30 }));
+    assert.equal(ensureRouteSkeleton(db, 1, 'same').frameKey, stored.frameKey);
+    assert.deepEqual(keys(), ['fresh', 'fresh', 'fresh', 'fresh', 'fresh', 'fresh'], 'an ordinary new ride leaves the others alone');
+  } finally {
+    db.close();
+  }
+});
+
+test('zone bars start after the longest zone name, whatever the language', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  // A fixed 58 px label column fitted "Z1"; "Восстановление" ran under its own bar.
+  assert.match(source, /\.zoneRows \{ display:grid; grid-template-columns:max-content 1fr auto;/);
+  assert.match(source, /\.zoneRow \{ display:contents; \}/);
+  assert.match(source, /<div class="zoneRows">\$\{rows\}<\/div>/);
+  assert.doesNotMatch(source, /grid-template-columns:58px/);
+});
+
+test('the prompt forbids numeric targets and advice on what the rider does not control', () => {
+  const { buildRouteSectionsBlock } = require('../analysis');
+  const prompt = generateAnalysisPrompt({ sessions: [{ sport: 'cycling' }], records: [] }, { total_activities: 0 }, {}, null, [], [], 'ru');
+  assert.match(prompt, /Set no numeric targets: no heart rate, speed, time or power to hit, hold or stay under next time/);
+  assert.match(prompt, /A usual value describes earlier rides; it is not a goal/);
+  assert.match(prompt, /Traffic, traffic lights, junctions, crossings, weather, daylight, the time of the ride and the profile of the route are given, not chosen/);
+  assert.match(prompt, /never suggest another start time, another route or other conditions/);
+  assert.match(prompt, /Name a stretch to watch next time on this route only when it bears on that goal - something to observe, not a value to hit/);
+  // No step is a valid answer: the section is not there to be filled.
+  assert.match(prompt, /If the ride served its declared goal and nothing in the data calls for a change, say exactly that in one sentence and stop there/);
+  // A stop is a fact, not a flaw, unless a declared goal needs riding without them.
+  assert.match(prompt, /A stop anywhere else is not a flaw either[\s\S]{0,160}treat stops as something to reduce only when a declared goal requires riding without them/);
+  // What a session does inside the body is not in the data; the first question no longer asks for it.
+  assert.match(prompt, /What a session does inside the body - blood flow, mobility, metabolism, muscular or metabolic fatigue or its absence - is not in the data either/);
+  assert.doesNotMatch(prompt, /name the qualities it likely stimulates/);
+  assert.doesNotMatch(prompt, /one number worth watching/);
+  assert.match(prompt, /use the informal one \(in Russian «ты»\), always and throughout: one register in every sentence/);
+  // The points line states a fact and names no cause for the model to elaborate on.
+  const block = buildRouteSectionsBlock({ rides: 34, sharePct: 90, stretches: [{ index: 0, fromKm: 0, toKm: 3, type: 'flat', gradePct: 0, gainM: 0, movingS: 400, stoppedS: 48, speedKmh: 27, avgHr: 130, usual: null }],
+    points: [{ km: 3, typicalMinKmh: 14, lostS: 50, minKmh: 0, stoppedS: 48, notable: true }] }, []);
+  assert.doesNotMatch(block, /traffic|junction|caution/i);
+  assert.match(block, /Waiting or slowing at such a place is ordinary on any ride/);
+  assert.match(block, /not something to advise on/);
+  assert.match(block, /stopped 0:48 \(not in the moving time\)/);
+
+  const { checkAnalysisResponse } = require('../prompt-eval');
+  const tail = '\n---\nSUMMARY\ntype: tempo\nfinding: f\nadvice_category: none\nadvice: none\nopen: none\nrevised: none';
+  const check = (text) => checkAnalysisResponse({ prompt: 'p', response: text + tail });
+  assert.equal(check('Удерживайте пульс на отрезке 8,6–16,4 км строго ниже 136 bpm.').setsTarget, true);
+  assert.equal(check('Ориентируйтесь на удержание скорости около 22,3 км/ч на равнине.').setsTarget, true);
+  assert.equal(check('На отрезке 8,6–16,4 км пульс был 136 bpm против обычных 142.').setsTarget, false);
+  assert.equal(check('Если вечерний трафик останется плотным, сдвиньте старт на 15–20 минут позже.').advisesOnGivens, true);
+  assert.equal(check('На отметке 3 км заезд простоял 48 секунд.').advisesOnGivens, false);
+});
+
+test('the same FIT file is recognised under another spelling of its path', () => {
+  const { normalizeFilePath } = require('../file-paths');
+  const linked = (target) => ({ realpath: (value) => (value.startsWith('/link') ? value.replace('/link', target) : value) });
+  assert.equal(normalizeFilePath('/link/rides/a.fit', { platform: 'linux', ...linked('/data') }), '/data/rides/a.fit');
+  assert.equal(normalizeFilePath('/data/rides/../rides/a.fit', { platform: 'linux', realpath: (value) => value }), '/data/rides/a.fit');
+  // A file that is gone keeps its resolved path instead of failing.
+  assert.equal(normalizeFilePath('/gone/a.fit', { platform: 'linux', realpath: () => { throw new Error('ENOENT'); } }), '/gone/a.fit');
+  // Windows: the drive letter and the folder case do not make two files.
+  const win = { platform: 'win32', realpath: (value) => value };
+  assert.equal(normalizeFilePath('C:\\Rides\\A.FIT', win), normalizeFilePath('c:\\rides\\a.fit', win));
+  assert.notEqual(normalizeFilePath('/Rides/A.fit', { platform: 'linux', realpath: (value) => value }), normalizeFilePath('/rides/a.fit', { platform: 'linux', realpath: (value) => value }));
+  assert.equal(normalizeFilePath(''), '');
+});
+
+test('manual start times must be real dates; paces carry seconds into minutes', () => {
+  const { parseManualStartTime } = require('../manual-activity');
+  assert.equal(parseManualStartTime('2026-09-01 12:00'), new Date(2026, 8, 1, 12, 0).toISOString());
+  assert.equal(parseManualStartTime('2026-09-01T07:05'), new Date(2026, 8, 1, 7, 5).toISOString());
+  for (const bad of ['2026-02-30 12:00', '2026-13-01 12:00', '2026-09-31 12:00', '2026-09-01 24:00', '2026-09-01 12:60', '01.09.2026 12:00', 'tomorrow', '']) {
+    assert.equal(parseManualStartTime(bad), null, bad);
+  }
+  const { formatPace } = require('../sport-profiles');
+  assert.equal(formatPace(60 / (4 + 59.6 / 60), 'minPerKm'), '5:00 /km');
+  assert.equal(formatPace(12, 'minPerKm'), '5:00 /km');
+  assert.equal(formatPace(13, 'minPerKm'), '4:37 /km');
+  assert.equal(formatPace(6 / (1 + 59.7 / 60), 'minPer100m'), '2:00 /100 m');
+  // The workspace search finds .fit in any case of the extension.
+  const { FIT_FILE_GLOB } = (() => { try { return require('../fit-files'); } catch { return {}; } })();
+  const fitFilesSource = fs.readFileSync(path.join(__dirname, '..', 'fit-files.js'), 'utf8');
+  assert.match(fitFilesSource, /const FIT_FILE_GLOB = '\*\*\/\*\.\[fF\]\[iI\]\[tT\]';/);
+  assert.ok(FIT_FILE_GLOB === undefined || FIT_FILE_GLOB === '**/*.[fF][iI][tT]');
+});
+
+test('a saved comparison records the analysis format that wrote it', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const columns = db.exec('PRAGMA table_info(activity_comparisons)')[0].values.map((row) => row[1]);
+    assert.ok(columns.includes('analysis_version'));
+  } finally {
+    db.close();
+  }
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /analysis_version = excluded\.analysis_version/);
+  // A comparison without a version, or from an earlier format, is shown as outdated.
+  assert.match(source, /outdated: !\(Number\(row\.analysis_version\) >= ANALYSIS_VERSION\)/);
+  const page = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  assert.match(page, /entry\.outdated[\s\S]{0,260}ui\.olderComparison/);
+});
+
+test('figures follow the time they cover, not the number of samples', () => {
+  const { buildSummary, timeWeightedMean } = require('../activity-summary');
+  // Smart recording: ten seconds at 100 bpm written as one sample, then five 1 s samples at 160.
+  const records = [
+    { elapsed_time: 0, heart_rate: 100, power: 100, cadence: 60, distance: 0, speed: 20 },
+    ...[10, 11, 12, 13, 14].map((t, i) => ({ elapsed_time: t, heart_rate: 160, power: 300, cadence: 90, distance: 0.05 + i * 0.01, speed: 30 })),
+  ];
+  const summary = buildSummary(records, [{}]);
+  // Plain mean of samples would be 150 bpm; 10 s at 100 and 5 s at 160 is 120.
+  assert.equal(Math.round(summary.avgHr), 120);
+  assert.equal(Math.round(summary.avgPower), 167);
+  assert.equal(Math.round(summary.avgCadence), 70);
+  assert.deepEqual(summary.samples, { heartRate: 6, power: 6, cadence: 6, altitude: 0 });
+  // At a steady 1 Hz the weighted mean is the plain one.
+  const steady = Array.from({ length: 60 }, (_, i) => ({ elapsed_time: i, heart_rate: 120 + (i % 3) }));
+  assert.ok(Math.abs(timeWeightedMean(steady, (record) => record.heart_rate) - 121) < 1e-9);
+  // Nothing recorded is "no samples", which the page shows as n/a rather than 0.
+  const bare = buildSummary([{ elapsed_time: 0, distance: 0 }, { elapsed_time: 10, distance: 0.05 }], [{}]);
+  assert.deepEqual(bare.samples, { heartRate: 0, power: 0, cadence: 0, altitude: 0 });
+  const page = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  assert.match(page, /const recorded = \(kind, text\) => \(summary\.samples && !\(summary\.samples\[kind\] > 0\) \? 'n\/a' : text\);/);
+
+  // Mean-maximal power on a 7 s recording: the window need not start and end on a sample.
+  const sparse = Array.from({ length: 60 }, (_, i) => ({ elapsed_time: i * 7, power: 250 }));
+  assert.deepEqual(calculateMeanMaximalPower(sparse, [60, 300]).map((row) => Math.round(row.power)), [250, 250]);
+  const burst = Array.from({ length: 600 }, (_, i) => ({ elapsed_time: i, power: i >= 100 && i < 160 ? 400 : 200 }));
+  assert.deepEqual(calculateMeanMaximalPower(burst, [60, 120]).map((row) => Math.round(row.power)), [400, 300]);
+  // A real pause still breaks an effort.
+  const paused = [...Array.from({ length: 40 }, (_, i) => ({ elapsed_time: i, power: 300 })), ...Array.from({ length: 40 }, (_, i) => ({ elapsed_time: 100 + i, power: 300 }))];
+  assert.equal(calculateMeanMaximalPower(paused, [60])[0].power, 0);
+
+  // Strap contact loss is judged over ten seconds of the recording, not over eleven records.
+  const { computeDataQualityFlags } = require('../data-quality');
+  const slowRecording = (recoverAfterRecords) => Array.from({ length: 200 }, (_, i) => {
+    const cycle = i % 40;
+    const dropped = cycle >= 20 && cycle < 20 + recoverAfterRecords;
+    return { elapsed_time: i * 5, heart_rate: dropped ? 230 : 140, distance: i * 0.03, speed: 22 };
+  });
+  const codes = (records) => computeDataQualityFlags({ records, session: {}, activity: {} }).map((flag) => flag.code);
+  assert.ok(codes(slowRecording(2)).includes('HR_CONTACT_LOSS'), 'back within 10 s');
+  assert.ok(!codes(slowRecording(8)).includes('HR_CONTACT_LOSS'), '40 s away is not a quick recovery');
+});
+
+test('the route card describes the road read-only: stretches and slow-down points in travel order', () => {
+  const { describeRouteShape } = require('../route-store');
+  const { buildRouteSkeleton } = require('../route-sections');
+  const skeleton = buildRouteSkeleton(Array.from({ length: 6 }, (_, i) => skeletonRide({ flatKmh: 28 + i })));
+  const shape = describeRouteShape(skeleton);
+  assert.equal(shape.rides, 6);
+  assert.deepEqual(shape.items.map((item) => item.kind), ['stretch', 'point', 'stretch', 'stretch']);
+  assert.equal(shape.items[1].km, shape.items[0].toKm, 'the point closes the stretch before it');
+  assert.equal(shape.items.at(-1).type, 'climb');
+  assert.ok(shape.items[0].kmh > 20 && shape.items[0].hr > 100);
+  assert.equal(describeRouteShape(null), null);
+
+  const page = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  assert.match(page, /const shapeBlock = shapeItems/);
+  assert.match(page, /\$\{shapeBlock\}/);
+  // Read-only: the block has no inputs or buttons of its own.
+  const block = /const shapeRows[\s\S]*?const shapeBlock[\s\S]*?: '';/.exec(page)[0];
+  // Only stretches are list items; a point is a line inside the stretch it closes, so the
+  // numbers run 1, 2, 3 without gaps and match the stretch numbers of the segment table.
+  assert.match(block, /if \(item\.kind === 'point'\) \{[\s\S]*?continue;/);
+  assert.match(block, /<div class="routeShapePoint">/);
+  assert.doesNotMatch(block, /<li class="routeShapePoint"/);
+  assert.doesNotMatch(block, /<input|<button|<textarea/);
+});
+
+test('charts mark where the ride passes from one route stretch to the next', () => {
+  const { createChartSvgRenderer } = require('../chart-svg');
+  const { renderScaledLineChartSvg } = createChartSvgRenderer({
+    buildDistanceMarkers: () => [], escapeHtml: (text) => String(text), formatTick: (value) => String(value), getHrZoneIndex: () => 0,
+  });
+  const chart = { points: [{ x: 0, y: 1 }, { x: 10, y: 2 }], pathPoints: [], pathData: '0,0 10,10', xMin: 0, xMax: 10, yMin: 0, yMax: 2,
+    plotLeft: 60, plotRight: 1060, plotTop: 10, plotBottom: 300, width: 1100, height: 340, xTicks: [], yTicks: [], xStep: 1, yStep: 1 };
+  const band = (startDistanceKm, endDistanceKm, stretchIndex) => ({ startDistanceKm, endDistanceKm, type: 'flat', stretchIndex });
+  const svg = renderScaledLineChartSvg(chart, 'lineA', 'km', 'km/h', false, { svgId: 'x',
+    segmentBands: [band(0, 2, 0), band(2, 3, 0), band(3, 6, 1), band(6, 10, 2)] });
+  // Two boundaries between three stretches; none at the start, none between segments of one stretch.
+  assert.equal((svg.match(/class="stretchMarker"/g) || []).length, 2);
+  assert.match(svg, /class="stretchMarker" x1="360\.0"/);
+  assert.match(svg, /class="stretchMarker" x1="660\.0"/);
+  const plain = renderScaledLineChartSvg(chart, 'lineA', 'km', 'km/h', false, { svgId: 'x', segmentBands: [{ startDistanceKm: 0, endDistanceKm: 5, type: 'flat' }, { startDistanceKm: 5, endDistanceKm: 10, type: 'climb' }] });
+  assert.doesNotMatch(plain, /class="stretchMarker"/);
+});
+
+test('a FIT file opened from elsewhere does not start a database or take over as the last one', () => {
+  const { openedFitDatabaseRule } = require('../file-paths');
+  const home = '/rides/.fit-visualizer/fit-data.sqlite';
+  const stray = '/downloads/.fit-visualizer/fit-data.sqlite';
+  // The file's own folder has a database: it belongs there.
+  assert.equal(openedFitDatabaseRule({ ownDbPath: home, ownDbExists: true, lastDbPath: home, lastDbExists: true }), 'own');
+  assert.equal(openedFitDatabaseRule({ ownDbPath: stray, ownDbExists: true, lastDbPath: home, lastDbExists: true }), 'own');
+  // No database anywhere yet: the first file opened starts one in its folder.
+  assert.equal(openedFitDatabaseRule({ ownDbPath: stray, ownDbExists: false, lastDbPath: null, lastDbExists: false }), 'own');
+  assert.equal(openedFitDatabaseRule({ ownDbPath: stray, ownDbExists: false, lastDbPath: home, lastDbExists: false }), 'own');
+  // A history exists elsewhere and this folder has none: ask, do not create and switch silently.
+  assert.equal(openedFitDatabaseRule({ ownDbPath: stray, ownDbExists: false, lastDbPath: home, lastDbExists: true }), 'ask');
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  // Viewing only goes to a database that is emptied first and never remembered.
+  assert.match(source, /await fs\.rm\(dbPath, \{ force: true \}\);/);
+  assert.match(source, /if \(remember\) await rememberDatabasePath\(dbPath\);/);
+  assert.match(source, /choice === startHere \? \{ dbPath: ownDbPath, remember: true \} : \{ dbPath: await prepareGuestDatabase\(\), remember: false \}/);
+});
+
+test('the map can color the route by kilometre splits', () => {
+  const { buildGpsRoute } = require('../chart-model');
+  const records = Array.from({ length: 200 }, (_, i) => ({ position_lat: 52 + i * 0.0002, position_long: 13, distance: i * 0.022, elapsed_time: i * 3, speed: 26, heart_rate: 140 }));
+  const route = buildGpsRoute(records, 800, 400, 100);
+  assert.ok(route.geoPoints.every((point) => Number.isFinite(point.distanceKm)), 'every map point knows how far into the ride it is');
+  assert.ok(route.geoPoints.at(-1).distanceKm > 4);
+  const page = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  assert.match(page, /<option value="km">\$\{escapeHtml\(ui\.kilometreSplits\)\}<\/option>/);
+  assert.match(page, /if \(mode === 'km' && drawKilometres\(\)\) return;/);
+  // Two alternating colors, and a number at every kilometre boundary.
+  assert.match(page, /color: KM_COLORS\[index % 2\]/);
+  assert.match(page, /className: 'kmSplitLabel', html: String\(index\)/);
+});
+
+test('a ride can have several goals and each is a yardstick for the analysis', () => {
+  const { buildSessionNotesBlock, describeNotesShort, normalizeGoals, normalizeNotes } = require('../activity-notes');
+  assert.deepEqual(normalizeGoals('Race, endurance , race'), ['race', 'endurance']);
+  assert.deepEqual(normalizeGoals('["recovery","С сыном"]'), ['recovery', 'С сыном']);
+  assert.deepEqual(normalizeGoals('leisure'), ['leisure']);
+  assert.equal(normalizeGoals(Array.from({ length: 9 }, (_, i) => `goal ${i}`)).length, 5);
+  assert.equal(normalizeGoals(['x'.repeat(100)])[0].length, 40);
+  const notes = normalizeNotes({ goals: ['race', 'endurance'] });
+  assert.equal(notes.purpose, 'race');
+  const block = buildSessionNotesBlock(notes);
+  assert.match(block, /goals: race, endurance\./);
+  assert.match(block, /These goals are the yardstick for this ride: for each one say whether the ride served it and by what evidence, and where they pull against each other say so\./);
+  assert.equal(describeNotesShort(notes), 'race + endurance');
+  // The summary tail may name several goals; all of them are offered in the form.
+  const { parseAnalysisSummary } = require('../analysis-summary');
+  const parsed = parseAnalysisSummary('Text.\n---\nSUMMARY\ntype: tempo\nfinding: f\nadvice_category: none\nadvice: none\nopen: none\nrevised: none\ntrend: unclear\npurpose: race, endurance\nconditions: none');
+  assert.deepEqual(parsed.summary.purpose, ['endurance', 'race']);
+});
+
+test('a ticked goal is saved at once and unsaved notes are saved before an analysis', () => {
+  const page = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  // Ticking a goal (or leaving the own-goals field) saves without the Save button.
+  assert.match(page, /if \(target && \(target\.name === '\$\{mapId\}Goal' \|\| target\.id === '\$\{mapId\}NotesOwnGoals'\)\) saveNotesQuietly\(\);/);
+  assert.match(page, /type: 'updateActivityNotes', id: window\.currentActivityId, quiet: true, \.\.\.currentNotes\(\)/);
+  // Anything else changed in the form goes to the database before the analysis reads it.
+  assert.match(page, /if \(window\.saveNotesIfChanged\) window\.saveNotesIfChanged\(\);\s*\n\s*vscode\.postMessage\(\{ type: 'analyzeActivity'/);
+  // Goals pre-ticked from the model's guess say that they are not saved yet.
+  assert.match(page, /!notes\?\.goals\?\.length && effective\.goals\.length \? ` <span id="\$\{mapId\}GoalsSuggested"/);
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  // A quiet save answers with a mark beside the form instead of redrawing the page.
+  assert.match(source, /if \(msg\.quiet\) \{\s*\n\s*panel\.webview\.postMessage\(\{ type: 'notesSaved' \}\);/);
+});
+
+test('the rider\'s own note leads the session notes and has to be used, not just passed along', () => {
+  const { buildSessionNotesBlock } = require('../activity-notes');
+  const block = buildSessionNotesBlock({ rpe: null, goals: ['social', 'leisure'], purpose: 'social', feeling: null, conditions: [], note: 'тестовая поездка с сыном' });
+  const lines = block.split('\n');
+  assert.match(lines[1], /^The athlete's own account of this ride: "тестовая поездка с сыном"$/);
+  assert.match(lines[2], /This is a fact about the ride, and the first thing to explain it with\. Refer to it in the answer\./);
+  assert.match(lines[2], /do not present that as a finding of your own, and do not advise against it/);
+  assert.match(lines[3], /^goals: social, leisure\.$/);
+  // Without a note the block is as before.
+  assert.doesNotMatch(buildSessionNotesBlock({ rpe: 7, goals: [], purpose: null, feeling: null, conditions: [], note: null }), /own account/);
 });

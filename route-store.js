@@ -1,12 +1,13 @@
 // Route storage and per-route checkpoints on top of route-match.js. No vscode, testable.
 //
 // Assignment policy: a ride joins an existing route on same/reversed/partial (its relation is
-// recorded per ride). The canonical signature is the member with the least total deviation to
-// all others (a medoid, recomputed lazily).
+// recorded per ride). The canonical signature is the one of the ride that created the route and is
+// not updated afterwards; a rebuild assigns rides oldest first, so that is the earliest ride.
 
 const { buildRouteSignature, matchRoutes, haversineM } = require('./route-match');
 const { buildAltitudeRide, computeConsensusProfile, mirrorAltitudeRide } = require('./altitude-quality');
 const { computeRouteFeatures, sectionCount, sectionSpeeds } = require('./route-features');
+const { SKELETON, buildRouteSkeleton } = require('./route-sections');
 
 const CHECKPOINT_SPACING_KM = 2; // extra marks inside a long segment
 const CHECKPOINT_MATCH_RADIUS_M = 150;
@@ -18,25 +19,30 @@ function assignRoute(db, { activityId, signature, createdAt }) {
   if (!signature) return { routeId: null, relation: null };
   const existing = readAssignment(db, activityId);
   if (existing) return existing;
-  const routes = readRoutes(db);
-  for (const route of routes) {
+  // Every route is scored; the first one within tolerance is not necessarily the right one
+  // (two roads 70 m apart both fit). A full match beats a partial one, then the closer track wins.
+  let best = null;
+  for (const route of readRoutes(db)) {
     const canonical = parseCanonical(route.canonical_signature);
     if (!canonical) continue;
     const match = matchRoutes(signature, canonical);
+    if (!['same', 'reversed', 'partial'].includes(match.type)) continue;
     // A longer ride that only partly follows a shorter route is its own route: longer, with its
     // own climbs and its own roads. Joining it to the shorter one would forever present the short
     // route's facts as if the long ride had ridden them (and the long route would never form).
     // Partial applies only when this ride is the shorter one - a loop cut short, a late start.
-    if (match.type === 'partial' && signature.distanceKm > canonical.distanceKm * 1.05) {
-      continue;
-    }
-    if (['same', 'reversed', 'partial'].includes(match.type)) {
-      db.run('INSERT OR REPLACE INTO activity_routes (activity_id, route_id, relation) VALUES (?, ?, ?)',
-        [activityId, route.id, `${match.type} (${match.detail})`]);
-      db.run('UPDATE routes SET ride_count = ride_count + 1, first_seen = MIN(COALESCE(first_seen, ?), ?), last_seen = MAX(COALESCE(last_seen, ?), ?) WHERE id = ?',
-        [createdAt, createdAt, createdAt, createdAt, route.id]);
-      return { routeId: route.id, relation: match.type, routeName: route.name, rideCount: route.ride_count + 1 };
-    }
+    if (match.type === 'partial' && signature.distanceKm > canonical.distanceKm * 1.05) continue;
+    const full = match.type !== 'partial';
+    const closer = best == null || (full !== best.full ? full : match.scoreM < best.match.scoreM);
+    if (closer) best = { route, match, full };
+  }
+  if (best) {
+    const { route, match } = best;
+    db.run('INSERT OR REPLACE INTO activity_routes (activity_id, route_id, relation) VALUES (?, ?, ?)',
+      [activityId, route.id, `${match.type} (${match.detail})`]);
+    db.run('UPDATE routes SET ride_count = ride_count + 1, first_seen = MIN(COALESCE(first_seen, ?), ?), last_seen = MAX(COALESCE(last_seen, ?), ?) WHERE id = ?',
+      [createdAt, createdAt, createdAt, createdAt, route.id]);
+    return { routeId: route.id, relation: match.type, routeName: route.name, rideCount: route.ride_count + 1 };
   }
   const name = `Route ${Math.round(signature.distanceKm * 10) / 10} km`;
   db.run('INSERT INTO routes (name, canonical_signature, ride_count, first_seen, last_seen) VALUES (?, ?, 1, ?, ?)',
@@ -380,7 +386,7 @@ function setRouteName(db, routeId, name) {
 function readRouteCard(db, activityId) {
   const assignment = readAssignment(db, activityId);
   if (!assignment?.routeId) return null;
-  const stmt = db.prepare('SELECT id, name, note, ride_count, features_json, canonical_signature FROM routes WHERE id = ?');
+  const stmt = db.prepare('SELECT id, name, note, ride_count, features_json, canonical_signature, skeleton_json FROM routes WHERE id = ?');
   try {
     stmt.bind([assignment.routeId]);
     if (!stmt.step()) return null;
@@ -393,10 +399,51 @@ function readRouteCard(db, activityId) {
     const signature = safeJson(row.canonical_signature);
     return { routeId: row.id, name: row.name || '', note: row.note || '', rideCount: row.ride_count,
       relation: assignment.relation, relationDetail: assignment.relationDetail || null, features,
+      shape: describeRouteShape(safeJson(row.skeleton_json)?.[assignment.relation === 'reversed' ? 'reversed' : 'same']?.skeleton),
       signatureLengthKm: Number.isFinite(Number(signature?.distanceKm)) ? Math.round(Number(signature.distanceKm) * 10) / 10 : null };
   } finally {
     stmt.free();
   }
+}
+
+// What the user typed about routes, kept across a rebuild that deletes and re-derives the routes
+// table. Automatic names ("Route 20.9 km") are not user data and are left to the rebuild.
+const AUTO_ROUTE_NAME = /^Route \d+(\.\d+)? km$/;
+
+function snapshotRouteLabels(db) {
+  return readRoutes(db)
+    .map((route) => ({
+      name: route.name && !AUTO_ROUTE_NAME.test(route.name) ? route.name : null,
+      note: route.note || null,
+      signature: parseCanonical(route.canonical_signature),
+    }))
+    .filter((label) => label.signature && (label.name || label.note));
+}
+
+// Re-derived routes get new ids, so labels return by geometry: each saved label goes to the
+// closest re-derived route that is the same road (either direction), one label per route.
+function restoreRouteLabels(db, labels) {
+  const routes = readRoutes(db).map((route) => ({ id: route.id, signature: parseCanonical(route.canonical_signature) }))
+    .filter((route) => route.signature);
+  const pairs = [];
+  (labels || []).forEach((label, labelIndex) => {
+    for (const route of routes) {
+      const match = matchRoutes(label.signature, route.signature);
+      if (match.type === 'same' || match.type === 'reversed') pairs.push({ labelIndex, routeId: route.id, scoreM: match.scoreM });
+    }
+  });
+  pairs.sort((a, b) => a.scoreM - b.scoreM);
+  const usedLabels = new Set();
+  const usedRoutes = new Set();
+  for (const pair of pairs) {
+    if (usedLabels.has(pair.labelIndex) || usedRoutes.has(pair.routeId)) continue;
+    usedLabels.add(pair.labelIndex);
+    usedRoutes.add(pair.routeId);
+    const label = labels[pair.labelIndex];
+    if (label.name) setRouteName(db, pair.routeId, label.name);
+    if (label.note) setRouteNote(db, pair.routeId, label.note);
+  }
+  return { restored: usedLabels.size, lost: (labels || []).length - usedLabels.size };
 }
 
 function readRouteNote(db, routeId) {
@@ -458,6 +505,79 @@ function ensureRouteFeatures(db, routeId) {
   return features;
 }
 
+// The skeleton as a list in travel order for the route card: each stretch of the road, and after
+// it the slow-down point it ends at. Read-only: what the rides show, for the rider to compare
+// with how the road feels. Null when the route has no skeleton yet.
+function describeRouteShape(skeleton) {
+  if (!Array.isArray(skeleton?.stretches) || !skeleton.stretches.length) return null;
+  const round1 = (value) => Math.round(Number(value) * 10) / 10;
+  const items = [];
+  for (const stretch of skeleton.stretches) {
+    items.push({ kind: 'stretch', fromKm: round1(stretch.fromKm), toKm: round1(stretch.toKm), type: stretch.type,
+      gradePct: stretch.gradePct, gainM: stretch.gainM, lossM: stretch.lossM,
+      kmh: stretch.routeKmh ?? null, hr: stretch.routeHr ?? null });
+    const point = stretch.endsAtPoint ? (skeleton.points || []).find((candidate) => candidate.bin === stretch.toBin) : null;
+    if (point) items.push({ kind: 'point', km: round1(point.km), minKmh: Math.round(point.typicalMinKmh), sharePct: point.sharePct });
+  }
+  return { rides: skeleton.rides, sharePct: skeleton.sharePct, lengthKm: round1(skeleton.lengthKm), items };
+}
+
+// The route's skeleton (slow-down points and the stretches between them) for one direction,
+// cached in routes.skeleton_json and rebuilt when rides join or the settings change. It is read
+// from the records of every ride of the route in that direction, oldest first.
+function ensureRouteSkeleton(db, routeId, relation, options = {}) {
+  if (!routeId || !['same', 'reversed'].includes(relation)) return null;
+  const members = [];
+  const memberStmt = db.prepare(`SELECT ar.activity_id FROM activity_routes ar JOIN activities a ON a.id = ar.activity_id
+    WHERE ar.route_id = ? AND ar.relation LIKE ? ORDER BY datetime(a.start_time), a.id`);
+  try {
+    memberStmt.bind([routeId, `${relation}%`]);
+    while (memberStmt.step()) members.push(memberStmt.getAsObject().activity_id);
+  } finally {
+    memberStmt.free();
+  }
+  const settings = JSON.stringify({ version: SKELETON.version, options });
+  const stored = db.prepare('SELECT skeleton_json FROM routes WHERE id = ?');
+  let cache = null;
+  try {
+    stored.bind([routeId]);
+    if (stored.step()) cache = safeJson(stored.getAsObject().skeleton_json);
+  } finally {
+    stored.free();
+  }
+  const entry = cache?.[relation];
+  // Like the elevation consensus: every new ride counts while the route is young, every third
+  // later on. A ride leaving the route (re-indexing) or changed settings rebuild at once.
+  const joined = entry ? members.length - entry.members : Infinity;
+  if (entry && entry.settings === settings && joined >= 0 && joined < (entry.members < 10 ? 1 : 3)) return entry.skeleton;
+  const rides = members.map((id) => ({ records: readSkeletonRecords(db, id) }));
+  const skeleton = buildRouteSkeleton(rides, options, entry?.skeleton || null);
+  db.run('UPDATE routes SET skeleton_json = ? WHERE id = ?',
+    [JSON.stringify({ ...(cache || {}), [relation]: { settings, members: members.length, skeleton } }), routeId]);
+  // Segments are cut at the skeleton's boundaries. When those moved, the cached segments of the
+  // route's rides no longer match and are recomputed the next time they are needed.
+  if ((entry?.skeleton?.frameKey || null) !== (skeleton?.frameKey || null) && members.length) {
+    db.run(`UPDATE activity_features SET feature_cache_key = NULL WHERE activity_id IN (${members.map(() => '?').join(',')})`, members);
+  }
+  return skeleton;
+}
+
+function readSkeletonRecords(db, activityId) {
+  const stmt = db.prepare('SELECT elapsed_s, distance_km, speed_kmh, heart_rate, altitude_m, latitude, longitude FROM records WHERE activity_id = ? ORDER BY record_index');
+  try {
+    stmt.bind([activityId]);
+    const records = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      records.push({ elapsed_time: row.elapsed_s, distance: row.distance_km, speed: row.speed_kmh, heart_rate: row.heart_rate,
+        altitude: row.altitude_m, position_lat: row.latitude, position_long: row.longitude });
+    }
+    return records;
+  } finally {
+    stmt.free();
+  }
+}
+
 function safeJson(text) {
   try {
     return text ? JSON.parse(text) : null;
@@ -472,6 +592,9 @@ module.exports = {
   computeCheckpoints,
   ensureRouteElevationProfile,
   ensureRouteFeatures,
+  describeRouteShape,
+  ensureRouteSkeleton,
+  readSkeletonRecords,
   readAssignment,
   readRouteCard,
   readRouteNote,
@@ -479,6 +602,8 @@ module.exports = {
   readRoutes,
   setRouteName,
   setRouteNote,
+  snapshotRouteLabels,
+  restoreRouteLabels,
   describeCheckpointVerdict,
   summarizeCheckpoints,
   priorKmOnAxis,

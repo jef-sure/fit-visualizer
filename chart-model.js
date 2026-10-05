@@ -25,17 +25,21 @@ function buildLineChart(records, xField, yField, width, height, maxPoints, optio
 
 function buildGpsRoute(records, width, height, maxPoints, options = {}) {
   const noPointsText = String(options.noPointsText || 'no GPS points available');
-  const gpsPoints = downsamplePoints(extractGpsPoints(records), maxPoints);
+  const allGpsPoints = extractGpsPoints(records);
+  const gpsPoints = downsamplePoints(allGpsPoints, maxPoints);
   const route = buildCartesianGeometry(gpsPoints, width, height, { left: 60, right: 18, top: 12, bottom: 36 });
   return { ...route, pointCount: gpsPoints.length,
     boundsText: route.points.length ? `lat ${formatTick(route.yMin, route.yStep)}..${formatTick(route.yMax, route.yStep)}, lon ${formatTick(route.xMin, route.xStep)}..${formatTick(route.xMax, route.xStep)}` : noPointsText,
-    routeDistanceKm: computeRouteDistanceKm(gpsPoints), speedStats: computeStats(gpsPoints.map((point) => point.speed).filter(Number.isFinite)), hrStats: computeStats(gpsPoints.map((point) => point.heart_rate).filter(Number.isFinite)),
+    // Measured on the whole track: thinning it for drawing cuts corners and can drop the last point.
+    routeDistanceKm: computeRouteDistanceKm(allGpsPoints), speedStats: computeStats(gpsPoints.map((point) => point.speed).filter(Number.isFinite)), hrStats: computeStats(gpsPoints.map((point) => point.heart_rate).filter(Number.isFinite)),
     geoPoints: gpsPoints.map((point) => ({
       lat: point.y,
       lon: point.x,
       speed: point.speed,
       heart_rate: point.heart_rate,
       elapsedTime: point.elapsed_time,
+      // Ridden distance in km, for the kilometre splits on the map.
+      distanceKm: Number.isFinite(point.distance) ? point.distance : null,
     })) };
 }
 

@@ -25,13 +25,17 @@ async function parseFitFile(filePath) {
   });
 }
 
+// Devices write .fit, .FIT and now and then .Fit; a workspace search is case-sensitive where the
+// file system is, so the extension is spelled out in both cases.
+const FIT_FILE_GLOB = '**/*.[fF][iI][tT]';
+
 function getParsedLaps(data) {
   return Array.isArray(data?.laps) ? data.laps : [];
 }
 
 async function getFitUris(baseDir, useWorkspaceIndex) {
   if (useWorkspaceIndex && vscode.workspace.workspaceFolders?.length) {
-    const pattern = new vscode.RelativePattern(baseDir, '**/*.fit');
+    const pattern = new vscode.RelativePattern(baseDir, FIT_FILE_GLOB);
     return vscode.workspace.findFiles(pattern, '**/node_modules/**');
   }
 
@@ -78,6 +82,7 @@ async function fileExists(filePath) {
 }
 
 module.exports = {
+  FIT_FILE_GLOB,
   fileExists,
   findFitFilesInDirectory,
   getFitUris,

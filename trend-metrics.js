@@ -4,8 +4,9 @@
 // code-issued verdict. The model explains what moved; it never computes or names these as
 // health or fitness. Everything here is pure and testable — no DB, no vscode.
 //
-//  1  Route efficiency — elapsed × HR at the last shared checkpoint against the median of the
-//     last 5 prior rides of the same route and direction.
+//  1  Route effort — elapsed × HR at the last shared checkpoint against the median of the
+//     last 5 prior rides of the same route and direction. A proxy, not efficiency: it falls for
+//     a slower ride at a much lower heart rate too.
 //  2  Load rhythm — acute (7-day TRIMP) to chronic (28-day weekly average) ratio plus the
 //     Foster monotony of the week.
 //  3  Post-climb HR recovery — bpm drop in the 60 s after the final climb, against the median

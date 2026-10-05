@@ -12,6 +12,8 @@ function registerCommands(context, services) {
     pickSingleFitFile,
     prepareFitForVisualization,
     reanalyzeOutdatedActivities,
+    reanalyzeSelectedActivities,
+    rebuildDerivedFeatures,
     rememberDatabasePath,
     resolveActiveDbPath,
     resolveFitUri,
@@ -65,6 +67,12 @@ function registerCommands(context, services) {
     () => reanalyzeOutdatedActivities()
   );
 
+  const reanalyzeSelected = register(
+    'fitVisualizer.reanalyzeSelected',
+    'FIT re-analysis failed',
+    (selection) => reanalyzeSelectedActivities(typeof selection === 'string' ? selection : undefined)
+  );
+
   const tidyHrProfiles = register(
     'fitVisualizer.tidyHeartRateProfiles',
     'FIT heart-rate profile tidy-up failed',
@@ -84,6 +92,9 @@ function registerCommands(context, services) {
     const dbPath = await getLocalDbPath(baseDir);
     await rememberDatabasePath(dbPath);
     const result = await indexFitUris([targetUri], dbPath, 'Indexing one FIT file...');
+    // Re-indexing replaces the records, and the cached segments, checkpoints and route of the
+    // ride are derived from them; routes are derived oldest ride first, so the whole set is redone.
+    await rebuildDerivedFeatures({ silent: false, skipStaleCheck: true, reason: 'indexing', dbPath });
     vscode.window.showInformationMessage(
       vscode.l10n.t('FIT DB index complete: {0} indexed, {1} failed.', result.saved, result.failed)
     );
@@ -108,7 +119,7 @@ function registerCommands(context, services) {
     }
   );
 
-  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, tidyHrProfiles, updateModelPrices, selectModel, customEditor];
+  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, reanalyzeSelected, tidyHrProfiles, updateModelPrices, selectModel, customEditor];
 }
 
 function createFitEditorProvider(context, services) {

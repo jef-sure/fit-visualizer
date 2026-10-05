@@ -17,7 +17,7 @@ New users can skip this section. If you already have rides in your local history
 | **Saved AI analyses** — the text the model wrote for each ride | **FIT: Re-analyze Outdated Analyses** | After almost every update: the analysis prompt changes often, and the activity page marks older analyses as *analyzed with an older version*. One Copilot request per outdated ride; current analyses are left alone. |
 | **Indexed activity data** — the figures read from the FIT files into the local database | **FIT: Index All Files** | Only when a release changes *what is read from the file*. The changelog says so explicitly under *Upgrade Notes*. Last time: 0.20.0 (device ascent/descent was stored 1000× too small). If you indexed with 0.20.0 or later, you never need this. |
 
-Derived data (segments, zones, route profiles, checkpoints) needs no command: it is rebuilt on the first start after an update that changes its format, with a progress notification ("FIT Visualizer: rebuilding derived features", N/M), and anything still stale is recomputed on the fly when an analysis needs it. If you start a re-analysis while that background rebuild is running, the re-analysis simply waits for it to finish first.
+Derived data (segments, zones, routes, route profiles, checkpoints) needs no command; route names and notes you entered are carried over to the re-derived routes: it is rebuilt on the first start after an update that changes its format, with a progress notification ("FIT Visualizer: rebuilding derived features", N/M), and anything still stale is recomputed on the fly when an analysis needs it. If you start a re-analysis while that background rebuild is running, the re-analysis simply waits for it to finish first.
 
 Re-indexing is local and does not change the original FIT files. Re-analysis is optional, requires GitHub Copilot, sends activity and discussion context to the model, and may consume your Copilot allowance.
 
@@ -29,7 +29,7 @@ Re-indexing is local and does not change the original FIT files. Re-analysis is 
 4. Got a folder full of older rides? Run **FIT: Index All Files** from the Command Palette (`Ctrl+Shift+P`) to add them all at once. After new rides, **FIT: Index New Files** picks up only what's new.
 5. To switch between rides later, run **FIT: Browse Loaded Data** and pick an activity from the list at the top.
 
-That's all. Charts, the map, segments and heart-rate zones work right away — no account, no upload. For personal zones, fill in the **Heart Rate Zone Profile** (sex, age, resting HR) once on the activity page.
+That's all. Charts, the map and segments work right away — no account, no upload. Heart-rate zones need a maximum heart rate: fill in the **Heart Rate Zone Profile** (sex, age, resting HR) once on the activity page, and they appear for every ride.
 
 If GitHub Copilot Chat is installed and signed in, scroll down to **AI Analysis** and click **Analyze Activity**. The answer is not the end of it — keep asking in the chat box below.
 
@@ -77,7 +77,7 @@ I wouldn't have figured out the altimeter thing myself. The conversation is save
 
 It started with a cheap bike computer. Choosing between a Sigma ROX 4.0 and a CYCPLUS M1, I asked Google AI, and it told me the M1 shows up over USB as a drive with your rides on it. It doesn't — the files only come off over Bluetooth, which is how [cycplusSync](https://github.com/jef-sure/cycplusSync) appeared. Next, the tools: GoldenCheetah crashed on my files, even after re-encoding them with GPSBabel, and GPXSee couldn't load map tiles. I'm a programmer, so I wrote my own.
 
-I didn't want just a viewer, though. One ride on its own says little; what matters is how it compares with similar rides, recent training load and earlier results. That's why FIT Visualizer keeps a local database, splits rides into segments by terrain and effort (laps and kilometre splits never line up between two rides on the same road — one red light is enough), and hands a language model the prepared analysis plus your history rather than the raw file.
+I didn't want just a viewer, though. One ride on its own says little; what matters is how it compares with similar rides, recent training load and earlier results. That's why FIT Visualizer keeps a local database, splits rides into segments of roughly steady effort, labelled by terrain (laps and kilometre splits never line up between two rides on the same road — one red light is enough), and hands a language model the prepared analysis plus your history rather than the raw file.
 
 So it is built to answer *"What happened on this ride, and what does it mean compared with my previous rides?"* rather than *"Give me every sports metric there is."* It isn't trying to replace Strava, Garmin Connect or a power-analysis workbench — it's for understanding your own training history.
 
@@ -97,9 +97,9 @@ It works for cycling and running; most of the examples come from cycling because
 - Render GPS track on an interactive map
 - **Route card** for rides on a known route: how many rides share it, which direction this ride took relative to the first one, route length/ascent/descent from the elevation consensus, the climbs in this direction, and the three trend indicators with their history strips; the first ride on a route already gets the card, with the length from its GPS signature and the facts filling in as rides accumulate
 - Filter the activity and comparison lists down to one route; the choice is remembered between sessions
-- Color the GPS route by speed, heart rate, or detected terrain segments, with a legend for climbs, descents, flats, stops, and technical descents
-- Show matching low-opacity terrain segment bands behind all distance charts, controlled by one shared toggle
-- Hover terrain-colored map sections or chart bands for the available segment details, including duration, distance, grade, speed, heart rate, effort, elevation, and technical status
+- Color the GPS route by speed, heart rate, or segment, with segments colored by terrain label and a legend for climbs, descents, flats, stops, and technical descents
+- Show the same segments as low-opacity bands behind all distance charts, controlled by one shared toggle
+- Hover a segment on the map or its chart band for the available details, including duration, distance, grade, speed, heart rate, effort, elevation, and technical status
 - Review a compact table of detected segments and, when the FIT device recorded them, its laps
 - Automatic ride segmentation — splits a ride into stretches of steady effort (named climb, descent or flat) and stops, and estimates effort with a physics-based power model on climbs or heart rate elsewhere, honestly labeling which one applies to each segment
 - Wheel-circumference calibration hint — compares your wheel sensor's distance against GPS on trustworthy straight stretches and suggests a correction when there's enough evidence, silent otherwise
@@ -146,9 +146,10 @@ How to get `.fit` files off common devices:
 - FIT: Browse Loaded Data
 - FIT: Index All Files
 - FIT: Index New Files
-- FIT: Index This File
+- FIT: Index This File — re-reads one file and refreshes the derived data (segments, zones, routes) in the same run
 - FIT: Add Manual Activity — enter a workout by hand when there is no FIT file (say, the bike computer stayed at home), so it still counts in your history and analysis
 - FIT: Re-analyze Outdated Analyses — processes all activities with outdated or missing analyses in one chronological batch, after confirming the total number of Copilot requests; current analyses are left unchanged
+- FIT: Re-analyze Selected Activities — re-analyzes only the activities you list (ids or parts of file names such as a date, e.g. `18, 120, 20260831`), whatever their saved version; useful for trying a new version on a few rides first
 - FIT: Tidy Heart-Rate Profiles — previews consecutive duplicate dated zone profiles, removes them on confirmation, and lists max-HR flips worth reviewing
 - FIT: Update Model Prices — downloads the official GitHub Copilot token-price table and saves it locally for subsequent analyses; no Copilot request is made
 
@@ -166,6 +167,8 @@ Each ride is split into segments where the effort changes, plus stops. A segment
 The virtual power model accounts for gravity, rolling resistance, aerodynamic drag, and acceleration. Frontal area and rolling resistance are configurable; wind is not modelled. Grade is estimated by a robust local height-versus-distance fit using windows from 30 to 120 m, rather than differences between neighbouring heights. Stops, missing altitude, recording gaps and distance resets break the fit. Real slopes above 18% are no longer rejected solely for their steepness.
 
 Power and terrain segmentation share this spatial grade signal. For segments where vpower is the effort signal, window span, fit residual, signal coverage and local sensitivity to grade/mass are supplied to AI analysis. These are consistency and applicability checks, not validated power error bounds: a smooth altitude bias, unknown wind or wrong mass can still produce a wrong estimate. Calibration against a power meter remains necessary for absolute accuracy claims.
+
+On a route you have ridden five times or more, the road itself frames the segments. FIT Visualizer reads the route's structure from all its rides together: *points* where nearly every ride slows down (a junction, a crossing, a turn without a view) and the *stretches* between them, split again where the terrain changes. A ride on that route is cut at the stretch boundaries first and by effort inside each stretch, so every segment lies within one stretch and takes its terrain from the road — the same climb is a climb on every ride. The segment table shows the stretches as headings with the ride's segments under them. A ride that leaves the road for part of a stretch (roadworks, an earlier variant of the route) is simply not compared on that stretch. The boundaries are kept stable as rides are added: one appears when it is clearly there and goes when it is clearly gone.
 
 This segmentation also feeds the AI analysis, so it can reason about specific intervals rather than only ride-wide averages.
 
@@ -302,6 +305,10 @@ Most settings can be left at their defaults. Segmentation thresholds are mainly 
 | `fitVisualizer.segmentation.minSegmentSeconds`   | `45`    | A shorter stretch of movement between two stops is treated as part of the stop.                                    |
 | `fitVisualizer.segmentation.technicalGradePct`   | `-8`    | Descent grade below which an erratic speed trace marks the segment as technical (no effort estimate).              |
 | `fitVisualizer.segmentation.effortMinSegmentSeconds` | `60` | Shortest stretch of steady effort that becomes a segment of its own. |
+| `fitVisualizer.routeSections.minRideSharePct` | `90` | A place where rides slow down (junction, crossing, blind turn) becomes a point of the route when at least this share of its rides slow down there; rides are compared stretch by stretch between such points. |
+| `fitVisualizer.routeSections.placeToleranceM` | `0` | How far from the route's road a ride may be and still count as riding it, in metres; `0` means 60 m. A ride further away on part of a stretch (a detour, an earlier variant) is not compared on that stretch. |
+| `fitVisualizer.routeSections.minRides` | `5` | Rides needed on a route before it is cut into stretches; below that, rides are compared at checkpoints. |
+| `fitVisualizer.routeSections.autoAdjust` | `true` | When no slow-down reaches the required share, lower it step by step (never below 70%) until the route has at least one point. |
 | `fitVisualizer.segmentation.effortHrStepBpm` | `5` | Heart-rate difference that counts as a different level of effort. Lower gives more segments. |
 | `fitVisualizer.segmentation.effortPowerStepWatts` | `30` | Power difference (measured or estimated) that counts as a different level of effort. Lower gives more segments. |
 | `fitVisualizer.segmentation.stopSpeedKmh`        | `1`     | Speed at/below which a record counts as stopped.                                                                   |

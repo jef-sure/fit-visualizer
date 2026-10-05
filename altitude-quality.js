@@ -5,7 +5,7 @@
 // per-route consensus profile (median across offset-aligned rides) turns that into a measurable
 // settling diagnostic instead of an invisible ascent error.
 
-const { haversineM } = require('./route-match');
+const { hasGpsFix, haversineM } = require('./route-match');
 
 const ELEVATION_BIN_M = 25;
 
@@ -42,7 +42,7 @@ function buildAltitudeRide(records) {
     const value = record.altitude == null ? NaN : Number(record.altitude);
     return { distance: Number(record.distance), elapsed: Number(record.elapsed_time), altitude: Number.isFinite(value) ? value * 1000 : null };
   });
-  const gps = (record) => Number.isFinite(Number(record?.position_lat)) && Number.isFinite(Number(record?.position_long));
+  const gps = (record) => hasGpsFix(record?.position_lat, record?.position_long);
   const first = list.find(gps);
   const last = [...list].reverse().find(gps);
   return {
@@ -189,7 +189,8 @@ function mirrorAltitudeRide(ride) {
   const altitudes = ride.altitudes
     .map((point) => ({ ...point, distance: first + (total - (point.distance - first)) }))
     .sort((a, b) => a.distance - b.distance);
-  return { ...ride, altitudes };
+  // The ride now starts where it ended: the consensus keeps rides by their start point.
+  return { ...ride, altitudes, start: ride.end ?? null, end: ride.start ?? null };
 }
 
 // Mirrors a canonical-axis elevation consensus onto the reversed direction: bin i becomes

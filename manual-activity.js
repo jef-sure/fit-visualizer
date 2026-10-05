@@ -94,4 +94,16 @@ function createManualActivity(db, activity, notes = null) {
   return activityId;
 }
 
-module.exports = { createManualActivity };
+// "YYYY-MM-DD HH:MM" in local time, as an ISO instant, or null. The date has to exist: JavaScript
+// reads 30 February as 2 March without a word, and the activity would land on the wrong day.
+function parseManualStartTime(text) {
+  const match = /^\s*(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})\s*$/.exec(String(text ?? ''));
+  if (!match) return null;
+  const [year, month, day, hour, minute] = match.slice(1).map(Number);
+  const date = new Date(year, month - 1, day, hour, minute, 0, 0);
+  const exists = date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+    && date.getHours() === hour && date.getMinutes() === minute;
+  return exists ? date.toISOString() : null;
+}
+
+module.exports = { createManualActivity, parseManualStartTime };

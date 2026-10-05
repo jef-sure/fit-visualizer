@@ -92,8 +92,13 @@ function computeDataQualityFlags({ records, session = {}, wheelRatio, elapsedMis
       const dt = Number(list[index]?.elapsed_time) - Number(list[index - 1]?.elapsed_time);
       if (!Number.isFinite(a) || !Number.isFinite(b) || !(dt > 0)) continue;
       if (Math.abs(b - a) / dt > DQ.contactLossJumpBpm) {
-        const window = list.slice(index, index + DQ.contactLossWindowS + 1)
-          .filter((record) => Number.isFinite(Number(record.heart_rate))).map((record) => Number(record.heart_rate));
+        // The window is seconds of the recording: eleven records are 10 s at 1 Hz and 50 s at 5 s.
+        const until = Number(list[index].elapsed_time) + DQ.contactLossWindowS;
+        const window = [];
+        for (let next = index; next < list.length && Number(list[next]?.elapsed_time) <= until; next += 1) {
+          const value = Number(list[next].heart_rate);
+          if (list[next].heart_rate != null && Number.isFinite(value)) window.push(value);
+        }
         const recovered = window.some((value) => Math.abs(value - a) <= 5);
         if (recovered) jumps.push({ elapsed: Number(list[index].elapsed_time), from: a, to: b });
       }

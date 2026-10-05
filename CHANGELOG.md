@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.29.0 - 2026-10-05
+
+### Added
+
+- **FIT: Re-analyze Selected Activities** re-analyzes only the activities you list — ids or parts of file names such as a date — whatever their saved version, oldest first. For trying a new prompt on a few rides before re-analyzing all of them.
+
+- **Route skeleton.** A route with five or more rides is described by what all its rides show together. *Points* are the places where nearly every ride slows down — a junction, a crossing, a turn without a view — found in the median speed along the road; speed there is set by safety, so only time lost against the usual passage is reported. *Stretches* are the road between points, split again where the terrain changes; each ride's own segments are merged into them. The prompt carries one table: this ride against the median of the last five rides that rode the same stretch, with a computed verdict per stretch and the time since the start at the end of each. It replaces the per-ride segment list and a checkpoint table that stopped halfway through the ride.
+  - A ride that leaves the road on part of a stretch (roadworks, an earlier variant of the route) is not compared there and does not count towards that stretch's usual values; the rest of the ride still is.
+  - The reference road is a recent ride, not the first one: a route is usually found over several tries.
+  - A ride that is slower nearly everywhere at a clearly lower heart rate (riding with company, a recovery spin) is named as unusually easy, and is left out of the usual values of later rides.
+  - Terrain of a stretch comes from the altitude of all rides together, so the same road is no longer a "climb" on one day and "flat" on another.
+  - Settings: `fitVisualizer.routeSections.*` (share of rides, distance from the road, minimum rides, auto-adjust).
+- **Segments are framed by the route.** On a route with a skeleton a ride is cut at the stretch boundaries first and by effort inside each stretch. Every segment lies within one stretch and takes its terrain from the road, so the page, the map and the analysis show the same division, and the segment table lists the stretches as headings with the ride's segments under them. Stops are the same on the page and in the route table. Rides on routes without a skeleton are segmented as before.
+  - The skeleton is kept stable: it keeps its reference road while recent rides follow it, a boundary within 100 m of a stored one stays where it was, and a stored point or terrain change is dropped only when it is clearly gone. When boundaries do change, the cached segments of that route's rides are recomputed.
+  - Route length and kilometre marks are measured on the map, not taken from the device: a wheel sensor reading a few percent long no longer moves them.
+
+- **Goals of a ride.** A ride can have several goals at once (a race that is also an endurance day), chosen from the list or written in your own words; a name you have used is offered again on other rides. "Leisure ride" joins the list. The goals stand first in Session Notes. The analysis names the goal it judges the ride against, says for each declared goal whether the ride served it, and ties the practical step to it. With no goal declared it says that the goal was derived automatically from the type of the ride, does not judge the ride against a goal taken from the ride itself, and ends with an observation - what differed from your usual on the route - instead of advice. A ride that served its goal needs no advice, and the analysis may say so. A ticked goal is saved at once; goals suggested by the analysis are marked as not saved yet.
+- **Kilometre splits on the map.** "Color route by → Kilometres" alternates two colors every kilometre, numbers each boundary and shows a kilometre's time, speed and heart rate on hover.
+- **The road on the route card.** A read-only list in travel order of the route's stretches (terrain, grade, usual speed and heart rate) and the places where nearly every ride slows down, to compare with how the route feels from the saddle. Charts mark where the ride passes from one stretch to the next.
+- Saved comparisons record the analysis format that wrote them and are marked when they come from an older one, as analyses are.
+
+### Fixed
+
+- **Route direction was decided by rounding noise.** The comparison used the nearest-point distance between two tracks, which is the same whichever way a track is ridden, so "same" or "reversed" came out of the last bits of a floating-point sum. Direction is now read from the order in which the road is covered, and it holds when a loop is entered elsewhere, ridden on a wheel sensor that reads a few percent long, or is an out-and-back on one road (which stays "same"). Everything built on direction — the elevation consensus, direction effects, checkpoint medians and the route effort trend — is re-derived.
+- Records before the first GPS lock (empty or 0/0 coordinates) are no longer part of a route signature or an altitude profile's start point. A ride with a late lock could previously fail to match its own route.
+- Track deviation is measured to the other track's line instead of to its nearest sampled point, which removed about 30 m of sampling error from every reading; the 60 m tolerance now holds real offset.
+- A ride joins the closest matching route, not the first one within tolerance; a full match is preferred over a partial one.
+- Rebuilding derived data deleted the routes table together with the names and notes typed for routes. They are now carried over to the re-derived routes by geometry.
+- **Index This File** left the old segments, checkpoints and route assignment in place after replacing the records. It now refreshes derived data like the other index commands.
+- **The rebuild after an update was skipped.** Opening a page refreshed stale rides one by one, quietly and without re-deriving routes; by the time the announced rebuild looked, every row was current and it did nothing. So the progress notification never appeared after an update, and fixes that depend on re-deriving routes (the direction fix above) did not take effect until the files were re-indexed. The database now records which version it was last rebuilt for as a whole, and the rebuild runs, with its progress shown, before the first page opens.
+- An empty answer from the model failed the ride outright, so a batch re-analysis regularly ended "1 failed" and had to be started again. An empty answer is now tried again, up to twice.
+- A mirrored (reversed) altitude profile kept its original start and end points.
+- Mean-maximal power required samples exactly a window apart: a constant 250 W recorded every 7 s gave 0 W for 60 s. It is now integrated over time, and a recording gap is judged against the recording's own step.
+- Average heart rate, power and cadence are weighted by the time each sample covers. A plain mean of samples was biased on smart recording, which writes fewer samples where nothing changes.
+- Device ascent and descent are always converted from the parser's kilometres. The size-based guess stored a 5000 m day as 5 m and a 3 m figure as 3 km.
+- The strap-contact check looked ten records ahead instead of ten seconds: 50 s on a 5 s recording.
+- Heart rate, power, cadence and elevation show "n/a" when nothing was recorded, instead of a measured-looking 0.
+- Route distance on the map is measured on the whole GPS track, not on the track thinned for drawing.
+- A pace could read "4:60 /km".
+- The same FIT file reached through a symlinked folder or, on Windows, another letter case was indexed twice.
+- Workspace searches found only lower-case `.fit`; `.FIT` files were skipped on case-sensitive file systems. The file picker says when it shows only the first 200 files.
+- A manual activity dated 30 February was silently saved on 2 March.
+- Opening a FIT file from a folder without a database, when a database already exists elsewhere, silently created a new database beside the file and made it the last one used. The extension now asks: view the file only (a temporary database that is emptied each time and never remembered) or start a database in that folder. Browsing the last database from any folder works as before.
+- A metric overlay on the altitude chart was drawn in the same orange as the altitude line. Each chart now takes overlay colors it does not already use (the altitude line is orange, the compared ride on the speed chart purple). Heart rate drawn as an overlay keeps its zone colors, as on its own chart.
+- In the heart-rate zones panel the bars ran under long zone names ("Восстановление", "Выносливость"): the label column was a fixed 58 px. It is now as wide as the longest name.
+- The load ratio divided the last 28 days by four weeks even when heart-rate load existed for only part of them, so one week of data in a three-week history read as exactly 4.0. The usual week is now averaged over the days that carry load, and needs two weeks of them.
+
+### Changed
+
+- **Earlier conversations are passed to the model complete**: both sides and without the previous cap of 24 conversations and 8 user messages each. A user message is often an answer to what the assistant said.
+- Removed from the prompt as duplicated or unused by answers: the time × HR indicator (it stays on the route card), the daily-load sameness value, hrTSS, the provenance block, the duration/distance pattern block, raw zone seconds beside their percentages, the model's own earlier purpose/conditions guess, and vpower diagnostics on segment lines.
+- Where a route has no sections yet, the checkpoint table now spreads its ten marks over the whole ride instead of taking the first ten.
+- Trend wording in the prompt no longer says a lower time × HR or a faster HR drop "is better" and no longer calls time × HR efficiency: the value falls for a slower ride at a much lower heart rate too. The load line states that its windows end before the ride and cover one sport.
+- The "week monotony" line is no longer labelled Foster. It is computed over days with an imported activity only, and the prompt now says that it cannot show whether rest days were missing.
+- A new principle forbids stating physiological states (recovery, overload, cardiovascular adaptation) as facts; duplicated wording in the principles was removed.
+- The prompt is stricter about advice. No numeric targets (heart rate, speed, time) to hit or stay under, and a usual value is not a goal. Advice only on what the rider controls: a stop or slow-down at a fixed place of the route is ordinary, and the model may not suggest another start time, route or conditions to avoid it. The polite form of address is fixed whatever the tone of earlier conversations.
+- Analysis format is now 42 and derived features version 11; existing features and routes are rebuilt automatically and older analyses are marked outdated.
+- `scripts/prompt-eval/check.js` reads the log folder directly: last attempt per activity for one format, failed requests listed separately, use of each trend indicator with its denominator, health/form statements listed for review, thousands separators and ordinary rounding no longer reported as invented numbers.
+
+### Upgrade Notes
+
+- Derived data is rebuilt on the first start. Run **FIT: Index All Files** once if any ride has a device ascent or descent above 5000 m or below 5 m: those were stored with the wrong factor. Re-run **FIT: Re-analyze Outdated Analyses** afterwards: earlier analyses were written against wrong route directions.
+
+### Known limits
+
+- The post-climb HR recovery indicator needs a minute of riding after the final climb. On a route that finishes at the top of its last climb it never appears.
+- The sameness value still leaves out days without an imported activity.
+
 ## 0.28.9 - 2026-10-04
 
 ### Fixed

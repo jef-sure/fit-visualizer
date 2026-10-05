@@ -30,6 +30,7 @@ function extractGpsPoints(records) {
       speed: asNumber(record.speed),
       heart_rate: asNumber(record.heart_rate),
       elapsed_time: asNumber(record.elapsed_time),
+      distance: asNumber(record.distance),
     });
   }
   return points;

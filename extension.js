@@ -24,20 +24,22 @@ const {
   validateTranslationBundle,
 } = require('./dynamic-localization');
 const { registerCommands } = require('./commands');
+const { normalizeFilePath, openedFitDatabaseRule } = require('./file-paths');
+const { measureRideOnSkeleton, rideFrame, summarizeSections } = require('./route-sections');
 const { MODEL_PRICE_CACHE_KEY, restoreModelPriceCache, updateModelPrices } = require('./model-pricing');
 const { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, buildTranslationPrompt } = require('./activity-webview');
 const { ensureDatabaseSchema } = require('./database-schema');
 const { applyHeartRateProfileUpsert, planHeartRateProfileTidy, readHeartRateProfiles } = require('./heart-rate-profiles');
-const { createManualActivity } = require('./manual-activity');
+const { createManualActivity, parseManualStartTime } = require('./manual-activity');
 const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, localDate } = require('./activity-time');
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
 const { computeRouteTrends } = require('./trend-metrics');
 const PRIOR_RIDES_FOR_TRENDS = 5;
-const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readAssignment, readRouteCard, describeCheckpointVerdict, readRouteNote, setRouteName, setRouteNote, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
+const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readAssignment, readRouteCard, describeCheckpointVerdict, ensureRouteSkeleton, readSkeletonRecords, readRouteNote, setRouteName, setRouteNote, snapshotRouteLabels, restoreRouteLabels, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
-const { CONDITIONS, FEELINGS, PURPOSES, inferNotesPreFill, readActivityNotes, readAllActivityNotes, saveActivityNotes } = require('./activity-notes');
+const { CONDITIONS, FEELINGS, PURPOSES, inferNotesPreFill, readActivityNotes, readAllActivityNotes, saveActivityNotes, readKnownGoals } = require('./activity-notes');
 const { computeDataQualityFlags } = require('./data-quality');
 const { computeSegmentStretches, describeRouteFeatures } = require('./route-features');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling, mirrorConsensusProfile } = require('./altitude-quality');
@@ -52,7 +54,10 @@ function safeParseJson(text, fallback) {
     return fallback;
   }
 }
-const { fileExists, getFitUris, getParsedLaps, parseFitFile } = require('./fit-files');
+const { FIT_FILE_GLOB, fileExists, getFitUris, getParsedLaps, parseFitFile } = require('./fit-files');
+
+// The quick pick is for finding one file by eye; beyond this it is easier from the Explorer.
+const FIT_PICKER_LIMIT = 200;
 const {
   calculateAutoHeartRateProfile,
   calculatePeakHeartRates,
@@ -114,7 +119,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 36;
+const ANALYSIS_VERSION = 42;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const ROUTE_FILTER_STATE_KEY = 'fitVisualizer.routeFilter';
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
@@ -182,6 +187,8 @@ function activate(context) {
     pickSingleFitFile,
     prepareFitForVisualization,
     reanalyzeOutdatedActivities,
+    reanalyzeSelectedActivities,
+    rebuildDerivedFeatures,
     rememberDatabasePath,
     resolveActiveDbPath,
     resolveFitUri,
@@ -280,12 +287,14 @@ function rebuildDerivedFeaturesNow(options = {}) {
   return enqueueDatabaseTask(() => rebuildDerivedFeaturesInDatabase(options));
 }
 
-async function rebuildDerivedFeaturesInDatabase({ silent = false, skipStaleCheck = false, reason } = {}) {
+async function rebuildDerivedFeaturesInDatabase({ silent = false, skipStaleCheck = false, reason, dbPath: givenDbPath } = {}) {
   // The automatic rebuild after an update stays quiet when there is nothing to do, but when there
   // is, it shows the same progress as the manual one: the user otherwise cannot tell whether the
   // segments on screen are old or new.
   const background = reason === 'auto';
-  const dbPath = silent || background ? await resolveActiveDbPath() : (await resolveActiveDbPath() || await selectDatabaseFolder());
+  // Indexing knows which database it just wrote; re-resolving could pick a different one.
+  const dbPath = givenDbPath
+    || (silent || background ? await resolveActiveDbPath() : (await resolveActiveDbPath() || await selectDatabaseFolder()));
   if (!dbPath) {
     return;
   }
@@ -296,6 +305,8 @@ async function rebuildDerivedFeaturesInDatabase({ silent = false, skipStaleCheck
       return;
     }
     // Routes are re-derived in chronological order so the earliest ride defines each route.
+    // Their names and notes are the user's and go back onto the re-derived routes afterwards.
+    const routeLabels = snapshotRouteLabels(db);
     db.run('DELETE FROM activity_features');
     db.run('DELETE FROM activity_routes');
     db.run('DELETE FROM routes');
@@ -314,11 +325,27 @@ async function rebuildDerivedFeaturesInDatabase({ silent = false, skipStaleCheck
         // Yield so a background rebuild does not block the extension host.
         await new Promise((resolve) => setImmediate(resolve));
       }
+      // A route's skeleton takes shape as its rides are added, and each change of its boundaries
+      // marks the rides cut at the old ones. They are redone once, now that the routes are complete.
+      const marked = (db.exec("SELECT activity_id FROM activity_features WHERE feature_cache_key IS NULL")[0]?.values || []).map((value) => Number(value[0]));
+      for (const id of marked) {
+        try {
+          ensureFeaturesForActivity(db, id);
+        } catch (error) {
+          reportAnalysisWarning(`Activity ${id}: derived-feature rebuild failed: ${error.message}`, 'warn');
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+      }
     };
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: 'FIT Visualizer: rebuilding derived features', cancellable: false },
       (_progress, token) => rebuild((message) => { if (!token.isCancellationRequested) _progress.report({ message }); })
     );
+    markDerivedVersion(db);
+    const labels = restoreRouteLabels(db, routeLabels);
+    if (labels.lost > 0) {
+      reportAnalysisWarning(`${labels.lost} route name/note set(s) could not be matched to a re-derived route and were dropped.`, 'warn');
+    }
     await persistDatabase(db, dbPath);
     if (!silent && reason !== 'indexing') {
       vscode.window.showInformationMessage(`Derived features rebuilt for ${ordered.length} activities.`);
@@ -335,7 +362,38 @@ function needsDerivedFeatureRebuild(db) {
   if (!activities) return false;
   const stale = Number(db.exec(`SELECT COUNT(*) FROM activity_features WHERE features_version != ${FEATURES_VERSION}`)[0]?.values?.[0]?.[0] || 0);
   const fresh = Number(db.exec(`SELECT COUNT(*) FROM activity_features WHERE features_version = ${FEATURES_VERSION}`)[0]?.values?.[0]?.[0] || 0);
-  return stale > 0 || fresh < activities;
+  // Rows of the current version are not proof of a rebuild: a page that needs a ride's features
+  // refreshes them on the spot, one ride at a time, and that path keeps every ride on the route it
+  // already had. Only the whole rebuild re-derives routes, so it is tracked on its own.
+  return stale > 0 || fresh < activities || readDerivedVersion(db) !== FEATURES_VERSION;
+}
+
+function readDerivedVersion(db) {
+  try {
+    const value = db.exec("SELECT value FROM derived_state WHERE key = 'features_version'")[0]?.values?.[0]?.[0];
+    return value == null ? null : Number(value);
+  } catch {
+    return null;
+  }
+}
+
+function markDerivedVersion(db) {
+  db.run("INSERT INTO derived_state (key, value) VALUES ('features_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [String(FEATURES_VERSION)]);
+}
+
+// Whether this database still has to be rebuilt for the installed version. Checked when a page is
+// about to open, so the rebuild runs first, with its progress shown, instead of the page quietly
+// refreshing ride after ride and leaving the routes as they were.
+async function derivedRebuildPending(dbPath) {
+  if (!dbPath || !(await fileExists(dbPath))) return false;
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  try {
+    ensureDatabaseSchema(db);
+    return needsDerivedFeatureRebuild(db);
+  } finally {
+    db.close();
+  }
 }
 
 // Part I, UI side: the three computed indicators for the route card, same numbers as the prompt.
@@ -474,6 +532,8 @@ async function getRouteCardNow(dbPath, activityId) {
       lengthKm: card.features?.lengthKm ?? card.signatureLengthKm ?? null,
       ascentM: card.features?.ascentM ?? null, descentM: card.features?.descentM ?? null,
       climbs: described?.climbs ?? [],
+      // A partial ride follows only part of the route; its card does not describe the whole road.
+      shape: card.relation === 'partial' ? null : (card.shape ?? null),
       profilePending: !profileReady && card.rideCount < profileRidesNeeded ? profileRidesNeeded - card.rideCount : null,
     };
   } finally {
@@ -548,7 +608,15 @@ function ensureFeaturesForActivity(db, activityId) {
     riderMassKg: row.rider_mass_kg ?? profile.riderMassKg,
     bikeMassKg: row.bike_mass_kg ?? profile.bikeMassKg, ...powerModelOptions,
   });
-  const segments = buildActivitySegments(power.records, { sport: row.sport, powerSource: power.source,
+  // A database with nothing derived yet has nothing to rebuild: its first ride starts it at the
+  // current version. A database from an earlier version keeps no mark and is rebuilt as a whole.
+  if (readDerivedVersion(db) == null && !Number(db.exec('SELECT COUNT(*) FROM activity_features')[0]?.values?.[0]?.[0] || 0)) {
+    markDerivedVersion(db);
+  }
+  // The route comes first: its skeleton frames the segments.
+  const routeInfo = assignRoute(db, { activityId: row.id, signature: buildRouteSignature(records), createdAt: row.start_time });
+  const routeFrame = routeFrameFor(db, routeInfo, records);
+  const segments = buildActivitySegments(power.records, { sport: row.sport, powerSource: power.source, routeFrame,
     thresholds: segmentationOptions, athlete: { ftp: profile.ftp, restingHeartRate: profile.restingHeartRate,
       maxHeartRate: hrConfig?.maxHeartRate } });
   const summary = buildSummary(power.records, [{ total_timer_s: row.total_timer_s, total_elapsed_s: row.total_elapsed_s, total_distance: row.total_distance_km }], {
@@ -562,7 +630,6 @@ function ensureFeaturesForActivity(db, activityId) {
   const peakHr = calculatePeakHeartRates(power.records);
   const timerS = asNumber(row.total_timer_s);
   const sessionClass = buildSessionClassForActivity(power.records, { total_timer_s: timerS }, hrConfig, profile, segments);
-  assignRoute(db, { activityId: row.id, signature: buildRouteSignature(records), createdAt: row.start_time });
   const checkpoints = computeCheckpoints(records, segments);
   db.run(`
     INSERT INTO activity_features (
@@ -582,6 +649,7 @@ function ensureFeaturesForActivity(db, activityId) {
     JSON.stringify(zones), JSON.stringify(peakHr), JSON.stringify(sessionClass), JSON.stringify(checkpoints),
     summary.trimp ?? null, summary.hrTss ?? null,
     zones?.enabled && timerS > 0 ? 100 * zones.totalSeconds / timerS : null]);
+  db.run('UPDATE activity_features SET route_frame_json = ? WHERE activity_id = ?', [routeFrame ? JSON.stringify(routeFrame) : null, row.id]);
 }
 
 async function countFitActivities(dbPath) {
@@ -712,7 +780,7 @@ async function indexFitFolder(onlyNew) {
   await rememberDatabasePath(dbPath);
   if (onlyNew) {
     const indexedPaths = await getIndexedFilePaths(dbPath);
-    fitUris = fitUris.filter((uri) => !indexedPaths.has(path.resolve(uri.fsPath)));
+    fitUris = fitUris.filter((uri) => !indexedPaths.has(normalizeFilePath(uri.fsPath)));
     if (!fitUris.length) {
       vscode.window.showInformationMessage('FIT index is up to date. No new files found.');
       return;
@@ -727,7 +795,7 @@ async function indexFitFolder(onlyNew) {
   // Indexing is required whenever the stored schema changes anyway, so it refreshes the
   // derived-feature cache and routes in the same run: one action covers both. The background
   // version-triggered rebuild still covers format changes after extension updates.
-  await rebuildDerivedFeatures({ silent: false, skipStaleCheck: true, reason: 'indexing' });
+  await rebuildDerivedFeatures({ silent: false, skipStaleCheck: true, reason: 'indexing', dbPath });
   vscode.window.showInformationMessage(vscode.l10n.t('FIT DB index complete: {0} indexed, {1} failed.', result.saved, result.failed));
 }
 
@@ -826,9 +894,13 @@ async function resolveFitUri(resource) {
 }
 
 async function pickFitFromWorkspace() {
-  const fitFiles = await vscode.workspace.findFiles('**/*.fit', '**/node_modules/**', 200);
-  if (!fitFiles.length) {
+  const found = await vscode.workspace.findFiles(FIT_FILE_GLOB, '**/node_modules/**', FIT_PICKER_LIMIT + 1);
+  if (!found.length) {
     return null;
+  }
+  const fitFiles = found.slice(0, FIT_PICKER_LIMIT);
+  if (found.length > FIT_PICKER_LIMIT) {
+    vscode.window.showInformationMessage(`Showing the first ${FIT_PICKER_LIMIT} FIT files of the workspace; open the file from the Explorer if it is not listed.`);
   }
 
   if (fitFiles.length === 1) {
@@ -882,10 +954,46 @@ function fitFileToDbPath(fitFilePath) {
   return path.join(workspaceRoot || path.dirname(fitFilePath), '.fit-visualizer', 'fit-data.sqlite');
 }
 
+// A database that holds one file at a time, for looking at a FIT file without adding it to any
+// history. It lives in the extension's own storage, is emptied before each use, and is never
+// remembered as the last database, so it cannot be picked up by the other commands.
+async function prepareGuestDatabase() {
+  const base = extensionContextRef?.globalStorageUri?.fsPath;
+  if (!base) throw new Error('Cannot open the file without a database: the extension storage is unavailable.');
+  const dir = path.join(base, 'guest');
+  await fs.mkdir(dir, { recursive: true });
+  const dbPath = path.join(dir, 'fit-data.sqlite');
+  await fs.rm(dbPath, { force: true });
+  return dbPath;
+}
+
+// Opening a file is not a decision about where the rider's history lives. Inside a folder that has
+// a database the file joins it; a stray file elsewhere is shown without touching any history
+// unless the rider says its folder is to get a database of its own.
+async function chooseDatabaseForOpenedFit(filePath) {
+  const ownDbPath = fitFileToDbPath(filePath);
+  const lastDbPath = extensionContextRef?.globalState?.get(LAST_DB_PATH_KEY) || null;
+  const rule = openedFitDatabaseRule({
+    ownDbPath, ownDbExists: await fileExists(ownDbPath),
+    lastDbPath, lastDbExists: lastDbPath ? await fileExists(lastDbPath) : false,
+  });
+  if (rule === 'own') return { dbPath: ownDbPath, remember: true };
+  const viewOnly = 'View only';
+  const startHere = 'Start a database here';
+  const choice = await vscode.window.showInformationMessage(
+    `"${path.basename(filePath)}" is outside your FIT database (${path.dirname(path.dirname(lastDbPath))}). `
+      + 'View it without adding it to any history, or start a separate database in its folder?',
+    { modal: true }, viewOnly, startHere
+  );
+  // Closing the dialog is the safe answer: nothing is created beside the file, nothing switches.
+  return choice === startHere ? { dbPath: ownDbPath, remember: true } : { dbPath: await prepareGuestDatabase(), remember: false };
+}
+
 async function prepareFitForVisualization(filePath) {
-  const dbPath = fitFileToDbPath(filePath);
+  const { dbPath, remember } = await chooseDatabaseForOpenedFit(filePath);
   const { data: parsed, source: dataSource } = await getFitDataWithDbFallback(filePath);
-  if (dataSource === 'fit') {
+  // A guest database is empty, so the file is saved into it even when its data came from elsewhere.
+  if (dataSource === 'fit' || !remember) {
     await saveFitToLocalDb(filePath, parsed, dbPath);
   }
 
@@ -893,7 +1001,7 @@ async function prepareFitForVisualization(filePath) {
   if (!activityId) {
     throw new Error(`Indexed activity was not found for ${filePath}`);
   }
-  await rememberDatabasePath(dbPath);
+  if (remember) await rememberDatabasePath(dbPath);
   return { dbPath, activityId };
 }
 
@@ -911,12 +1019,9 @@ async function addAndBrowseManualActivity() {
   });
   if (!startTimeStr) return;
 
-  let startTime;
-  try {
-    const parsed = new Date(startTimeStr.replace(' ', 'T'));
-    startTime = parsed.toISOString();
-  } catch {
-    vscode.window.showErrorMessage('Invalid date format. Use YYYY-MM-DD HH:MM');
+  const startTime = parseManualStartTime(startTimeStr);
+  if (!startTime) {
+    vscode.window.showErrorMessage('Invalid date. Use YYYY-MM-DD HH:MM with a date that exists.');
     return;
   }
 
@@ -961,7 +1066,7 @@ async function addAndBrowseManualActivity() {
       ? 'Enter a whole number from 1 to 10.' : null),
   });
   const rpe = rpeStr ? Number(rpeStr.trim()) : null;
-  const purpose = await vscode.window.showQuickPick(PURPOSES, { placeHolder: 'Purpose (optional)', ignoreFocusOut: true });
+  const goals = await vscode.window.showQuickPick(PURPOSES, { placeHolder: 'Goals of this activity (optional, several allowed)', canPickMany: true, ignoreFocusOut: true });
   const feeling = await vscode.window.showQuickPick(FEELINGS, { placeHolder: 'Feeling (optional)', ignoreFocusOut: true });
   const conditions = await vscode.window.showQuickPick(CONDITIONS, {
     placeHolder: 'Conditions (optional)',
@@ -969,7 +1074,7 @@ async function addAndBrowseManualActivity() {
     ignoreFocusOut: true,
   });
   const note = await vscode.window.showInputBox({ prompt: 'Free note (optional)' });
-  const notes = { rpe, purpose, feeling, conditions: conditions || [], note: note || null };
+  const notes = { rpe, goals: goals || [], feeling, conditions: conditions || [], note: note || null };
 
   // Parse and validate
   const distanceKm = parseFloat(distanceStr);
@@ -1123,10 +1228,24 @@ async function getActivityIdByPath(dbPath, filePath) {
     const absPath = path.resolve(filePath);
     const stmt = db.prepare('SELECT id FROM activities WHERE file_path = ? OR file_path = ?');
     stmt.bind([absPath, filePath]);
-    if (!stmt.step()) { stmt.free(); return null; }
-    const row = stmt.getAsObject();
+    if (stmt.step()) {
+      const row = stmt.getAsObject();
+      stmt.free();
+      return Number(row.id);
+    }
     stmt.free();
-    return Number(row.id);
+    // The same file under another spelling: a symlinked folder, another drive-letter case.
+    const wanted = normalizeFilePath(filePath);
+    const all = db.prepare('SELECT id, file_path FROM activities WHERE file_path IS NOT NULL');
+    try {
+      while (all.step()) {
+        const row = all.getAsObject();
+        if (normalizeFilePath(String(row.file_path)) === wanted) return Number(row.id);
+      }
+    } finally {
+      all.free();
+    }
+    return null;
   } finally {
     db.close();
   }
@@ -1169,7 +1288,7 @@ async function getIndexedFilePaths(dbPath) {
     const stmt = db.prepare('SELECT file_path FROM activities');
     const indexedPaths = new Set();
     while (stmt.step()) {
-      indexedPaths.add(path.resolve(String(stmt.getAsObject().file_path)));
+      indexedPaths.add(normalizeFilePath(String(stmt.getAsObject().file_path)));
     }
     stmt.free();
     return indexedPaths;
@@ -1179,6 +1298,12 @@ async function getIndexedFilePaths(dbPath) {
 }
 
 async function openActivityBrowser(context, dbPath, preselectId, compId) {
+  // After an update the derived data is rebuilt before the page is drawn, not behind its back.
+  try {
+    if (await derivedRebuildPending(dbPath)) await rebuildDerivedFeatures({ reason: 'auto', dbPath });
+  } catch (error) {
+    reportAnalysisWarning(`Derived-feature rebuild before opening failed: ${error instanceof Error ? error.message : error}`, 'warn');
+  }
   const panel = vscode.window.createWebviewPanel(
     'fitVisualizer.view',
     'FIT Visualizer',
@@ -1426,8 +1551,14 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
     } else if (msg.type === 'updateActivityNotes') {
       try {
         await updateActivityNotes(dbPath, Number(msg.id), msg);
-        await render(Number(msg.id), msg.compId ? Number(msg.compId) : null);
-        vscode.window.showInformationMessage('Session notes saved. Re-analyze to apply them to the AI analysis.');
+        // A goal ticked on the page is saved on the spot: no redraw, no notification, just a mark
+        // beside the form.
+        if (msg.quiet) {
+          panel.webview.postMessage({ type: 'notesSaved' });
+        } else {
+          await render(Number(msg.id), msg.compId ? Number(msg.compId) : null);
+          vscode.window.showInformationMessage('Session notes saved. Re-analyze to apply them to the AI analysis.');
+        }
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         panel.webview.postMessage({ type: 'notesError', error: errorMsg });
@@ -1478,6 +1609,7 @@ function buildDisplaySegments(fitData, athleteProfile, heartRateConfig) {
   return buildActivitySegments(powerData.records, {
     sport: session.sport,
     powerSource: powerData.source,
+    routeFrame: fitData.routeFrame || null,
     thresholds: getSegmentationOptions(),
     athlete: {
       ftp: asNumber(athleteProfile?.ftp),
@@ -1515,6 +1647,20 @@ function readLatestSummaryForActivity(db, activityId) {
     stmt.bind([activityId]);
     if (!stmt.step()) return null;
     return parseStoredSummary(stmt.getAsObject().summary_json);
+  } catch {
+    return null;
+  } finally {
+    stmt.free();
+  }
+}
+
+function readStoredRouteFrame(db, activityId) {
+  const stmt = db.prepare('SELECT route_frame_json FROM activity_features WHERE activity_id = ?');
+  try {
+    stmt.bind([activityId]);
+    if (!stmt.step()) return null;
+    const frame = JSON.parse(stmt.getAsObject().route_frame_json || 'null');
+    return Array.isArray(frame?.cuts) ? frame : null;
   } catch {
     return null;
   } finally {
@@ -1613,6 +1759,9 @@ async function loadFitDataFromDb(dbPath, activityId) {
       laps: parseStoredLaps(activity.laps_json),
       sessionNotes: readActivityNotes(db, activityId),
       inferredNotes: readLatestSummaryForActivity(db, activityId),
+      knownGoals: readKnownGoals(db),
+      // Where the ride enters its route's stretches; the page and the analysis cut segments there.
+      routeFrame: readStoredRouteFrame(db, activityId),
       _activityId: Number(activity.id),
       _fileName: activity.file_name,
       _source: activity.source || 'fit',
@@ -1754,12 +1903,12 @@ function upsertActivity(db, filePath, fitData) {
     recordSpanS,
     gapSeconds: Number.isFinite(gapSeconds) ? gapSeconds : 0,
   });
-  // fit-file-parser converts session ascent/descent to the configured length unit (km); metres are
-  // what everything else expects, so a value in the km range is scaled back.
+  // fit-file-parser converts session ascent/descent to the configured length unit, which is
+  // always km here; everything else expects metres. Guessing the unit from the size of the number
+  // stored a 5000 m day as 5 m.
   const toDeviceMetres = (value) => {
     const number = asNumber(value);
-    if (!Number.isFinite(number) || number === 0) return number === 0 ? 0 : NaN;
-    return number < 5 ? number * 1000 : number;
+    return Number.isFinite(number) ? number * 1000 : NaN;
   };
   const deviceAscentM = toDeviceMetres(session.total_ascent);
   const deviceDescentM = toDeviceMetres(session.total_descent);
@@ -1911,6 +2060,24 @@ function parseStoredLaps(raw) {
   } catch {
     return [];
   }
+}
+
+// Route sections: how strictly rides must agree on a boundary. Unset values fall back to the
+// module defaults; a tolerance of 0 means "derive it from the route length".
+function getRouteSectionOptions() {
+  const config = vscode.workspace.getConfiguration('fitVisualizer.routeSections');
+  const number = (key) => {
+    const raw = config.get(key);
+    const value = Number(raw);
+    return raw != null && raw !== '' && Number.isFinite(value) ? value : undefined;
+  };
+  const autoAdjust = config.get('autoAdjust');
+  return {
+    minSharePct: number('minRideSharePct'),
+    toleranceM: number('placeToleranceM'),
+    minRides: number('minRides'),
+    autoAdjust: typeof autoAdjust === 'boolean' ? autoAdjust : undefined,
+  };
 }
 
 function getSegmentationOptions() {
@@ -2359,12 +2526,46 @@ async function reanalyzeOutdatedActivities() {
     return;
   }
 
+  await runReanalysisBatch(dbPath, targets,
+    vscode.l10n.t('Update analyses for {0} activities? This includes outdated and missing analyses and uses one Copilot request per activity.', targets.length));
+}
+
+// Re-analyze chosen activities whatever their saved format: a spot check of a new prompt on a few
+// rides before spending a request on every ride. The selection is activity ids and/or parts of
+// file names (a date such as 20260804), separated by commas or spaces.
+async function reanalyzeSelectedActivities(selectionText) {
+  const dbPath = await resolveActiveDbPath() || await selectDatabaseFolder();
+  if (!dbPath) {
+    return;
+  }
+  const input = selectionText ?? await vscode.window.showInputBox({
+    prompt: vscode.l10n.t('Activities to re-analyze: ids or parts of file names, separated by commas or spaces'),
+    placeHolder: '18, 120, 20260831',
+  });
+  const tokens = String(input || '').split(/[\s,;]+/).map((token) => token.trim()).filter(Boolean);
+  if (!tokens.length) {
+    return;
+  }
+  const all = await getAnalysisActivities(dbPath, { onlyOutdated: false });
+  const matches = (activity, token) => (/^\d{1,6}$/.test(token)
+    ? activity.id === Number(token)
+    : activity.fileName.toLowerCase().includes(token.toLowerCase()));
+  const unmatched = tokens.filter((token) => !all.some((activity) => matches(activity, token)));
+  // Chronological order is kept: a ride's prompt cites the analyses of the rides before it.
+  const targets = all.filter((activity) => tokens.some((token) => matches(activity, token)));
+  if (unmatched.length) {
+    vscode.window.showWarningMessage(vscode.l10n.t('No activity matches: {0}', unmatched.join(', ')));
+  }
+  if (!targets.length) {
+    return;
+  }
+  await runReanalysisBatch(dbPath, targets,
+    vscode.l10n.t('Re-analyze {0} selected activities? This replaces their saved analyses and uses one Copilot request per activity.', targets.length));
+}
+
+async function runReanalysisBatch(dbPath, targets, confirmation) {
   const start = vscode.l10n.t('Start');
-  const confirmed = await vscode.window.showInformationMessage(
-    vscode.l10n.t('Update analyses for {0} activities? This includes outdated and missing analyses and uses one Copilot request per activity.', targets.length),
-    { modal: true },
-    start
-  );
+  const confirmed = await vscode.window.showInformationMessage(confirmation, { modal: true }, start);
   if (confirmed !== start) {
     return;
   }
@@ -2451,6 +2652,7 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
   const segments = buildActivitySegments(powerData.records, {
     sport: session.sport,
     powerSource: powerData.source,
+    routeFrame: fitData.routeFrame || null,
     thresholds: getSegmentationOptions(),
     athlete: {
       ftp: athleteFtp,
@@ -3020,7 +3222,11 @@ async function getRecentAnalysesContext(dbPath, activityId, referenceDate, windo
   }
 }
 
-async function getOutdatedAnalysisActivities(dbPath) {
+function getOutdatedAnalysisActivities(dbPath) {
+  return getAnalysisActivities(dbPath, { onlyOutdated: true });
+}
+
+async function getAnalysisActivities(dbPath, { onlyOutdated }) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   let stmt;
@@ -3030,10 +3236,10 @@ async function getOutdatedAnalysisActivities(dbPath) {
       SELECT a.id AS id, a.file_name AS file_name, aa.analysis_version AS analysis_version
       FROM activities a
       LEFT JOIN activity_analysis aa ON aa.activity_id = a.id
-      WHERE aa.activity_id IS NULL OR aa.analysis_version < ?
+      WHERE ? = 0 OR aa.activity_id IS NULL OR aa.analysis_version < ?
       ORDER BY a.start_time IS NULL, a.start_time, a.id
     `);
-    stmt.bind([ANALYSIS_VERSION]);
+    stmt.bind([onlyOutdated ? 1 : 0, ANALYSIS_VERSION]);
     const rows = [];
     while (stmt.step()) {
       const row = stmt.getAsObject();
@@ -3223,7 +3429,10 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       getProfileHeartRateConfig(db, row.start_time),
       row.rider_mass_kg != null ? { restingHeartRate: profile.restingHeartRate } : profile,
     );
+    const routeSignature = buildRouteSignature(records);
+    const routeInfo = assignRoute(db, { activityId: row.id, signature: routeSignature, createdAt: row.start_time });
     const segments = buildActivitySegments(power.records, { sport: row.sport, powerSource: power.source,
+      routeFrame: routeFrameFor(db, routeInfo, records),
       thresholds: segmentationOptions, athlete: { ftp: profile.ftp, restingHeartRate: profile.restingHeartRate,
         maxHeartRate: hrConfig?.maxHeartRate } });
     const summary = buildSummary(power.records, [{ total_timer_s: row.total_timer_s, total_elapsed_s: row.total_elapsed_s, total_distance: row.total_distance_km }], {
@@ -3234,8 +3443,6 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     });
     const timerS = asNumber(row.total_timer_s);
     const sessionClass = buildSessionClassForActivity(power.records, { total_timer_s: timerS }, hrConfig, profile, segments);
-    const routeSignature = buildRouteSignature(records);
-    const routeInfo = assignRoute(db, { activityId: row.id, signature: routeSignature, createdAt: row.start_time });
     const checkpoints = computeCheckpoints(records, segments);
     return { records: normalized, segments, hrConfig, powerSource: power.source, sessionClass,
       trimp: summary.trimp, hrTss: summary.hrTss, routeInfo, checkpoints };
@@ -3353,6 +3560,9 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     : null;
   // The rhythm indicator is route-independent; it joins the trends block in the prompt.
   if (context.routeContext) context.routeContext.trends = { ...context.routeContext.trends, rhythm: context.rhythm };
+  if (context.routeContext) {
+    context.routeContext.sections = buildRouteSections({ db, routeInfo: currentRouteInfo, records: currentRecords, segments: currentSegments, activities });
+  }
   const routeProfileForStretches = ['same', 'reversed'].includes(currentRouteInfo?.relation)
     ? buildRouteProfile(db, currentRouteInfo) : null;
   context.routeProfile = routeProfileForStretches;
@@ -3369,19 +3579,22 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   // The workout fields read the settling window, so it must land on the analysis data after it
   // is computed here and before the prompt is built.
   if (context.altitudeQuality?.settlingWindow && currentData) currentData.altitudeSettlingWindow = context.altitudeQuality.settlingWindow;
+  // Earlier conversations go in whole, both sides and without a cap: a user message is often an
+  // answer to what the assistant said, and reads as nonsense without it.
   const conversations = readRows(`SELECT a.start_time, aac.chat_json
     FROM activities a JOIN activity_analysis_chat aac ON aac.activity_id = a.id
-    WHERE datetime(a.start_time) < datetime(?) ORDER BY datetime(a.start_time) DESC LIMIT 24`, [selected.start_time]);
-  context.userReports = conversations.reverse().flatMap((row) => {
+    WHERE datetime(a.start_time) < datetime(?) ORDER BY datetime(a.start_time)`, [selected.start_time]);
+  context.userReports = conversations.flatMap((row) => {
     try {
       const parsed = JSON.parse(row.chat_json);
-      return Array.isArray(parsed) ? parsed.filter((turn) => turn?.role === 'user' && String(turn.content || '').trim())
-        .slice(-8).map((turn) => ({ startTime: row.start_time, ts: turn.ts || null, content: String(turn.content) })) : [];
+      return Array.isArray(parsed) ? parsed
+        .filter((turn) => (turn?.role === 'user' || turn?.role === 'assistant') && String(turn.content || '').trim())
+        .map((turn) => ({ startTime: row.start_time, ts: turn.ts || null, role: turn.role, content: String(turn.content).trim() })) : [];
     } catch {
       return [];
     }
   });
-  context.coverageNote += ' User context includes the latest 24 earlier activity conversations, up to 8 user reports each, independently of numeric windows. This is bounded conversation context, not a complete medical or goal record.';
+  context.coverageNote += ' Earlier activity conversations are supplied complete, both sides; they are not a complete medical or goal record.';
   return context;
 }
 
@@ -3446,15 +3659,38 @@ function buildAltitudeQuality({ db, records, routeInfo, activity }) {
       flags.push({ code: 'ALT_SETTLING', detail: settling.detail });
       settlingWindow = { startDeltaM: settling.startDeltaM, settleSeconds: settling.settleSeconds };
     }
-    const computed = [asNumber(activity.total_ascent_m), asNumber(activity.total_descent_m)];
-    const device = [asNumber(activity.device_ascent_m), asNumber(activity.device_descent_m)];
-    // A stored 0/0 means the device wrote no figure, not a flat ride.
-    if (!(device[0] > 0 || device[1] > 0)) device.fill(NaN);
-    routeLine = `Route elevation (offset-aligned consensus of ${profile.rides} rides of this route, both directions): ascent ~${profile.ascentM} m, descent ~${profile.descentM} m`
-      + `${computed.every(Number.isFinite) ? `; this ride computed ${Math.round(computed[0])}/${Math.round(computed[1])} m` : ''}`
-      + `${device.every(Number.isFinite) ? `, device ${Math.round(device[0])}/${Math.round(device[1])} m` : ''}.`;
+    // This ride's own figures are in the workout fields; repeating them here adds nothing.
+    routeLine = `Route elevation (offset-aligned consensus of ${profile.rides} rides of this route): ascent ~${profile.ascentM} m, descent ~${profile.descentM} m.`;
   }
   return flags.length || routeLine ? { flags, routeLine, settlingWindow } : null;
+}
+
+// Where this ride enters the stretches of its route's skeleton, or null when the route has none
+// yet. Segments are cut at these places and take their terrain from the stretch.
+function routeFrameFor(db, routeInfo, records) {
+  if (!routeInfo?.routeId || !['same', 'reversed'].includes(routeInfo.relation)) return null;
+  const skeleton = ensureRouteSkeleton(db, routeInfo.routeId, routeInfo.relation, getRouteSectionOptions());
+  return skeleton ? rideFrame(records, skeleton) : null;
+}
+
+// The ride against its route's skeleton: the stretches between the places where every ride slows
+// down, and those places themselves. Null when the route has too few rides for a skeleton, and
+// then the checkpoint table stands in.
+function buildRouteSections({ db, routeInfo, records, segments, activities }) {
+  if (!routeInfo?.routeId || !['same', 'reversed'].includes(routeInfo.relation) || !Array.isArray(records)) return null;
+  const skeleton = ensureRouteSkeleton(db, routeInfo.routeId, routeInfo.relation, getRouteSectionOptions());
+  if (!skeleton) return null;
+  // A stop is what the ride's own stop segments say it is, on the page and in this table alike.
+  const stopsOf = (list) => (Array.isArray(list) ? list.filter((segment) => segment?.type === 'stopped') : null);
+  const current = measureRideOnSkeleton(records, skeleton, { stops: stopsOf(segments) });
+  if (!current) return null;
+  // A usual value needs five rides that rode the stretch on this road; early rides on another
+  // variant of the route drop out stretch by stretch, so a few more than five are read back.
+  const priors = activities.filter((activity) => activity.routeId === routeInfo.routeId && activity.routeRelation === routeInfo.relation)
+    .sort((a, b) => new Date(a.startTime) - new Date(b.startTime)).slice(-12);
+  const measured = priors.map((activity) => measureRideOnSkeleton(readSkeletonRecords(db, activity.activityId), skeleton, { stops: stopsOf(activity.segments) }));
+  const summary = summarizeSections(skeleton, current, measured);
+  return summary ? { ...summary, rides: skeleton.rides, sharePct: skeleton.sharePct, toleranceM: skeleton.toleranceM, lengthKm: skeleton.lengthKm } : null;
 }
 
 // Same-route comparisons the code can state as fact: checkpoint splits against the median of
@@ -3471,7 +3707,11 @@ function buildRouteContext(currentData, activities, selected, routeNote = null) 
   if (!priorSameRoute.length) return null;
   const recentPriors = priorSameRoute.slice(-5);
   const summary = summarizeCheckpoints(currentData.checkpoints || [], recentPriors.map((activity) => ({ checkpoints: activity.checkpoints })));
-  const marks = summary.filter((mark) => mark.priorRides > 0).slice(0, 10);
+  // Ten marks spread over the whole ride, the last one included: the first ten would stop
+  // halfway and leave the second half of the route without a split.
+  const comparable = summary.filter((mark) => mark.priorRides > 0);
+  const marks = comparable.length <= 10 ? comparable
+    : Array.from({ length: 10 }, (_, index) => comparable[Math.round((index * (comparable.length - 1)) / 9)]);
   const lines = marks.map((mark) => {
     const diff = mark.priorMedianS ? Math.round(mark.elapsedS - mark.priorMedianS) : null;
     const delta = diff == null ? '' : `${diff < 0 ? '-' : '+'}${Math.floor(Math.abs(diff) / 60)}:${String(Math.abs(diff) % 60).padStart(2, '0')}`;
@@ -3517,7 +3757,7 @@ function buildRouteContext(currentData, activities, selected, routeNote = null) 
     priorRideCount: priorSameRoute.length,
     checkpointLines: lines,
     climbLine,
-    note: `Route identity from GPS geometry (${routeInfo.relation === 'reversed' ? 'ridden in the opposite direction to the route\'s first ride; compared only with rides in this direction' : 'same direction as the route\'s first ride'}); ${priorSameRoute.length} earlier rides in this direction in the analysis window. Checkpoint medians are descriptive splits of prior rides, not controlled time trials.`,
+    note: `Route identity from GPS geometry (${routeInfo.relation === 'reversed' ? 'ridden in the opposite direction to the route\'s first ride; compared only with rides in this direction' : 'same direction as the route\'s first ride'}). Usual values are medians of earlier rides, not controlled time trials.`,
   };
 }
 
@@ -3568,7 +3808,7 @@ async function getActivityComparisonsForActivity(dbPath, activityId) {
   let stmt;
   try {
     stmt = db.prepare(`
-      SELECT compared_activity_id, comparison_text, updated_at
+      SELECT compared_activity_id, comparison_text, updated_at, analysis_version
       FROM activity_comparisons WHERE activity_id = ? ORDER BY updated_at DESC
     `);
     stmt.bind([activityId]);
@@ -3579,6 +3819,9 @@ async function getActivityComparisonsForActivity(dbPath, activityId) {
         comparedActivityId: Number(row.compared_activity_id),
         comparisonText: row.comparison_text,
         updatedAt: row.updated_at,
+        // Written before versions were kept, or by an earlier prompt: the data and the rules it
+        // was made from may have changed since.
+        outdated: !(Number(row.analysis_version) >= ANALYSIS_VERSION),
       });
     }
     return rows;
@@ -3598,12 +3841,13 @@ async function storeActivityComparisonInDbNow(dbPath, activityId, comparedActivi
   try {
     const now = new Date().toISOString();
     db.run(`
-      INSERT INTO activity_comparisons (activity_id, compared_activity_id, comparison_text, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO activity_comparisons (activity_id, compared_activity_id, comparison_text, analysis_version, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(activity_id, compared_activity_id) DO UPDATE SET
         comparison_text = excluded.comparison_text,
+        analysis_version = excluded.analysis_version,
         updated_at = excluded.updated_at
-    `, [activityId, comparedActivityId, comparisonText, now, now]);
+    `, [activityId, comparedActivityId, comparisonText, ANALYSIS_VERSION, now, now]);
     await persistDatabase(db, dbPath);
   } finally {
     db.close();
