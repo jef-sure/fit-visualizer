@@ -93,13 +93,23 @@ function classifySession(input) {
 
   if (Number.isFinite(peak20VsLthr) && peak20VsLthr >= RULES.threshold.peak20Lthr
     && Number.isFinite(sustainedZ4Seconds) && sustainedZ4Seconds >= RULES.threshold.sustainedZ4Minutes * 60) {
-    return { label: 'threshold', confidence: 'high', reasons, alternatives: ['tempo'] };
+    // The deciding fact is said in words. Without it the evidence was only the zone shares, and
+    // "threshold" beside "Z5 68%" reads as a mistake - the model then disputed a correct class.
+    const held = `${Math.round(sustainedZ4Seconds / 60)} min without a break at or above the Z4 floor`;
+    return {
+      label: 'threshold',
+      confidence: 'high',
+      reasons: [...reasons, `${held}: work held that long is threshold work whatever share of it the profile counts as Z5`],
+      alternatives: ['tempo'],
+    };
   }
   if (z4Pct >= RULES.threshold.z4Pct) {
+    // Said in words for the same reason as above: beside "Z3 62%" the label reads as a slip,
+    // while the rule is that a quarter of the ride at threshold intensity names the ride.
     return {
       label: 'threshold',
       confidence: close(z4Pct, RULES.threshold.z4Pct, 'above') ? 'medium' : 'high',
-      reasons,
+      reasons: [...reasons, `Z4 is ${Math.round(z4Pct)}% of the ride, and ${RULES.threshold.z4Pct}% or more at threshold intensity names the ride even when most of the time is in Z3: a hard day for this rider, a tempo ride with a large threshold part`],
       alternatives: ['tempo', 'vo2max'],
     };
   }
@@ -114,10 +124,11 @@ function classifySession(input) {
   }
 
   if (moderatePct >= RULES.tempo.moderatePct && highPct < RULES.tempo.highPct) {
+    const borderline = close(moderatePct, RULES.tempo.moderatePct, 'above');
     return {
       label: 'tempo',
-      confidence: close(moderatePct, RULES.tempo.moderatePct, 'above') ? 'medium' : 'high',
-      reasons,
+      confidence: borderline ? 'medium' : 'high',
+      reasons: [...reasons, `Z3 is ${Math.round(moderatePct)}% of the ride, and ${RULES.tempo.moderatePct}% or more names it tempo${borderline ? `; this is right at the line, and with Z1-Z2 at ${Math.round(lowPct)}% the ride is as much an endurance ride with a tempo part` : ''}`],
       alternatives: ['endurance', 'threshold'],
     };
   }
@@ -126,7 +137,7 @@ function classifySession(input) {
   return {
     label: 'mixed',
     confidence: 'medium',
-    reasons,
+    reasons: [...reasons, `no single line is met: endurance needs Z1-Z2 of ${RULES.endurance.lowPct}% with under ${RULES.endurance.highPct}% in Z4-Z5 and a 20-minute peak under ${Math.round(RULES.endurance.peak20Lthr * 100)}% of threshold, tempo needs Z3 of ${RULES.tempo.moderatePct}%; the ride sits between them`],
     alternatives: [moderatePct > z4Pct + z5Pct ? 'tempo' : 'threshold'],
   };
 }

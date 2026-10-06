@@ -38,7 +38,7 @@ advice: <the practical step in one short sentence, or the observation given inst
 open: <one question whose answer would change the advice and is not answered by the route profile, notes or flags; usually none>
 revised: <what from the earlier summaries you now revise, or none>
 trend: <one of: improving | steady | declining | unclear — how this ride compares with its usual on this route across the section verdicts; unclear when no route comparison was supplied or the sections disagree>
-purpose: <the goal or goals this ride's data best supports, comma-separated when more than one: ${PURPOSE_VALUES.join(' | ')}; write unknown when nothing supports a claim>
+purpose: <when the rider declared goals for this ride, exactly those and nothing added; otherwise the goal or goals this ride's data best supports, comma-separated when more than one: ${PURPOSE_VALUES.join(' | ')}; write unknown when nothing supports a claim>
 conditions: <conditions this ride's data suggest: ${CONDITION_VALUES.join(' | ')}; write none when nothing supports a claim>`;
 
 const stripDecoration = (text) => String(text ?? '')

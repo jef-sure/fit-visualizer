@@ -3,7 +3,11 @@
 //
 // Altitude flags (ALT_*) live in altitude-quality.js and are merged in by the caller.
 
+const { calculatePeakHeartRates } = require('./heart-rate');
+
 const DQ = Object.freeze({
+  profileLowHourRatio: 1.03,     // an hour held this far above the assumed threshold
+  profileLowTwentyRatio: 1.08,   // or 20 minutes this far above it
   hrDropoutSeconds: 60,        // total missing HR inside a recording that has HR elsewhere
   hrMinCoveragePct: 50,        // below this the whole recording counts as "no HR", not a dropout
   hrLateStartSeconds: 300,     // HR absent at the start for longer than this
@@ -43,7 +47,7 @@ function median(values) {
 
 // All flags for one recording. records: [{ elapsed_time, heart_rate, temperature_c, position_lat,
 // position_long }]; session carries device timing; wheelRatio comes from calibration when present.
-function computeDataQualityFlags({ records, session = {}, wheelRatio, elapsedMismatch, offsetChangeNote }) {
+function computeDataQualityFlags({ records, session = {}, wheelRatio, elapsedMismatch, offsetChangeNote, hrProfile = null }) {
   const list = Array.isArray(records) ? records : [];
   const flags = [];
   const push = (code, severity, text, params) => flags.push({ code, severity, text, params });
@@ -105,6 +109,26 @@ function computeDataQualityFlags({ records, session = {}, wheelRatio, elapsedMis
     }
     if (jumps.length >= DQ.contactLossMinCount) {
       push('HR_CONTACT_LOSS', 'warn', `${jumps.length} sharp heart-rate jumps with quick recovery (strap contact loss); affected samples overstate effort spikes`, { count: jumps.length });
+    }
+  }
+
+  // --- Zone profile against what the ride itself shows ---
+  // Threshold heart rate is what can be held for about an hour; the best 20 minutes run some 5 %
+  // above it. A ride that held clearly more than the profile's threshold for that long was not
+  // superhuman: the profile is too low for this rider, and with it every zone boundary. A tested
+  // threshold is the rider's own measurement and is not questioned here.
+  const assumedLthr = Number(hrProfile?.lthrEstimate);
+  if (hrCoverage > 0 && Number.isFinite(assumedLthr) && assumedLthr > 0 && !hrProfile?.tested) {
+    const peaks = calculatePeakHeartRates(list, [1200, 3600]);
+    const hour = peaks.find((peak) => peak.seconds === 3600)?.bpm;
+    const twenty = peaks.find((peak) => peak.seconds === 1200)?.bpm;
+    const evidence = hour >= assumedLthr * DQ.profileLowHourRatio
+      ? { bpm: hour, span: 'an hour' }
+      : twenty >= assumedLthr * DQ.profileLowTwentyRatio ? { bpm: twenty, span: '20 minutes' } : null;
+    if (evidence) {
+      push('HR_PROFILE_LOW', 'warn',
+        `held ${evidence.bpm} bpm for ${evidence.span}, ${Math.round(100 * (evidence.bpm / assumedLthr - 1))}% above the threshold heart rate the zone profile assumes (${Math.round(assumedLthr)} bpm). Nobody holds that far above threshold for that long: the profile sets the zones too low for this rider, so the shares of the Threshold and VO2max zones are overstated and say nothing about VO2max work`,
+        { bpm: evidence.bpm, assumedLthr: Math.round(assumedLthr) });
     }
   }
 
@@ -176,7 +200,7 @@ function computeDataQualityFlags({ records, session = {}, wheelRatio, elapsedMis
 function buildDataQualityFlagBlock(flags) {
   const warn = (Array.isArray(flags) ? flags : []).filter((flag) => flag?.severity === 'warn').slice(0, DQ.maxPromptFlags);
   if (!warn.length) return '';
-  return `**Data Quality Flags (measured facts about this recording):**\n${warn.map((flag) => `- ${flag.code}: ${flag.text}`).join('\n')}\nUse each as the explanation where it changes a conclusion, once; do not restate it as a caveat elsewhere.`;
+  return `**Data Quality Flags (measured facts about this recording):**\n${warn.map((flag) => `- ${flag.code}: ${flag.text}`).join('\n')}\nUse each as the explanation where it changes a conclusion, once; do not restate it as a caveat elsewhere. The word in capitals before each colon is a label for the software, not a term for the rider: never print it; say in plain words what happened.`;
 }
 
 module.exports = {

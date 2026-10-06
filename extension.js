@@ -29,7 +29,7 @@ const { measureRideOnSkeleton, rideFrame, summarizeSections } = require('./route
 const { MODEL_PRICE_CACHE_KEY, restoreModelPriceCache, updateModelPrices } = require('./model-pricing');
 const { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, buildTranslationPrompt } = require('./activity-webview');
 const { ensureDatabaseSchema } = require('./database-schema');
-const { applyHeartRateProfileUpsert, planHeartRateProfileTidy, readHeartRateProfiles } = require('./heart-rate-profiles');
+const { applyHeartRateProfileUpsert, deleteHeartRateProfile, readHeartRateProfiles } = require('./heart-rate-profiles');
 const { createManualActivity, parseManualStartTime } = require('./manual-activity');
 const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, localDate } = require('./activity-time');
 const { reconcileSessionElapsed } = require('./activity-session-checks');
@@ -40,6 +40,7 @@ const PRIOR_RIDES_FOR_TRENDS = 5;
 const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readAssignment, readRouteCard, describeCheckpointVerdict, ensureRouteSkeleton, readSkeletonRecords, readRouteNote, setRouteName, setRouteNote, snapshotRouteLabels, restoreRouteLabels, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { CONDITIONS, FEELINGS, PURPOSES, inferNotesPreFill, readActivityNotes, readAllActivityNotes, saveActivityNotes, readKnownGoals } = require('./activity-notes');
+const { readRiderPlan, saveRiderPlanEntry } = require('./rider-plan');
 const { computeDataQualityFlags } = require('./data-quality');
 const { computeSegmentStretches, describeRouteFeatures } = require('./route-features');
 const { buildAltitudeRide, computeAltitudeFlags, detectAltitudeSettling, mirrorConsensusProfile } = require('./altitude-quality');
@@ -65,6 +66,7 @@ const {
   estimateLactateThresholdHeartRate,
   getHeartRateZoneIndex: getHrZoneIndex,
 } = require('./heart-rate');
+const { ageFromBirthYear, birthYearFromAge } = require('./heart-rate');
 const {
   addEstimatedPowerWhenMissing,
   asNumber,
@@ -119,7 +121,7 @@ const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = c
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 42;
+const ANALYSIS_VERSION = 46;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const ROUTE_FILTER_STATE_KEY = 'fitVisualizer.routeFilter';
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
@@ -195,58 +197,9 @@ function activate(context) {
     selectAnalysisModel,
     selectDatabaseFolder,
     showActivityBrowserInPanel,
-    tidyHeartRateProfiles,
     updateModelPriceTable,
   }));
 }
-
-async function tidyHeartRateProfiles() {
-  const dbPath = await resolveActiveDbPath() || await selectDatabaseFolder();
-  if (!dbPath) {
-    return;
-  }
-  await awaitDerivedFeatureRebuild();
-  const SQL = await getSqlJs();
-  const db = await openDatabase(SQL, dbPath);
-  let rows;
-  try {
-    rows = readHeartRateProfiles(db);
-  } finally {
-    db.close();
-  }
-  const { redundant, flips } = planHeartRateProfileTidy(rows);
-  if (!redundant.length) {
-    vscode.window.showInformationMessage(
-      flips.length
-        ? `No duplicate heart-rate profiles found. Max-HR changes: ${flips.join('; ')}.`
-        : 'No duplicate heart-rate profiles found.'
-    );
-    return;
-  }
-  const detail = redundant.map((date) => `${date} (duplicate of the previous profile)`).join('\n');
-  const pick = await vscode.window.showWarningMessage(
-    `Remove ${redundant.length} duplicate heart-rate profile${redundant.length > 1 ? 's' : ''}?\n${detail}`,
-    { modal: true },
-    'Remove duplicates'
-  );
-  if (pick !== 'Remove duplicates') {
-    return;
-  }
-  await enqueueDatabaseTask(async () => {
-    const db2 = await openDatabase(SQL, dbPath);
-    try {
-      const stillRedundant = planHeartRateProfileTidy(readHeartRateProfiles(db2)).redundant;
-      for (const date of redundant.filter((date) => stillRedundant.includes(date))) {
-        db2.run('DELETE FROM heart_rate_profiles WHERE effective_date = ?', [date]);
-      }
-      await persistDatabase(db2, dbPath);
-    } finally {
-      db2.close();
-    }
-  });
-  vscode.window.showInformationMessage(`Removed ${redundant.length} duplicate heart-rate profile${redundant.length > 1 ? 's' : ''}.`);
-}
-
 
 // After an update that changes the derived-feature version, the cache and routes are rebuilt once,
 // silently in the background — the user never runs a command for it. Runs only for the remembered
@@ -550,6 +503,34 @@ async function updateActivityNotesNow(dbPath, activityId, input) {
   const db = await openDatabase(SQL, dbPath);
   try {
     saveActivityNotes(db, activityId, input);
+    await persistDatabase(db, dbPath);
+  } finally {
+    db.close();
+  }
+}
+
+function removeHeartRateProfile(dbPath, effectiveDate) {
+  return enqueueDatabaseTask(async () => {
+    const SQL = await getSqlJs();
+    const db = await openDatabase(SQL, dbPath);
+    try {
+      deleteHeartRateProfile(db, effectiveDate);
+      await persistDatabase(db, dbPath);
+    } finally {
+      db.close();
+    }
+  });
+}
+
+function updateRiderPlan(dbPath, input) {
+  return enqueueDatabaseTask(() => updateRiderPlanNow(dbPath, input));
+}
+
+async function updateRiderPlanNow(dbPath, input) {
+  const SQL = await getSqlJs();
+  const db = await openDatabase(SQL, dbPath);
+  try {
+    saveRiderPlanEntry(db, input);
     await persistDatabase(db, dbPath);
   } finally {
     db.close();
@@ -1563,6 +1544,31 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
         const errorMsg = error instanceof Error ? error.message : String(error);
         panel.webview.postMessage({ type: 'notesError', error: errorMsg });
       }
+    } else if (msg.type === 'deleteHeartRateProfile') {
+      try {
+        const date = String(msg.effectiveDate || '');
+        const pick = await vscode.window.showWarningMessage(
+          `Delete the heart-rate profile in force from ${date}? Rides from that date on will use the profile before it.`,
+          { modal: true },
+          'Delete profile'
+        );
+        if (pick === 'Delete profile') {
+          await removeHeartRateProfile(dbPath, date);
+          await render(Number(msg.id), msg.compId ? Number(msg.compId) : null);
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        panel.webview.postMessage({ type: 'heartRateProfileError', error: errorMsg });
+      }
+    } else if (msg.type === 'updateRiderPlan') {
+      try {
+        await updateRiderPlan(dbPath, msg);
+        await render(Number(msg.id), msg.compId ? Number(msg.compId) : null);
+        vscode.window.showInformationMessage('Plan note saved. Re-analyze to apply it to the AI analysis.');
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        panel.webview.postMessage({ type: 'riderPlanError', error: errorMsg });
+      }
     } else if (msg.type === 'updateRoute') {
       try {
         await updateRoute(dbPath, msg);
@@ -1747,9 +1753,14 @@ async function loadFitDataFromDb(dbPath, activityId) {
         max_hr:                activity.manual_max_hr ?? activity.max_hr,
         _device_avg_hr:        activity.avg_hr,
         _device_max_hr:        activity.max_hr,
-        _reportedAvgHr:        activity.source !== 'manual' && (activity.manual_avg_hr != null || activity.manual_max_hr != null)
+        // Numbers typed in by hand are reported to the model only for a ride whose file has no
+        // heart rate of its own. Beside a recorded series they are not "from another device, not
+        // measured here", and the page promises that manual overrides are not sent.
+        _reportedAvgHr:        activity.source !== 'manual' && !(Number(activity.avg_hr) > 0)
+          && (activity.manual_avg_hr != null || activity.manual_max_hr != null)
           ? activity.manual_avg_hr : null,
-        _reportedMaxHr:        activity.source !== 'manual' && (activity.manual_avg_hr != null || activity.manual_max_hr != null)
+        _reportedMaxHr:        activity.source !== 'manual' && !(Number(activity.avg_hr) > 0)
+          && (activity.manual_avg_hr != null || activity.manual_max_hr != null)
           ? activity.manual_max_hr : null,
         _source:               activity.source || 'fit',
         _hasManualHrOverrides: activity.source === 'manual'
@@ -1758,6 +1769,8 @@ async function loadFitDataFromDb(dbPath, activityId) {
       }],
       laps: parseStoredLaps(activity.laps_json),
       sessionNotes: readActivityNotes(db, activityId),
+      riderPlan: readRiderPlan(db),
+      hrProfiles: readHeartRateProfiles(db),
       inferredNotes: readLatestSummaryForActivity(db, activityId),
       knownGoals: readKnownGoals(db),
       // Where the ride enters its route's stretches; the page and the analysis cut segments there.
@@ -2239,12 +2252,14 @@ async function getAthleteProfile(dbPath, activityId) {
   const db = await openDatabase(SQL, dbPath);
   let stmt;
   try {
-    stmt = db.prepare('SELECT sex, age, resting_hr, ftp, rider_mass_kg, bike_mass_kg, wheel_circumference_mm FROM athlete_profile WHERE id = 1');
+    stmt = db.prepare('SELECT sex, age, birth_year, resting_hr, ftp, rider_mass_kg, bike_mass_kg, wheel_circumference_mm FROM athlete_profile WHERE id = 1');
     const hasProfile = stmt.step();
     const row = hasProfile ? stmt.getAsObject() : {};
+    // The age shown is today's, worked out from the stored year of birth.
+    const currentAge = ageFromBirthYear(row.birth_year, new Date().toISOString()) ?? asNumber(row.age);
     const profile = {
       sex: String(row.sex || ''),
-      age: Number.isFinite(asNumber(row.age)) ? String(Math.round(asNumber(row.age))) : '',
+      age: Number.isFinite(currentAge) ? String(Math.round(currentAge)) : '',
       restingHeartRate: Number.isFinite(asNumber(row.resting_hr)) ? String(Math.round(asNumber(row.resting_hr))) : '',
       ftp: Number.isFinite(asNumber(row.ftp)) ? String(Math.round(asNumber(row.ftp))) : '',
       riderMassKg: Number.isFinite(asNumber(row.rider_mass_kg)) ? String(asNumber(row.rider_mass_kg)) : '',
@@ -2495,6 +2510,8 @@ async function logLlmRequest(dbPath, entry) {
     kind: entry.kind,
     modelId: entry.modelId,
     analysisVersion: ANALYSIS_VERSION,
+    durationMs: Number.isFinite(entry.durationMs) ? Math.round(entry.durationMs) : undefined,
+    emptyAnswers: entry.emptyAnswers ? entry.emptyAnswers : undefined,
     promptChars: promptSummary.totalChars,
     promptBlocks: promptSummary.blocks,
     warnings: entry.warnings?.length ? entry.warnings : undefined,
@@ -2662,7 +2679,13 @@ async function prepareAnalysisData(dbPath, fitData, activityId) {
   });
   const sessionClass = buildSessionClassForActivity(powerData.records, session, hrConfig, athleteProfile, segments);
   // Measured facts about the recording: one place, computed in code (B1).
-  const qualityFlags = computeDataQualityFlags({ records: powerData.records, session, wheelRatio });
+  const qualityFlags = computeDataQualityFlags({
+    records: powerData.records, session, wheelRatio,
+    hrProfile: Number.isFinite(asNumber(hrConfig?.maxHeartRate)) ? {
+      lthrEstimate: estimateLactateThresholdHeartRate(hrConfig.maxHeartRate, hrConfig.thresholds, asNumber(athleteProfile?.restingHeartRate), hrConfig?.lthr),
+      tested: Number.isFinite(asNumber(hrConfig?.lthr)),
+    } : null,
+  });
   // Route info and checkpoints are filled later by getTrainingContextFromDb (they need the
   // routes table and the same-sport history); analysisData carries the current-ride data.
   return {
@@ -2950,9 +2973,12 @@ async function autoCalculateHeartRateProfileFromDbNow(dbPath, message) {
     finishRide();
     const powerSource = useMeasuredPower ? 'measured' : estimatedRideCount > 0 ? 'estimated' : 'unavailable';
     const ftpCandidates = estimateFtpCandidates(mmp);
+    // The form holds today's age; a profile dated in another year is calculated for the age then.
+    const today = new Date().toISOString();
+    const ageThen = ageFromBirthYear(birthYearFromAge(athleteProfile.age, today), message?.effectiveDate || today);
     const suggestion = calculateAutoHeartRateProfile({
       sex: athleteProfile.sex,
-      age: athleteProfile.age,
+      age: Math.max(10, Math.min(100, ageThen ?? athleteProfile.age)),
       restingHeartRate: athleteProfile.restingHeartRate,
       observedMaxHeartRate,
     });
@@ -3001,11 +3027,12 @@ async function autoCalculateHeartRateProfileFromDbNow(dbPath, message) {
 
 function upsertAthleteProfile(db, profile, updatedAt) {
   db.run(`
-    INSERT INTO athlete_profile (id, sex, age, resting_hr, ftp, rider_mass_kg, bike_mass_kg, wheel_circumference_mm, updated_at)
-    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO athlete_profile (id, sex, age, birth_year, resting_hr, ftp, rider_mass_kg, bike_mass_kg, wheel_circumference_mm, updated_at)
+    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       sex = COALESCE(excluded.sex, athlete_profile.sex),
       age = COALESCE(excluded.age, athlete_profile.age),
+      birth_year = COALESCE(excluded.birth_year, athlete_profile.birth_year),
       resting_hr = COALESCE(excluded.resting_hr, athlete_profile.resting_hr),
       ftp = COALESCE(excluded.ftp, athlete_profile.ftp),
       rider_mass_kg = COALESCE(excluded.rider_mass_kg, athlete_profile.rider_mass_kg),
@@ -3015,6 +3042,8 @@ function upsertAthleteProfile(db, profile, updatedAt) {
   `, [
     profile?.sex ?? null,
     Number.isFinite(asNumber(profile?.age)) ? Math.round(asNumber(profile.age)) : null,
+    // The age is as of the moment of saving; the year of birth it implies is what lasts.
+    Number.isFinite(asNumber(profile?.age)) ? birthYearFromAge(asNumber(profile.age), updatedAt) : null,
     Number.isFinite(asNumber(profile?.restingHeartRate)) ? Math.round(asNumber(profile.restingHeartRate)) : null,
     Number.isFinite(asNumber(profile?.ftp)) ? Math.round(asNumber(profile.ftp)) : null,
     Number.isFinite(asNumber(profile?.riderMassKg)) ? asNumber(profile.riderMassKg) : null,

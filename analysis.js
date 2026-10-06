@@ -1,6 +1,6 @@
-const { asNumber, formatHms, groupSimilarSegments, segmentLineBudget, collapseShortStops } = require('./utils');
+const { asNumber, formatHms, groupSimilarSegments, segmentLineBudget, collapseShortStops, terrainName } = require('./utils');
 const { calculatePeakHeartRates, computeHeartRateZones } = require('./heart-rate');
-const { localClock, localDate } = require('./activity-time');
+const { localClock, localDate, localWeekday } = require('./activity-time');
 const { computeElevationGainLoss } = require('./chart-data');
 const { rankModelsByCost } = require('./model-pricing');
 const { describeStretches } = require('./route-features');
@@ -10,6 +10,7 @@ const { computeCheckpoints, priorKmOnAxis } = require('./route-store');
 const { describeSpeed, normalizeSport, profileFor, sportPromptAdditions } = require('./sport-profiles');
 const { SUMMARY_TAIL_INSTRUCTION, describeAnalysisForHistory } = require('./analysis-summary');
 const { buildInferredNotesBlock, buildSessionNotesBlock, describeNotesShort } = require('./activity-notes');
+const { buildRiderPlanBlock } = require('./rider-plan');
 
 function formatPositive(value, digits) {
   const num = Number(value);
@@ -87,7 +88,7 @@ function describeSegment(segment, records, profile = null) {
     : segment.avgSpeedKmh != null ? `${segment.avgSpeedKmh} km/h` : null;
   // The basis is implied by which metric is quoted, so it is explained once per block instead of per line.
   return joinNonEmpty([
-    segment.type,
+    ({ gentleClimb: 'gentle climb', gentleDescent: 'gentle descent' })[terrainName(segment.type, segment.avgGrade)] || segment.type,
     segment.technical ? 'technical, no reliable effort estimate' : null,
     postClimbHrDrop(segment, records),
     segment.avgGrade != null ? `avg grade ${segment.avgGrade}%` : null,
@@ -178,7 +179,8 @@ function buildSegmentContext(segments, options = {}) {
   if (shortStops.length) {
     const total = shortStops.reduce((sum, segment) => sum + segment.durationS, 0);
     const longest = Math.max(...shortStops.map((segment) => segment.durationS));
-    displayRows.push({ time: '', details: `Plus ${shortStops.length} short stops, ${formatClock(total)} total (longest ${formatClock(longest)})`, members: shortStops });
+    displayRows.push({ time: '', details: `Plus ${shortStops.length} short stops, ${formatClock(total)} total (longest ${formatClock(longest)})`, members: shortStops,
+      shortStops: { count: shortStops.length, total: formatClock(total), longest: formatClock(longest) } });
   }
 
   const lines = displayRows.map((row) => `${row.time ? `${row.time} ` : ''}${row.details}`);
@@ -249,6 +251,7 @@ function buildRecentHistoryContext(entries, options = {}) {
       ['threshold', 'vo2max/anaerobic'].includes(entry.sessionClass?.label) && entry.peak20 != null ? `peak20 ${entry.peak20} bpm` : null,
       entry.hrProfileDate && entry.hrProfileDate !== list[index - 1]?.hrProfileDate ? `HR profile ${entry.hrProfileDate}` : null,
       entry.source && entry.source !== 'fit' ? `source ${entry.source}` : null,
+      startedText(entry),
     ]);
     const hasSummary = entry.analysisSummary && (entry.analysisSummary.finding || entry.analysisSummary.advice || entry.analysisSummary.type);
     const interpretation = hasSummary
@@ -435,7 +438,7 @@ function buildAltitudeQualityBlock(altitudeQuality, qualityFlags = []) {
   const otherFlags = buildDataQualityFlagBlock(qualityFlags);
   if (!altitudeQuality || !(altitudeQuality.flags?.length || altitudeQuality.routeLine)) return otherFlags;
   const flags = (altitudeQuality.flags || []).map((flag) => `- ${flag.code}: ${flag.detail}`).join('\n');
-  const altitudeBlock = `**Altitude Quality (measured facts about this recording):**\n${joinNonEmpty([flags, altitudeQuality.routeLine], '\n')}\nUse these as the explanation for ascent/descent and first-segment grade discrepancies; the route consensus is the steadier figure for comparing days.`;
+  const altitudeBlock = `**Altitude Quality (measured facts about this recording):**\n${joinNonEmpty([flags, altitudeQuality.routeLine], '\n')}\nUse these as the explanation for ascent/descent and first-segment grade discrepancies; the route consensus is the steadier figure for comparing days. The word in capitals before each colon is a label for the software, not a term for the rider: never print it; say in plain words what happened.`;
   return joinNonEmpty([altitudeBlock, otherFlags], '\n\n');
 }
 
@@ -502,9 +505,36 @@ function buildDataQualityContext(fitData, heartRateConfig = fitData.analysisHear
   return lines ? `**Measurement and Estimate Provenance:**\n${lines}\nGrade residual/window diagnostics describe local consistency, not calibrated uncertainty. Unknown wind, surface, mass error and sensor bias can still affect vpower. HR zone names do not establish tested lactate threshold or VO2max.` : '';
 }
 
+// A lap carries what segments cannot know - the rider's intent - only when the rider or a workout
+// programme set it. Laps cut by the device (distance, time, position) and laps with no recorded
+// trigger are arbitrary marks on the road and stay out of the prompt.
+function isIntendedLap(lap) {
+  return lap?.lap_trigger === 'manual' || lap?.wkt_step_index != null;
+}
+
+// The rider's dated plan as of the local day of a ride (the later ride, for a comparison).
+function riderPlanBlock(fitData, otherFitData = null) {
+  const dayOf = (data) => {
+    const session = data?.sessions?.[0];
+    return session?.start_time ? localDate(session.start_time, session.utc_offset_s) : null;
+  };
+  const days = [dayOf(fitData), dayOf(otherFitData)].filter(Boolean).sort();
+  return buildRiderPlanBlock(fitData?.riderPlan, days[days.length - 1] ?? null);
+}
+
+// When an earlier ride started: weekday, plus the local hour when the device offset is known.
+// A weekday evening ride and a weekend morning one are different kinds of day for the rider.
+function startedText(entry) {
+  if (entry?.utcOffsetS == null) return null;
+  const weekday = localWeekday(entry.startTime, entry.utcOffsetS);
+  if (!weekday) return null;
+  const clock = Number.isFinite(Number(entry.utcOffsetS)) && entry.utcOffsetS != null ? localClock(entry.startTime, entry.utcOffsetS) : null;
+  return `started ${weekday}${clock ? ` ${clock.time}` : ''}`;
+}
+
 function buildLapContext(fitData) {
   const laps = Array.isArray(fitData.laps) ? fitData.laps : [];
-  if (laps.length < 2) return '';
+  if (laps.length < 2 || !laps.some(isIntendedLap)) return '';
   const measuredPower = fitData.sessions?.[0]?.power_source === 'measured';
   const rows = laps.slice(0, 40).map((lap, index) => `${index + 1}. ${joinNonEmpty([
     lap.total_timer_time > 0 ? formatHms(Math.round(lap.total_timer_time)) : null,
@@ -513,8 +543,9 @@ function buildLapContext(fitData) {
     measuredPower && lap.avg_power > 0 ? `device avg power ${Number(lap.avg_power).toFixed(0)} W` : null,
     lap.avg_cadence > 0 ? `cadence ${Number(lap.avg_cadence).toFixed(0)}` : null,
     lap.lap_trigger ? `trigger ${lap.lap_trigger}` : null,
+    lap.wkt_step_index != null ? 'workout step' : null,
   ])}`).join('\n');
-  return `**Device-recorded Laps:**\n${rows}\n${laps.length > 40 ? `First 40 of ${laps.length} laps shown. ` : ''}Lap boundaries can be automatic and do not establish intended intervals.`;
+  return `**Device-recorded Laps:**\n${rows}\n${laps.length > 40 ? `First 40 of ${laps.length} laps shown. ` : ''}A lap with trigger manual or marked as a workout step was set by the rider or a workout programme; a lap with any other trigger was cut by the device and does not establish an intended interval.`;
 }
 
 function sportsEvidenceRules() {
@@ -574,7 +605,7 @@ function buildPeakHeartRateContext(records, trainingContext, label = '') {
       : same ? `; prior same-sport best: 28 and 90 days ${prior(row.best28)}`
       : `; prior same-sport best: 28 days ${prior(row.best28)}, 90 days ${prior(row.best90)}`}`;
   }).join('\n');
-  return `**Peak Sustained Heart Rate${label ? ` (${label})` : ''} (highest time-weighted rolling averages):**\n${lines}\nPeaks show the hardest sustained parts of the session. They depend on effort, heat, fatigue, hydration and sensor; higher or lower peaks than before do not establish a fitness change.${history.size ? ' Prior bests cover only earlier activities with detailed records.' : ''}`;
+  return `**Peak Sustained Heart Rate${label ? ` (${label})` : ''} (highest time-weighted rolling averages):**\n${lines}\nPeaks show the hardest sustained parts of the session. A prior best is the highest value of the last 28 or 90 days, not a record: when you quote one, name its window. They depend on effort, heat, fatigue, hydration and sensor; higher or lower peaks than before do not establish a fitness change.${history.size ? ' Prior bests cover only earlier activities with detailed records.' : ''}`;
 }
 
 async function requestCopilotAnalysis(vscode, prompt, options = {}) {
@@ -587,6 +618,9 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
   // ended "1 failed" and had to be started again by hand.
   const emptyRetries = Number.isInteger(options.emptyRetries) && options.emptyRetries >= 0 ? options.emptyRetries : 2;
   let emptyAnswers = 0;
+  // From the first attempt to the reported result, retries and their pauses included: the time
+  // the rider waits, which is what tells a usable model from a slow one.
+  const startedAt = Date.now();
   const vendor = String(options.vendor || '').trim() || 'copilot';
   const wantedId = String(options.modelId || '').trim();
   // A pinned or picked model id may belong to another vendor (BYOK providers register under
@@ -612,7 +646,7 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
   const promptText = messages.join('\n\n');
   const report = async (result) => {
     try {
-      await options.onCompleted?.({ modelId, prompt: promptText, ...result });
+      await options.onCompleted?.({ modelId, prompt: promptText, durationMs: Date.now() - startedAt, emptyAnswers, ...result });
     } catch {
       // Logging must never break an analysis.
     }
@@ -636,7 +670,7 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
           attempt -= 1;
           continue;
         }
-        throw new Error(`Copilot returned an empty analysis${emptyRetries ? ` (${emptyRetries + 1} attempts)` : ''}.`);
+        throw new Error(`Copilot returned an empty analysis${emptyRetries ? ` (${emptyRetries + 1} attempts)` : ''}. Some models do this now and then: try again or pick another model.`);
       }
       await report({ response: analysis.trim() });
       return analysis.trim();
@@ -820,7 +854,7 @@ function buildWorkoutFields(session, records, altitudeSettlingWindow = null) {
   const wholeRidePowerIsEstimated = powerSource === 'estimated from motion data';
   const showPower = profile.usesPower;
   // Local wall-clock time comes from the device-configured UTC offset; without it the UTC stamp stands.
-  const localStart = Number.isFinite(Number(session.utc_offset_s))
+  const localStart = session.utc_offset_s != null && Number.isFinite(Number(session.utc_offset_s))
     ? localClock(session.start_time, session.utc_offset_s)
     : null;
   const startTimeText = localStart
@@ -875,6 +909,9 @@ function buildWorkoutFields(session, records, altitudeSettlingWindow = null) {
   const text = formatFieldsSkippingEmpty([
     ['Sport', session.sport], ['Sub-sport', session.sub_sport],
     ['Date', activityDateTime.date],
+    // Without a device offset the local day is unknown: a ride at 06:39 UTC may be an evening
+    // on another continent, and a weekday read off the UTC calendar may be the wrong one.
+    ['Weekday', session.utc_offset_s != null ? localWeekday(session.start_time, session.utc_offset_s) : null],
     ['Start Time', startTimeText],
     ['Average Temperature', averageTemperature(records), 'C'],
     ['Distance', session.total_distance_km?.toFixed(2), 'km'],
@@ -969,6 +1006,7 @@ const ANALYSIS_PRINCIPLES = Object.freeze([
   'Device temperature (it may be the device\'s, not ambient air), absent fields and partial coverage can change a conclusion: mention each once, where it matters. An absent field is unknown, not zero. Quality flags are measured facts that explain discrepancies, not hedges.',
   'Set no numeric targets: no heart rate, speed, time or power to hit, hold or stay under next time, whether taken from a peak, from this ride or from a usual value. A usual value describes earlier rides; it is not a goal. Phrase effort advice through RPE and by naming the stretch, labelled as general guidance.',
   'Advise only on what the rider controls on the bike: effort, pacing, where to push or ease, what to record. Traffic, traffic lights, junctions, crossings, weather, daylight, the time of the ride and the profile of the route are given, not chosen: a stop or a slow-down at a fixed place of the route is an ordinary part of riding - never call it a hitch, a loss or a problem, never build advice on it, and never suggest another start time, another route or other conditions to avoid it. A stop anywhere else is not a flaw either: people stop to wait, to rest, to talk, to change something. State it as a fact that explains the time; treat stops as something to reduce only when a declared goal requires riding without them (a race, a timed effort).',
+  'The weekday and the local start time of this ride and of earlier ones are circumstances of the rider\'s week, not choices to correct. Before calling a ride shorter, slower, easier or hotter than usual, look at earlier rides on the same kind of day and hour; a weekday ride and a weekend ride can differ in available time and in conditions. Say so only where the data shows such a difference, and take what the rider wrote about their week as stated fact.',
   'Do not fill missing data with plausible claims; say once what is missing. Never present an invented instruction, promise or preference as the user\'s own words; only the supplied session notes and user context are the user\'s. A missing sensor or data gap that recent analyses already pointed out gets a brief mention at most and is not the practical step again.',
   'Ask the user only when the answer would change the advice and was not asked before; otherwise state the working assumption. Most analyses need no question.',
   'Focus on what is new relative to earlier summaries; do not repeat their advice, caveats or questions unless this activity adds evidence, and do not retell tables. Attribute period statistics to their stated date range, never to one activity.',
@@ -1029,11 +1067,12 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
     ], '\n\n')
     : joinNonEmpty(['**Comparable Training History:** No earlier activities within 75%-125% of this workout\'s distance are available. This workout establishes the initial baseline for rides of this distance.',
       loadFields ? `**Recent Imported Activity Context (independent of distance matching):**\n${loadFields}` : null], '\n\n');
-  // The full previous-analysis text is a fallback: the structured history rows already carry its
-  // summary, and this ride's own last analysis only needs full text when nothing was parsed.
-  const priorAnalysisContext = String(previousAnalysis || '').trim() && !recentHistory?.some((entry) => entry.analysisSummary)
-    ? `**Previous Workout Analysis (AI hypothesis, not evidence):**\n${String(previousAnalysis).trim()}`
-    : '';
+  // A ride's own previous analysis is not shown to the model that analyses it again. It used to
+  // be, whenever no history row carried a summary of the current format - that is, right after
+  // every format change - and the new answer then paraphrased the old one: a second model took
+  // over the first one's phrases, guesses and even its typos, and a changed prompt looked as if
+  // it changed nothing. What the rider said in the follow-up conversation is still passed below.
+  const priorAnalysisContext = '';
   const safeFollowUpHistory = formatConversation(followUpHistory);
   const followUpContext = safeFollowUpHistory
     ? `**Follow-up Conversation About This Analysis:**\n${safeFollowUpHistory}`
@@ -1050,6 +1089,7 @@ function generateAnalysisPromptParts(fitData, progressSummary, heartRateConfig, 
   // Data first, interpretation rules last: without a system role, closeness to the question is the only lever.
   const body = joinNonEmpty([
     joinNonEmpty([`**This Workout:**\n${workoutFields}`, buildSessionNotesBlock(fitData.sessionNotes), segmentContext], '\n\n'),
+    riderPlanBlock(fitData),
     buildLapContext(fitData),
     powerSource === 'estimated from motion data'
       ? '**Data Quality Note:** Whole-ride power is estimated from motion and is not supplied as a reliable training-load metric. Any vpower shown for climbs is only a rough terrain-specific estimate; do not treat it as measured power.'
@@ -1193,6 +1233,7 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
   const body = joinNonEmpty([
     `Workout facts for this activity:\n${workoutFields}`,
     buildSessionNotesBlock(fitData.sessionNotes),
+    riderPlanBlock(fitData),
     buildInferredNotesBlock(fitData.inferredNotes, fitData.sessionNotes),
     buildDataQualityFlagBlock(fitData.qualityFlags),
     buildHeartRateProfileContext(heartRateConfig),
@@ -1266,6 +1307,7 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
   const body = joinNonEmpty([
     joinNonEmpty([`**This Workout:**\n${workoutFields}`, segmentContext], '\n\n'),
     buildSessionNotesBlock(fitData.sessionNotes),
+    riderPlanBlock(fitData, comparedFitData),
     buildInferredNotesBlock(fitData.inferredNotes, fitData.sessionNotes),
     buildDataQualityFlagBlock(fitData.qualityFlags),
     dataQualityNote('This Workout', powerSource),
@@ -1345,6 +1387,7 @@ function averageTemperature(records) {
 
 module.exports = {
   buildHeartRateProfileContext,
+  buildLapContext,
   buildRecentHistoryContext,
   buildReportedHeartRateContext,
   buildSegmentContext,

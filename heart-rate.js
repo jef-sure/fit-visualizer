@@ -21,9 +21,13 @@ function computeHeartRateZones(records, maxHeartRate, customThresholds, options 
   // Zone 1's floor follows the same reserve the auto profile uses when a resting HR is known,
   // so the Karvonen thresholds and the 50 % HRmax floor stop contradicting each other.
   const restingHeartRate = Number(options.restingHeartRate);
-  const zoneFloorBpm = Number.isFinite(restingHeartRate) && restingHeartRate > 0 && restingHeartRate < maxHeartRate
+  const reserveFloorBpm = Number.isFinite(restingHeartRate) && restingHeartRate > 0 && restingHeartRate < maxHeartRate
     ? Math.round(restingHeartRate + HEART_RATE_ZONES[0].low * (maxHeartRate - restingHeartRate))
     : Math.round(HEART_RATE_ZONES[0].low * maxHeartRate);
+  // A profile whose zone starts are shares of the maximum (116 of 193) combined with a resting
+  // heart rate gives a reserve-based floor above the start of zone 2 (127): zone 1 then read
+  // "127-115 bpm" and could hold no time at all. The floor falls back to the share of the maximum.
+  const zoneFloorBpm = reserveFloorBpm < thresholds[0] ? reserveFloorBpm : Math.round(HEART_RATE_ZONES[0].low * maxHeartRate);
   let totalSeconds = 0;
 
   for (let index = 0; index < records.length; index += 1) {
@@ -187,6 +191,24 @@ function estimateLactateThresholdHeartRate(maxHeartRate, thresholds, restingHear
   return Math.round(max * 0.85);
 }
 
+// The form asks for an age, but an age entered once goes stale. What is stored is the year of
+// birth it implies, and the age is worked out again for the date it is needed for. A year is
+// precise enough (the formula moves 0.7 bpm per year) and is less to keep than a date of birth.
+function yearOf(isoDate) {
+  const year = Number(String(isoDate ?? '').slice(0, 4));
+  return Number.isInteger(year) && year > 1900 ? year : new Date().getUTCFullYear();
+}
+
+function birthYearFromAge(age, referenceIso) {
+  const years = Number(age);
+  return age != null && age !== '' && Number.isFinite(years) ? yearOf(referenceIso) - Math.round(years) : null;
+}
+
+function ageFromBirthYear(birthYear, referenceIso) {
+  const year = Number(birthYear);
+  return birthYear != null && birthYear !== '' && Number.isFinite(year) ? yearOf(referenceIso) - year : null;
+}
+
 function getFormulaMaxHeartRate(age) {
   return 208 - (0.7 * age);
 }
@@ -237,6 +259,8 @@ function calculatePeakHeartRates(records, windows = PEAK_HEART_RATE_WINDOWS) {
 }
 
 module.exports = {
+  ageFromBirthYear,
+  birthYearFromAge,
   calculateAutoHeartRateProfile,
   calculatePeakHeartRates,
   estimateLactateThresholdHeartRate,

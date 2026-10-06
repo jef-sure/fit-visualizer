@@ -233,7 +233,13 @@ function computeGrade(records) {
   if (!Array.isArray(records) || records.length < 2) return grades;
   const intervals = records.slice(1).map((record, index) => asNumber(record.elapsed_time) - asNumber(records[index].elapsed_time))
     .filter((seconds) => seconds > 0 && seconds <= 30);
-  const maxGap = Math.min(30, Math.max(5, (median(intervals) || 1) * 3));
+  // A device with "smart recording" writes a point when something changes, so on steady road the
+  // points come 6-7 s apart while the median interval is still one second. Such a gap is not a
+  // break in the recording: with a 5 s limit every steady stretch fell apart into single points
+  // and got no grade at all.
+  const sortedIntervals = [...intervals].sort((a, b) => a - b);
+  const usualLongInterval = sortedIntervals.length ? sortedIntervals[Math.floor(sortedIntervals.length * 0.95)] : 1;
+  const maxGap = Math.min(30, Math.max(5, (median(intervals) || 1) * 3, usualLongInterval * 1.5));
   const runs = [];
   let run = [];
   let previous = null;
@@ -265,15 +271,68 @@ function computeGrade(records) {
     previous = sample;
   }
   if (run.length) runs.push(run);
+  // Many devices hold the altitude and then let it catch up: level for hundreds of metres, then a
+  // metre or two within a few seconds. On a gentle slope a short window sees either the level
+  // part or the catch-up, and reads zero or several percent. Whether a point lies on such road
+  // is judged from the 240 m around it: if the altitude stands still over most of that distance,
+  // only the widest window is used there. Where the altitude changes from point to point (any
+  // real climb or descent) the short windows are kept and the grade stays local.
+  const STEPPED_CONTEXT_M = 240;
+  const STEPPED_WINDOW_M = 480;
+  const isSteppedAround = (samples, index) => {
+    const centre = samples[index].positionM;
+    let heldM = 0;
+    let totalM = 0;
+    for (let k = index; k > 0 && centre - samples[k].positionM <= STEPPED_CONTEXT_M / 2; k -= 1) {
+      const lengthM = samples[k].positionM - samples[k - 1].positionM;
+      totalM += lengthM;
+      if (Math.abs(samples[k].altitude - samples[k - 1].altitude) < 0.01) heldM += lengthM;
+    }
+    for (let k = index + 1; k < samples.length && samples[k].positionM - centre <= STEPPED_CONTEXT_M / 2; k += 1) {
+      const lengthM = samples[k].positionM - samples[k - 1].positionM;
+      totalM += lengthM;
+      if (Math.abs(samples[k].altitude - samples[k - 1].altitude) < 0.01) heldM += lengthM;
+    }
+    return totalM >= STEPPED_CONTEXT_M / 2 && heldM / totalM > 0.5;
+  };
+  // How far the wide window may reach from a point in one direction (step is -1 or +1). A
+  // catch-up lasts a few tens of metres; altitude that keeps changing for longer than that is a
+  // real slope beginning, and the window stops in front of it instead of smearing it into the
+  // level road beside it.
+  const STEPPED_MAX_CHANGE_RUN_M = 60;
+  const steppedReach = (samples, index, step) => {
+    const centre = samples[index].positionM;
+    let reach = index;
+    let changeStart = null;
+    for (let k = index + step; k >= 0 && k < samples.length; k += step) {
+      if (Math.abs(samples[k].positionM - centre) > STEPPED_WINDOW_M / 2) break;
+      const a = step > 0 ? k - 1 : k;
+      const changed = Math.abs(samples[a + 1].altitude - samples[a].altitude) >= 0.01;
+      if (changed) {
+        if (changeStart == null) changeStart = k - step;
+        if (Math.abs(samples[k].positionM - samples[changeStart].positionM) > STEPPED_MAX_CHANGE_RUN_M) return changeStart;
+      } else {
+        changeStart = null;
+      }
+      reach = k;
+    }
+    return reach;
+  };
   for (const samples of runs) {
     for (let index = 1; index < samples.length; index += 1) {
       const current = samples[index];
       let estimate = null;
-      for (const windowM of [30, 60, 120]) {
+      const stepped = isSteppedAround(samples, index);
+      for (const windowM of (stepped ? [STEPPED_WINDOW_M] : [30, 60, 120])) {
         let start = index;
         let end = index;
-        while (start > 0 && current.positionM - samples[start - 1].positionM <= windowM / 2) start -= 1;
-        while (end + 1 < samples.length && samples[end + 1].positionM - current.positionM <= windowM / 2) end += 1;
+        if (stepped) {
+          start = steppedReach(samples, index, -1);
+          end = steppedReach(samples, index, 1);
+        } else {
+          while (start > 0 && current.positionM - samples[start - 1].positionM <= windowM / 2) start -= 1;
+          while (end + 1 < samples.length && samples[end + 1].positionM - current.positionM <= windowM / 2) end += 1;
+        }
         if (samples[end].positionM - samples[start].positionM < 30) continue;
         const bins = new Map();
         for (const point of samples.slice(start, end + 1)) {
@@ -1121,7 +1180,14 @@ function summarizeSegmentRange(records, range, shared, options) {
   const speedSpread = speeds.length > 1 && avgSpeedKmh > 0
     ? Math.sqrt(average(speeds.map((value) => (value - avgSpeedKmh) ** 2))) / avgSpeedKmh
     : 0;
-  const avgGrade = segmentGrades.length ? average(segmentGrades) : Number.NaN;
+  // The grade shown is the one the segment is named by: its net rise over its length. The mean of
+  // the local grade samples is kept only as a fallback - on altitude recorded in steps the level
+  // stretches yield no sample at all, and the mean of what is left overstates the slope severalfold.
+  const segmentRunM = (asNumber(records[endIndex]?.distance) - asNumber(records[startIndex]?.distance)) * 1000;
+  const segmentRiseM = asNumber(shared.altitudesM[endIndex]) - asNumber(shared.altitudesM[startIndex]);
+  const avgGrade = segmentRunM > 50 && Number.isFinite(segmentRiseM)
+    ? (100 * segmentRiseM) / segmentRunM
+    : segmentGrades.length ? average(segmentGrades) : Number.NaN;
   const technical = type === 'descent'
     && avgGrade <= optionNumber(options, 'technicalGradePct', -8)
     && speedSpread >= optionNumber(options, 'technicalSpeedSpread', 0.25);
@@ -1140,8 +1206,14 @@ function summarizeSegmentRange(records, range, shared, options) {
   const powerCoveragePct = coveragePct((record) => Number.isFinite(asNumber(record.power)));
   const gradeCoveragePct = coveragePct((record, index) => Boolean(shared.gradeSamples[index]));
   const gravityFraction = estimates.length ? median(estimates.map((entry) => entry.gravityFraction)) : 0;
+  // The estimate is fit for comparison when the climb as a whole is mostly gravitational work.
+  // A few samples where the rider surged or the speed reading jumped do not spoil a long climb:
+  // demanding that every single sample be clean meant no climb longer than a minute ever passed.
+  const unsteadyShare = estimates.length
+    ? estimates.filter((entry) => entry.capped || entry.accelerationFraction > 0.2).length / estimates.length
+    : 1;
   const relativeEstimate = estimates.length > 0 && powerCoveragePct >= 80 && gradeCoveragePct >= 80
-    && gravityFraction >= 0.7 && estimates.every((entry) => !entry.capped && entry.accelerationFraction <= 0.2);
+    && gravityFraction >= 0.7 && unsteadyShare <= optionNumber(options, 'vpowerMaxUnsteadyShare', 0.1);
   const vpowerUse = estimates.length && moving
     ? relativeEstimate ? 'conditional relative comparison' : 'rough description only'
     : 'not assessed';
@@ -1312,6 +1384,63 @@ function applyRouteFrame(ranges, records, frame) {
 // Segments follow how the effort felt, not the terrain: change points of heart rate and power,
 // each piece at least a minute. The terrain only names a piece (climb, descent, flat). Returns
 // null when the ride has neither heart rate nor power to split on; the caller then uses the grade.
+// "Flat" is everything under the climb threshold, yet a road at 1-2 % is ridden and remembered as
+// a slope. The name shown says so; the type stays flat, so nothing that depends on a real climb
+// or descent (estimated power, VAM, technical descents) changes.
+const GENTLE_GRADE_PCT = 1;
+function terrainName(type, gradePct) {
+  const grade = Number(gradePct);
+  if (type !== 'flat' || gradePct == null || !Number.isFinite(grade)) return type;
+  return grade >= GENTLE_GRADE_PCT ? 'gentleClimb' : grade <= -GENTLE_GRADE_PCT ? 'gentleDescent' : 'flat';
+}
+
+// Net grade over a stretch of road around each record, from the smoothed altitude. Device
+// altitude often moves in steps of about a metre with long level stretches between them; a
+// sample-to-sample grade then reads zero or several percent and never what the road does.
+function windowedGradePct(records, altitudesM, windowM = 300) {
+  const count = records.length;
+  const distanceM = records.map((record) => asNumber(record?.distance) * 1000);
+  const grades = new Array(count).fill(Number.NaN);
+  let low = 0;
+  let high = 0;
+  for (let index = 0; index < count; index += 1) {
+    if (!Number.isFinite(distanceM[index])) continue;
+    while (low < index && distanceM[index] - distanceM[low] > windowM / 2) low += 1;
+    if (high < index) high = index;
+    while (high < count - 1 && distanceM[high] - distanceM[index] < windowM / 2) high += 1;
+    const runM = distanceM[high] - distanceM[low];
+    const rise = asNumber(altitudesM[high]) - asNumber(altitudesM[low]);
+    if (runM >= windowM / 3 && Number.isFinite(rise)) grades[index] = (100 * rise) / runM;
+  }
+  return grades;
+}
+
+// Where the road goes up or down for good, per record: 'climb', 'descent' or null. A slope is
+// entered beyond threshold + hysteresis and left inside threshold - hysteresis, like the terrain
+// states of segmentByGrade, but read from the net grade over 300 m of road.
+function slopeStates(records, altitudesM, stopped, options = {}) {
+  const threshold = optionNumber(options, 'gradeThresholdPct', 2.5);
+  const hysteresis = optionNumber(options, 'gradeHysteresisPct', 0.5);
+  const grades = windowedGradePct(records, altitudesM, optionNumber(options, 'slopeWindowM', 300));
+  const states = new Array(records.length).fill(null);
+  let state = null;
+  for (let index = 0; index < records.length; index += 1) {
+    if (stopped[index]) {
+      state = null;
+      continue;
+    }
+    const grade = grades[index];
+    if (Number.isFinite(grade)) {
+      if (state === 'descent' && grade > -(threshold - hysteresis)) state = null;
+      else if (state === 'climb' && grade < threshold - hysteresis) state = null;
+      if (state == null && grade < -(threshold + hysteresis)) state = 'descent';
+      else if (state == null && grade > threshold + hysteresis) state = 'climb';
+    }
+    states[index] = state;
+  }
+  return states;
+}
+
 function segmentByEffort(records, options = {}) {
   const stopped = new Array(records.length).fill(false);
   for (const stop of Array.isArray(options.stops) ? options.stops : []) {
@@ -1353,14 +1482,42 @@ function segmentByEffort(records, options = {}) {
     powerStepWatts: asNumber(options.effortPowerStepWatts),
     minSeconds: asNumber(options.effortMinSegmentSeconds),
   };
+  const slopes = altitudes.length ? slopeStates(records, altitudes, stopped, options) : new Array(records.length).fill(null);
+  const slopeMinSeconds = optionNumber(options, 'effortMinSegmentSeconds', 60);
+  // Which signal may cut a stretch depends on where it can be believed.
+  // Climb: power. Nearly all the work goes into lifting the mass, so even an estimate from speed
+  // and grade holds; the pulse only climbs after the effort and would cut one effort into steps.
+  // Level road: heart rate. Estimated power there is mostly air, and the wind is unknown; it
+  // jumps without the rider doing anything different. Measured power is believed everywhere.
+  const powerIsEstimated = records.some((record) => record?._powerEstimate);
+  const channelsFor = (terrain) => {
+    if (terrain === 'climb') return channels.power ? { ...channels, hr: false } : channels;
+    return powerIsEstimated && channels.hr ? { ...channels, power: false } : channels;
+  };
   const result = [];
   for (const run of merged) {
     if (run.type === 'stopped') {
       result.push({ startIndex: run.startIndex, endIndex: run.endIndex, type: 'stopped' });
       continue;
     }
-    for (const [startIndex, endIndex] of splitMovingRun(records, run.startIndex, run.endIndex, channels, config)) {
-      result.push({ startIndex, endIndex, type: terrainOf(startIndex, endIndex) });
+    // A descent is one segment however the heart rate moves on it: speed there is set by the
+    // grade and by caution, and a pulse coming down after the climb is not a change of effort.
+    // The rest of the run is split by effort, each stretch by the signal that holds there.
+    const pieces = [];
+    for (let index = run.startIndex; index <= run.endIndex; index += 1) {
+      const type = slopes[index] || 'level';
+      const last = pieces[pieces.length - 1];
+      if (last && last.type === type) last.endIndex = index;
+      else pieces.push({ startIndex: index, endIndex: index, type });
+    }
+    for (const piece of mergeShortRuns(pieces, records, slopeMinSeconds)) {
+      if (piece.type === 'descent') {
+        result.push({ startIndex: piece.startIndex, endIndex: piece.endIndex, type: 'descent' });
+        continue;
+      }
+      for (const [startIndex, endIndex] of splitMovingRun(records, piece.startIndex, piece.endIndex, channelsFor(piece.type), config)) {
+        result.push({ startIndex, endIndex, type: terrainOf(startIndex, endIndex) });
+      }
     }
   }
   return result;
@@ -2047,6 +2204,7 @@ module.exports = {
   normalizeCoordinate,
   segmentByEffort,
   segmentByGrade,
+  terrainName,
   segmentLineBudget,
   selectEffortSignal,
   selectFtpEstimate,

@@ -20,7 +20,6 @@ function registerCommands(context, services) {
     selectAnalysisModel,
     selectDatabaseFolder,
     showActivityBrowserInPanel,
-    tidyHeartRateProfiles,
     updateModelPriceTable,
   } = services;
 
@@ -73,12 +72,6 @@ function registerCommands(context, services) {
     (selection) => reanalyzeSelectedActivities(typeof selection === 'string' ? selection : undefined)
   );
 
-  const tidyHrProfiles = register(
-    'fitVisualizer.tidyHeartRateProfiles',
-    'FIT heart-rate profile tidy-up failed',
-    () => tidyHeartRateProfiles()
-  );
-
   const indexOne = register('fitVisualizer.indexOne', 'FIT DB index failed', async (resource) => {
     const targetUri = resource?.fsPath?.toLowerCase().endsWith('.fit')
       ? resource
@@ -119,7 +112,7 @@ function registerCommands(context, services) {
     }
   );
 
-  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, reanalyzeSelected, tidyHrProfiles, updateModelPrices, selectModel, customEditor];
+  return [openFit, browse, indexAll, indexNew, indexOne, addManual, reanalyzeOutdated, reanalyzeSelected, updateModelPrices, selectModel, customEditor];
 }
 
 function createFitEditorProvider(context, services) {

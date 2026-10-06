@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.29.0",
+  "version": "0.30.0",
   "description": "FIT file viewer and analyzer: charts, map, climb/descent segments, heart-rate zones, ride history and AI-assisted training analysis",
   "publisher": "AntonPetrusevich",
   "engines": {
@@ -62,10 +62,6 @@
       {
         "command": "fitVisualizer.reanalyzeSelected",
         "title": "FIT: Re-analyze Selected Activities"
-      },
-      {
-        "command": "fitVisualizer.tidyHeartRateProfiles",
-        "title": "FIT: Tidy Heart-Rate Profiles"
       },
       {
         "command": "fitVisualizer.updateModelPrices",
@@ -297,7 +293,7 @@
     }
   },
   "scripts": {
-    "check": "node --check extension.js && node --check activity-summary.js && node --check activity-webview.js && node --check altitude-quality.js && node --check analysis-summary.js && node --check activity-notes.js && node --check analysis.js && node --check chart-data.js && node --check chart-geometry.js && node --check chart-overlays.js && node --check commands.js && node --check database-schema.js && node --check dynamic-localization.js && node --check fit-files.js && node --check file-paths.js && node --check heart-rate.js && node --check llm-log.js && node --check model-pricing.js && node --check route-features.js && node --check route-match.js && node --check route-store.js && node --check route-sections.js && node --check sport-profiles.js && node --check training-context.js && node --check trend-metrics.js && node --check activity-features.js && node --check ui-strings.js && node --check utils.js && node --test test/core.test.js",
+    "check": "node --check extension.js && node --check activity-summary.js && node --check activity-webview.js && node --check altitude-quality.js && node --check analysis-summary.js && node --check activity-notes.js && node --check rider-plan.js && node --check analysis.js && node --check chart-data.js && node --check chart-geometry.js && node --check chart-overlays.js && node --check commands.js && node --check database-schema.js && node --check dynamic-localization.js && node --check fit-files.js && node --check file-paths.js && node --check heart-rate.js && node --check llm-log.js && node --check model-pricing.js && node --check route-features.js && node --check route-match.js && node --check route-store.js && node --check route-sections.js && node --check sport-profiles.js && node --check training-context.js && node --check trend-metrics.js && node --check activity-features.js && node --check ui-strings.js && node --check utils.js && node --test test/core.test.js",
     "lint": "npm run check",
     "package": "vsce package"
   },

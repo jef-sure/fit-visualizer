@@ -72,7 +72,7 @@ function applyHeartRateProfileUpsert(db, { effectiveDate, maxHeartRate, threshol
   // A flip is a return to an earlier value with a different value in between (171 -> 173 -> 171).
   if (Number.isFinite(prevMax) && Number.isFinite(nextMax) && prevMax === maxHeartRate && nextMax !== maxHeartRate
     && Math.abs(nextMax - maxHeartRate) < 5) {
-    notice = 'This maximum HR returns to a value used before and after this date. If it is not a new measurement, consider tidying the heart-rate profiles.';
+    notice = 'This maximum HR returns to a value used before and after this date. If it is not a new measurement, check the profile history below.';
   }
   return { inserted: true, notice };
 }
@@ -108,7 +108,28 @@ function planHeartRateProfileTidy(rows) {
   return { redundant, flips };
 }
 
+// A profile repeating the one before it changes nothing: the earlier one is in force until the
+// next change anyway. Such repeats (older versions wrote one on every save) are dropped when the
+// database is opened, so the history holds one entry per real change.
+function collapseDuplicateHeartRateProfiles(db) {
+  const { redundant } = planHeartRateProfileTidy(readHeartRateProfiles(db));
+  for (const date of redundant) {
+    db.run('DELETE FROM heart_rate_profiles WHERE effective_date = ?', [date]);
+  }
+  return redundant.length;
+}
+
+function deleteHeartRateProfile(db, effectiveDate) {
+  const date = String(effectiveDate || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Choose a valid effective date.');
+  db.run('DELETE FROM heart_rate_profiles WHERE effective_date = ?', [date]);
+  // Removing an entry can leave its two neighbours identical.
+  collapseDuplicateHeartRateProfiles(db);
+}
+
 module.exports = {
+  collapseDuplicateHeartRateProfiles,
+  deleteHeartRateProfile,
   applyHeartRateProfileUpsert,
   planHeartRateProfileTidy,
   readHeartRateProfiles,

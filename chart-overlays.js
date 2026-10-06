@@ -1,4 +1,4 @@
-const { asNumber, computeGrade, roundTo } = require('./utils');
+const { computeGrade, roundTo } = require('./utils');
 const { extractXYPoints } = require('./chart-data');
 const { buildTicks } = require('./chart-geometry');
 
@@ -17,11 +17,13 @@ function buildChartClientPayload(chart, xUnit, yUnit, overlays) {
 }
 
 function buildOverlayMetrics(records, maxPoints) {
-  const grades = records.some((record) => Number.isFinite(asNumber(record?.grade))) ? null : computeGrade(records);
-  const gradeSource = grades ? records.map((record, index) => ({
+  // Always computed here: the grade stored with a record was derived at import and stays as the
+  // version of that day left it, outliers included.
+  const grades = computeGrade(records);
+  const gradeSource = records.map((record, index) => ({
     ...record,
     grade: grades[index] ? grades[index].grade * 100 : null,
-  })) : records;
+  }));
   return {
     grade: extractXYPoints(gradeSource, 'distance', 'grade', maxPoints, {}),
     altitude: extractXYPoints(records, 'distance', 'altitude', maxPoints, { yTransform: (value) => value * 1000 }),

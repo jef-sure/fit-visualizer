@@ -62,11 +62,22 @@ function localDate(isoTimestamp, utcOffsetS) {
   return new Date(time + offset * 1000).toISOString().slice(0, 10);
 }
 
+// Day of the week (Mon..Sun) of a timestamp, on the local calendar when the offset is known and
+// on the UTC one otherwise - the same fallback localDate() uses.
+const WEEKDAYS = Object.freeze(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
+function localWeekday(isoTimestamp, utcOffsetS) {
+  const time = Date.parse(isoTimestamp);
+  if (!Number.isFinite(time)) return null;
+  const offset = Number(utcOffsetS);
+  return WEEKDAYS[new Date(time + (utcOffsetS != null && Number.isFinite(offset) ? offset : 0) * 1000).getUTCDay()];
+}
+
 // Local wall-clock time (HH:MM) plus a short, prompt-friendly zone label.
 function localClock(isoTimestamp, utcOffsetS) {
   const time = Date.parse(isoTimestamp);
   const offset = Number(utcOffsetS);
-  if (!Number.isFinite(time) || !Number.isFinite(offset)) {
+  // Number(null) is 0: an unknown offset must not be read as "the device was set to UTC".
+  if (utcOffsetS == null || utcOffsetS === '' || !Number.isFinite(time) || !Number.isFinite(offset)) {
     return null;
   }
   const local = new Date(time + offset * 1000);
@@ -106,6 +117,7 @@ function detectOffsetChange(activities, { windowDays = 14 } = {}) {
 }
 
 module.exports = {
+  localWeekday,
   deriveUtcOffsetS,
   detectOffsetChange,
   formatOffsetLabel,

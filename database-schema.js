@@ -1,3 +1,5 @@
+const { collapseDuplicateHeartRateProfiles } = require('./heart-rate-profiles');
+
 function ensureDatabaseSchema(db) {
   db.run(`
     CREATE TABLE IF NOT EXISTS activities (
@@ -189,6 +191,14 @@ function ensureDatabaseSchema(db) {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS rider_plan (
+      effective_date  TEXT PRIMARY KEY,
+      note            TEXT NOT NULL,
+      updated_at      TEXT
+    );
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS activity_routes (
       activity_id INTEGER PRIMARY KEY REFERENCES activities(id) ON DELETE CASCADE,
       route_id    INTEGER NOT NULL REFERENCES routes(id),
@@ -234,6 +244,14 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'athlete_profile', 'rider_mass_kg', 'REAL');
   addColumnIfMissing(db, 'athlete_profile', 'bike_mass_kg', 'REAL');
   addColumnIfMissing(db, 'athlete_profile', 'wheel_circumference_mm', 'REAL');
+  // An age saved before birth_year existed dates from the day the profile was last saved.
+  addColumnIfMissing(db, 'rider_plan', 'effective_to', 'TEXT');
+  addColumnIfMissing(db, 'athlete_profile', 'birth_year', 'INTEGER');
+  db.run(`
+    UPDATE athlete_profile
+    SET birth_year = CAST(substr(COALESCE(updated_at, date('now')), 1, 4) AS INTEGER) - CAST(age AS INTEGER)
+    WHERE birth_year IS NULL AND age IS NOT NULL
+  `);
   addColumnIfMissing(db, 'activity_analysis', 'analysis_version', 'INTEGER NOT NULL DEFAULT 1');
   addColumnIfMissing(db, 'activities', 'source', "TEXT NOT NULL DEFAULT 'fit'");
   addColumnIfMissing(db, 'activities', 'utc_offset_s', 'INTEGER');
@@ -244,6 +262,7 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'activities', 'device_elapsed_s', 'REAL');
   addColumnIfMissing(db, 'heart_rate_profiles', 'lthr', 'REAL');
   addColumnIfMissing(db, 'heart_rate_profiles', 'observed_max_source_json', 'TEXT');
+  collapseDuplicateHeartRateProfiles(db);
   addColumnIfMissing(db, 'activity_analysis', 'summary_json', 'TEXT');
   addColumnIfMissing(db, 'activity_analysis', 'model_id', 'TEXT');
   addColumnIfMissing(db, 'activity_features', 'checkpoints_json', 'TEXT');

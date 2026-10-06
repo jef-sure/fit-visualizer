@@ -3,6 +3,7 @@ const { buildSegmentContext } = require('./analysis');
 const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
 const { CONDITIONS, FEELINGS, PURPOSES } = require('./activity-notes');
+const { PLAN_NOTE_MAX_CHARS, planForDate } = require('./rider-plan');
 const { buildSummary } = require('./activity-summary');
 const { buildGpsRoute: buildGpsRouteFromModule, buildLineChart: buildLineChartFromModule } = require('./chart-model');
 const { extractGpsPoints, mapSegmentsToDistanceRanges } = require('./chart-data');
@@ -14,7 +15,7 @@ const {
   buildOverlayMetrics: buildOverlayMetricsFromModule,
   buildOverlayOptions: buildOverlayOptionsFromModule,
 } = require('./chart-overlays');
-const { computeHeartRateZones, getHeartRateZoneIndex } = require('./heart-rate');
+const { calculatePeakHeartRates, computeHeartRateZones, getHeartRateZoneIndex } = require('./heart-rate');
 const {
   addEstimatedPowerWhenMissing,
   asNumber,
@@ -24,8 +25,7 @@ const {
   formatNumber,
   normalizeRecordSpeeds,
   safeJson,
-  toDateOnly,
-} = require('./utils');
+  toDateOnly, terrainName } = require('./utils');
 
 const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = createChartSvgRenderer({
   buildDistanceMarkers,
@@ -116,7 +116,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   ].join('');
 
   const actOptions = filterable.map((a) => {
-    const label = escapeHtml(formatActivityLabel(a));
+    const label = escapeHtml(formatActivityLabel(a, ui));
     const sel = Number(a.id) === Number(selectedId) ? ' selected' : '';
     return `<option value="${escapeHtml(String(a.id))}" data-route="${escapeHtml(String(a.route_name || ''))}"${sel}>${label}</option>`;
   }).join('');
@@ -124,7 +124,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   const compOptions = [
     `<option value="" data-route="">- ${escapeHtml(ui.noComparison)} -</option>`,
     ...filterable.filter((a) => Number(a.id) !== Number(selectedId)).map((a) => {
-      const label = escapeHtml(formatActivityLabel(a));
+      const label = escapeHtml(formatActivityLabel(a, ui));
       const sel = Number(a.id) === Number(compId) ? ' selected' : '';
       return `<option value="${escapeHtml(String(a.id))}" data-route="${escapeHtml(String(a.route_name || ''))}"${sel}>${label}</option>`;
     }),
@@ -136,7 +136,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
     const compared = activities.find((a) => Number(a.id) === entry.comparedActivityId);
     return {
       comparedActivityId: entry.comparedActivityId,
-      label: compared ? formatActivityLabel(compared) : `#${entry.comparedActivityId}`,
+      label: compared ? formatActivityLabel(compared, ui) : `#${entry.comparedActivityId}`,
       comparisonText: entry.comparisonText,
       outdated: Boolean(entry.outdated),
     };
@@ -173,7 +173,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles, routeCard, qualityFlags, modelPicker)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles, routeCard, qualityFlags, modelPicker, locale)
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
   const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
@@ -313,11 +313,11 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
 </html>`;
 }
 
-function formatActivityLabel(a) {
+function formatActivityLabel(a, ui) {
   const dt = parseActivityTime(a.start_time || a.file_name);
   const dateStr = dt ? dt.toLocaleString(vscode.env.language || 'en', { dateStyle: 'short', timeStyle: 'short' }) : (a.file_name || String(a.id));
   const sport = a.sport || '';
-  const dist = a.total_distance_km ? `${Number(a.total_distance_km).toFixed(1)} km` : '';
+  const dist = a.total_distance_km ? `${Number(a.total_distance_km).toFixed(1)} ${ui?.kilometers || 'km'}` : '';
   const dur = a.total_timer_s ? formatHms(Number(a.total_timer_s)) : '';
   return [dateStr, sport, dist, dur].filter(Boolean).join(' · ');
 }
@@ -328,11 +328,11 @@ function renderActivityTable(segments, laps, ui) {
   const lapRows = (Array.isArray(laps) ? laps : []).map((lap, index) => ({
     label: String(index + 1),
     time: formatDuration(lap.total_timer_time ?? lap.total_elapsed_time),
-    distance: displayNumber(lap.total_distance, ' km', 2),
-    heartRate: displayNumber(lap.avg_heart_rate ?? lap.avg_hr, ' bpm', 0),
-    power: displayNumber(lap.avg_power, ' W', 0),
+    distance: displayNumber(lap.total_distance, ` ${ui.kilometers}`, 2),
+    heartRate: displayNumber(lap.avg_heart_rate ?? lap.avg_hr, ` ${ui.beatsPerMinute}`, 0),
+    power: displayNumber(lap.avg_power, ` ${ui.wattsShort}`, 0),
     grade: displayNumber(lap.avg_grade, '%', 1),
-    elevation: Number(lap.total_ascent) > 0 ? displayNumber(lap.total_ascent, ' m', 0, '+') : '',
+    elevation: Number(lap.total_ascent) > 0 ? displayNumber(lap.total_ascent, ` ${ui.meters}`, 0, '+') : '',
   }));
   const lapColumns = [['label', ui.lap], ['time', ui.time], ['distance', ui.distance], ['heartRate', ui.heartRate], ['power', ui.power], ['grade', ui.grade], ['elevation', ui.elevation]];
   const renderRows = (rows, name, hidden, columns) => {
@@ -343,7 +343,14 @@ function renderActivityTable(segments, laps, ui) {
   if (!segmentRows.length) return '';
   const tabs = lapRows.length ? `<div class="activityTableTabs"><button type="button" data-activity-table-tab="segments" aria-pressed="true">${escapeHtml(ui.segments)}</button><button type="button" data-activity-table-tab="laps" aria-pressed="false">${escapeHtml(ui.laps)}</button></div>` : '';
   const segmentView = renderGroupedSegmentRows(segmentRows, ui);
-  return `<section class="chart"><h2>${escapeHtml(lapRows.length ? ui.segments : ui.segment)}</h2><div id="segmentBudgetWarning" class="mapHint" style="display:none"></div>${tabs}${segmentView}${lapRows.length ? renderRows(lapRows, 'laps', true, lapColumns) : ''}</section>`;
+  return `<section class="chart"><h2>${escapeHtml(ui.segments)}</h2><div id="segmentBudgetWarning" class="mapHint" style="display:none"></div>${tabs}${segmentView}${lapRows.length ? renderRows(lapRows, 'laps', true, lapColumns) : ''}</section>`;
+}
+
+// The row of short stops in the interface language; the prompt keeps its own English line.
+function shortStopsText(row, ui) {
+  const stops = row?.shortStops;
+  if (!stops) return '';
+  return String(ui.shortStopsSummary || '').replace('{0}', String(stops.count)).replace('{1}', stops.total).replace('{2}', stops.longest);
 }
 
 function renderGroupedSegmentRows(rows, ui) {
@@ -355,7 +362,7 @@ function renderGroupedSegmentRows(rows, ui) {
     if (segment?.stretchIndex == null || segment.stretchIndex === openStretch) return '';
     openStretch = segment.stretchIndex;
     const km = (value) => (Math.round(Number(value) * 10) / 10).toString();
-    const terrain = ui[segment.type === 'stopped' ? 'flat' : segment.type] || '';
+    const terrain = ui[terrainName(segment.type === 'stopped' ? 'flat' : segment.type, segment.stretchGradePct)] || '';
     const label = `${ui.routeStretch} ${openStretch + 1}: km ${km(segment.stretchFromKm)}–${km(segment.stretchToKm)}`;
     const grade = Number.isFinite(Number(segment.stretchGradePct)) && segment.type !== 'stopped' ? `, ${terrain} ${displayNumber(segment.stretchGradePct, '%', 1)}` : '';
     return `<tr class="segmentStretchRow"><td colspan="9">${escapeHtml(label + grade)}</td></tr>`;
@@ -363,29 +370,35 @@ function renderGroupedSegmentRows(rows, ui) {
   const body = rows.map((row) => {
     const members = Array.isArray(row.members) ? row.members : [];
     if (members.length !== 1) {
-      return `${stretchHeading(members[0])}<tr class="segmentSummaryRow"><td>${escapeHtml(row.number)}</td><td colspan="8">${escapeHtml(row.details)}</td></tr>`;
+      return `${stretchHeading(members[0])}<tr class="segmentSummaryRow"><td>${escapeHtml(row.number)}</td><td colspan="8">${escapeHtml(shortStopsText(row, ui) || row.details)}</td></tr>`;
     }
     const segment = members[0];
-    const terrain = segment.technical ? ui.technical : (ui[segment.type] || ui.segment);
+    const terrain = segment.technical ? ui.technical : (ui[terrainName(segment.type, segment.avgGrade)] || ui.segment);
     const elevation = segment.type === 'climb' && Number(segment.elevGainM) > 0
-      ? displayNumber(segment.elevGainM, ' m', 0, '+') : '';
-    return `${stretchHeading(segment)}<tr><td>${escapeHtml(row.number)}</td><td>${escapeHtml(row.time)}</td><td>${escapeHtml(rangeDistance(segment))}</td><td>${escapeHtml(terrain)}</td><td>${escapeHtml(displayNumber(segment.avgGrade, '%', 1))}</td><td>${displaySegmentEffort(segment, ui)}</td><td>${escapeHtml(displayNumber(segment.avgHr, ' bpm', 0))}</td><td>${escapeHtml(displayNumber(segment.avgSpeedKmh, ' km/h', 1))}</td><td>${escapeHtml(elevation)}</td></tr>`;
+      ? displayNumber(segment.elevGainM, ` ${ui.meters}`, 0, '+') : '';
+    return `${stretchHeading(segment)}<tr><td>${escapeHtml(row.number)}</td><td>${escapeHtml(row.time)}</td><td>${escapeHtml(rangeDistance(segment, ui))}</td><td>${escapeHtml(terrain)}</td><td>${escapeHtml(displayNumber(segment.avgGrade, '%', 1))}</td><td>${displaySegmentEffort(segment, ui)}</td><td>${escapeHtml(displayNumber(segment.avgHr, ` ${ui.beatsPerMinute}`, 0))}</td><td>${escapeHtml(displayNumber(segment.avgSpeedKmh, ` ${ui.kilometersPerHour}`, 1))}</td><td>${escapeHtml(elevation)}</td></tr>`;
   }).join('');
   return `<div class="activityTableWrap" data-activity-table="segments"><table class="activityTable"><thead><tr>${headings.map((heading) => `<th>${escapeHtml(heading)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function displaySegmentEffort(segment, ui) {
   if (segment.type === 'descent' || segment.type === 'stopped' || !Number.isFinite(Number(segment.avgPower))) return '';
-  if (segment.effortBasis === 'power') return escapeHtml(`${ui.power} ${Math.round(Number(segment.avgPower))} W`);
-  if (segment.effortBasis === 'vpower') return escapeHtml(`${ui.virtualPower} ${Math.round(Number(segment.avgPower))} W`);
+  if (segment.effortBasis === 'power') return escapeHtml(`${ui.power} ${Math.round(Number(segment.avgPower))} ${ui.wattsShort}`);
+  if (segment.effortBasis === 'vpower') return escapeHtml(`${ui.virtualPower} ${Math.round(Number(segment.avgPower))} ${ui.wattsShort}`);
   // A climb's motion-estimate was computed but did not clear the checks for a comparable number
   // (coverage, gravity share, a capped or accelerating sample); say so instead of a silent blank,
   // so a neighbouring segment at the same grade showing vPower does not look like a mistake.
-  if (segment.type === 'climb' && segment.vpowerUse && segment.vpowerUse !== 'not assessed') {
-    const title = formatUi(ui.vpowerNotUsedTitle, Math.round(Number(segment.avgPower)));
-    return `<span class="term" title="${escapeHtml(title)}">${escapeHtml(ui.vpowerNotUsedBadge)}</span>`;
-  }
-  return '';
+  // An estimate that is not trusted is still shown, small and muted, with the reason on hover: a
+  // blank cell hid that a number exists, and "n/a" hid the number itself. Heart rate stays the
+  // measure of effort for these segments; nothing here goes to the analysis.
+  if (segment.technical || !segment.vpowerUse || segment.vpowerUse === 'not assessed') return '';
+  // Only where the road goes up: a climb, or a gentle climb. On level road and on a gentle
+  // descent the estimate swings from tens to hundreds of watts with the wind and says nothing.
+  const gentleClimb = terrainName(segment.type, segment.avgGrade) === 'gentleClimb';
+  if (segment.type !== 'climb' && !gentleClimb) return '';
+  const watts = Math.round(Number(segment.avgPower));
+  const title = formatUi(segment.type === 'climb' ? ui.vpowerNotUsedTitle : ui.vpowerGentleClimbTitle, watts);
+  return `<span class="term effortRough" title="${escapeHtml(title)}">≈${watts} ${escapeHtml(ui.wattsShort)}</span>`;
 }
 
 function positiveNumberOrBlank(value) {
@@ -398,10 +411,10 @@ function formatDuration(value) {
   return Number.isFinite(seconds) && seconds >= 0 ? formatHms(seconds) : '';
 }
 
-function rangeDistance(segment) {
+function rangeDistance(segment, ui) {
   if (segment?.type === 'stopped') return '';
   const distance = Number(segment.endDistanceKm) - Number(segment.startDistanceKm);
-  return Number.isFinite(distance) && distance >= 0 ? `${distance.toFixed(2)} km` : '';
+  return Number.isFinite(distance) && distance >= 0 ? `${distance.toFixed(2)} ${ui?.kilometers || 'km'}` : '';
 }
 
 function displayNumber(value, suffix, digits, prefix = '') {
@@ -453,6 +466,91 @@ const PURPOSE_UI = { commute: 'purposeCommute', endurance: 'purposeEndurance', t
 const FEELING_UI = { fresh: 'feelingFresh', normal: 'feelingNormal', tired: 'feelingTired', ill: 'feelingIll' };
 const CONDITION_UI = { headwind: 'condHeadwind', tailwind: 'condTailwind', rain: 'condRain', heat: 'condHeat', cold: 'condCold', group: 'condGroup', traffic: 'condTraffic', night: 'condNight', new_route: 'condNewRoute' };
 
+// Dates are shown and typed the way the interface language writes them (31.12.2026 in Russian,
+// 12/31/2026 in US English). A native date field cannot be used for that: its format comes from
+// the system locale, not from the language of the editor. The order and separators are taken
+// from the formatter itself and handed to the page script, which formats and parses with them.
+function localeDateParts(language) {
+  const iso = [{ field: 'year' }, { literal: '-' }, { field: 'month' }, { literal: '-' }, { field: 'day' }];
+  try {
+    const parts = new Intl.DateTimeFormat(language || 'en', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'UTC' })
+      .formatToParts(new Date(Date.UTC(2026, 11, 31)))
+      .map((part) => (['year', 'month', 'day'].includes(part.type) ? { field: part.type } : { literal: part.value }));
+    const fields = parts.filter((part) => part.field).map((part) => part.field).sort().join(',');
+    return fields === 'day,month,year' ? parts : iso;
+  } catch {
+    return iso;
+  }
+}
+
+function formatLocaleDate(isoDate, parts) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(isoDate || ''));
+  if (!match) return String(isoDate || '');
+  const values = { year: match[1], month: match[2], day: match[3] };
+  return parts.map((part) => (part.field ? values[part.field] : part.literal)).join('');
+}
+
+// Every dated zone profile in order, the one in force for this ride marked. "Edit" loads an entry
+// into the form below; "Delete" asks the extension, which confirms before removing it.
+function renderHeartRateProfileHistory(profiles, ui, currentDate, dateParts) {
+  const list = (Array.isArray(profiles) ? profiles : []).slice().sort((a, b) => String(a.effective_date).localeCompare(String(b.effective_date)));
+  if (!list.length) return '';
+  const number = (value) => (value != null && Number.isFinite(Number(value)) ? Math.round(Number(value)) : '');
+  const rows = list.map((row) => {
+    const zones = [row.zone2_start, row.zone3_start, row.zone4_start, row.zone5_start].map(number);
+    const lthr = number(row.lthr);
+    return `<li style="margin:0 0 4px 0;">
+          <strong>${escapeHtml(formatUi(ui.riderPlanFrom, formatLocaleDate(row.effective_date, dateParts)))}</strong>: ${escapeHtml(formatUi(ui.hrProfileRow, number(row.max_hr), zones.join(' / ')))}${lthr !== '' ? `, ${escapeHtml(formatUi(ui.hrProfileLthr, lthr))}` : ''}${row.effective_date === currentDate ? ` <span style="color:var(--accent);font-size:0.82rem;">(${escapeHtml(ui.riderPlanInForce)})</span>` : ''}
+          <button type="button" class="hrProfileEdit" data-date="${escapeHtml(row.effective_date)}" data-max="${number(row.max_hr)}" data-zones="${zones.join(',')}" data-lthr="${lthr}" style="margin-left:8px;padding:1px 8px;font-size:0.8rem;">${escapeHtml(ui.riderPlanEdit)}</button>
+          <button type="button" class="hrProfileDelete" data-date="${escapeHtml(row.effective_date)}" style="padding:1px 8px;font-size:0.8rem;">${escapeHtml(ui.hrProfileDelete)}</button>
+        </li>`;
+  }).join('');
+  return `<div class="mapHint" style="margin:0 0 4px 0;">${escapeHtml(ui.hrProfileHistory)}</div><ul style="list-style:none;padding:0;margin:0 0 10px 0;">${rows}</ul>`;
+}
+
+// The rider's dated plan: every entry in order, the one in force on the day of this ride marked,
+// and one form that adds an entry or - through "Edit" - rewrites the entry of a date.
+function renderRiderPlanCard(entries, ui, mapId, activityDate, dateParts) {
+  const list = (Array.isArray(entries) ? entries : []).slice().sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+  const { current } = planForDate(list, activityDate);
+  const sample = formatLocaleDate('2026-12-31', dateParts);
+  const rows = list.map((entry) => {
+    const span = entry.effectiveTo
+      ? formatUi(ui.riderPlanFromTo, formatLocaleDate(entry.effectiveDate, dateParts), formatLocaleDate(entry.effectiveTo, dateParts))
+      : formatUi(ui.riderPlanFrom, formatLocaleDate(entry.effectiveDate, dateParts));
+    // A plan with an end date that has passed is over; it is said so instead of being marked
+    // as the plan of a ride it no longer covers.
+    const over = entry.effectiveTo && activityDate && entry.effectiveTo < activityDate;
+    const mark = entry === current ? ui.riderPlanInForce : over ? ui.riderPlanOver : '';
+    return `<li style="margin:0 0 6px 0;">
+          <strong>${escapeHtml(span)}</strong>${mark ? ` <span style="color:var(--${entry === current ? 'accent' : 'muted'});font-size:0.82rem;">(${escapeHtml(mark)})</span>` : ''}
+          <button type="button" class="riderPlanEdit" data-date="${escapeHtml(entry.effectiveDate)}" data-to="${escapeHtml(entry.effectiveTo || '')}" data-note="${escapeHtml(entry.note)}" style="margin-left:8px;padding:1px 8px;font-size:0.8rem;">${escapeHtml(ui.riderPlanEdit)}</button>
+          <div style="white-space:pre-wrap;">${escapeHtml(entry.note)}</div>
+        </li>`;
+  }).join('');
+  return `<section class="chart manualData">
+      <h2>${escapeHtml(ui.riderPlanSection)}</h2>
+      ${rows ? `<ul id="${mapId}RiderPlanList" style="list-style:none;padding:0;margin:0 0 10px 0;">${rows}</ul>` : ''}
+      <form id="${mapId}RiderPlanForm" class="manualDataForm">
+        <label>
+          <span>${escapeHtml(ui.riderPlanFromLabel)}</span>
+          <input id="${mapId}RiderPlanDate" type="text" inputmode="numeric" maxlength="12" placeholder="${escapeHtml(sample)}" title="${escapeHtml(sample)}" value="${escapeHtml(formatLocaleDate(activityDate || '', dateParts))}" required>
+        </label>
+        <label>
+          <span>${escapeHtml(ui.riderPlanToLabel)}</span>
+          <input id="${mapId}RiderPlanTo" type="text" inputmode="numeric" maxlength="12" placeholder="${escapeHtml(sample)}" title="${escapeHtml(sample)}" value="">
+        </label>
+        <label style="flex:1 1 100%;">
+          <span>${escapeHtml(ui.riderPlanNoteLabel)}</span>
+          <textarea id="${mapId}RiderPlanNote" rows="2" maxlength="${PLAN_NOTE_MAX_CHARS}" style="width:100%;box-sizing:border-box;" placeholder="${escapeHtml(ui.riderPlanPlaceholder)}"></textarea>
+        </label>
+        <button type="submit">${escapeHtml(ui.saveRiderPlan)}</button>
+        <span id="${mapId}RiderPlanStatus" class="manualDataStatus"></span>
+      </form>
+      <div class="mapHint">${escapeHtml(ui.riderPlanHint)}</div>
+    </section>`;
+}
+
 function renderSessionNotesCard(notes, ui, mapId, inferred = null, knownGoals = []) {
   // Merge field by field: user-declared values win, the model's inference fills only what the
   // user left blank (purpose/conditions; RPE, feeling and the note are never inferred).
@@ -468,7 +566,7 @@ function renderSessionNotesCard(notes, ui, mapId, inferred = null, knownGoals = 
   const options = (values, uiKeys, selected) => `<option value=""${selected ? '' : ' selected'}>${escapeHtml(ui.select)}</option>`
     + values.map((value) => `<option value="${value}"${selected === value ? ' selected' : ''}>${escapeHtml(ui[uiKeys[value]])}</option>`).join('');
   const rpeOptions = `<option value=""${effective?.rpe ? '' : ' selected'}>${escapeHtml(ui.select)}</option>`
-    + Array.from({ length: 10 }, (_, index) => `<option value="${index + 1}"${effective?.rpe === index + 1 ? ' selected' : ''}>${index + 1}</option>`).join('');
+    + Array.from({ length: 10 }, (_, index) => `<option value="${index + 1}"${effective?.rpe === index + 1 ? ' selected' : ''}>${index + 1}${index === 0 ? ' — ' + escapeHtml(ui.rpeEasiest) : index === 9 ? ' — ' + escapeHtml(ui.rpeHardest) : ''}</option>`).join('');
   const conditions = CONDITIONS.map((value) => `<label style="display:flex;gap:4px;align-items:center;">
             <input type="checkbox" name="${mapId}Condition" value="${value}" style="width:auto;"${effective?.conditions?.includes(value) ? ' checked' : ''}>
             <span>${escapeHtml(ui[CONDITION_UI[value]])}</span>
@@ -590,7 +688,8 @@ function renderRouteCard(route, ui, mapId) {
       if (shapeRows.length) shapeRows[shapeRows.length - 1].point = formatUi(ui.routeShapePoint, number(item.km), item.minKmh, item.sharePct);
       continue;
     }
-    const terrain = `${ui[item.type] || item.type}${item.type === 'flat' ? '' : ` ${number(item.gradePct)}%`}`;
+    const terrainKey = terrainName(item.type, item.gradePct);
+    const terrain = `${ui[terrainKey] || item.type}${terrainKey === 'flat' ? '' : ` ${number(item.gradePct)}%`}`;
     const usual = item.kmh == null ? '' : `, ${item.hr != null ? formatUi(ui.routeShapeUsuallyHr, number(item.kmh), item.hr) : formatUi(ui.routeShapeUsually, number(item.kmh))}`;
     shapeRows.push({ range: formatUi(ui.routeShapeRange, number(item.fromKm), number(item.toKm)), text: terrain + usual, point: null });
   }
@@ -629,7 +728,7 @@ function renderRouteCard(route, ui, mapId) {
     </section>`;
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm', routeCard = null, qualityFlags = [], modelPicker = null) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm', routeCard = null, qualityFlags = [], modelPicker = null, dateLocale = null) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -669,31 +768,39 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const altitudeChart = buildLineChartFromModule(records, 'distance', 'altitude', 1400, 380, chartPointBudget, { yTransform: (v) => v * 1000, compRecords: hasOverlay ? compRecords : [] });
   const overlayMetrics = buildOverlayMetricsFromModule(records, chartPointBudget);
   const overlayLabels = { grade: ui.grade, altitude: ui.altitude, speed: ui.speed, heart_rate: ui.heartRate };
-  const overlayUnits = { speed: ui.kilometersPerHour, heart_rate: ui.beatsPerMinute };
+  const overlayUnits = { speed: ui.kilometersPerHour, heart_rate: ui.beatsPerMinute, altitude: ui.meters };
   const speedOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'speed', overlayLabels, overlayUnits);
   const hrOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'heart_rate', overlayLabels, overlayUnits);
   const altitudeOverlays = buildOverlayOptionsFromModule(overlayMetrics, 'altitude', overlayLabels, overlayUnits);
   const segmentPresentation = buildSegmentContext(segments);
   const presentationByIndex = new Map();
   segmentPresentation.displayRows.forEach((row, index) => row.members.forEach((segment) => {
-    presentationByIndex.set(segment.index, { time: row.time, details: row.details, index, color: segmentColor(index) });
+    presentationByIndex.set(segment.index, { time: row.time, details: shortStopsText(row, ui) || row.details, index, color: segmentColor(index), shortStops: Boolean(row.shortStops) });
   }));
   const presentationSegments = (Array.isArray(segments) ? segments : []).map((segment) => ({
     ...segment,
     displayTime: presentationByIndex.get(segment.index)?.time || '',
     displayDetails: presentationByIndex.get(segment.index)?.details || '',
     displayIndex: presentationByIndex.get(segment.index)?.index ?? -1,
+    displayShortStops: presentationByIndex.get(segment.index)?.shortStops || false,
     displayColor: presentationByIndex.get(segment.index)?.color || '#7f8c8d',
   }));
   const chartSegments = mapSegmentsToDistanceRanges(presentationSegments, records);
   const segmentTooltipPayload = safeJson(chartSegments);
   const activityTable = renderActivityTable(chartSegments, fitData.laps, ui);
   const chartClientPayloads = safeJson({
-    [mapId + 'SpeedSvg']: buildChartClientPayloadFromModule(speedChart, 'km', ui.kilometersPerHour, speedOverlays),
-    [mapId + 'HrSvg']: buildChartClientPayloadFromModule(hrChart, 'km', ui.beatsPerMinute, hrOverlays),
-    [mapId + 'AltSvg']: buildChartClientPayloadFromModule(altitudeChart, 'km', 'm', altitudeOverlays),
+    [mapId + 'SpeedSvg']: buildChartClientPayloadFromModule(speedChart, ui.kilometers, ui.kilometersPerHour, speedOverlays),
+    [mapId + 'HrSvg']: buildChartClientPayloadFromModule(hrChart, ui.kilometers, ui.beatsPerMinute, hrOverlays),
+    [mapId + 'AltSvg']: buildChartClientPayloadFromModule(altitudeChart, ui.kilometers, ui.meters, altitudeOverlays),
   });
-  const hrZones = computeHeartRateZones(records, hrConfig?.maxHeartRate, hrConfig?.thresholds, { restingHeartRate: athleteProfile?.restingHeartRate });
+  // Without a profile the page still shows zones, counted from the highest heart rate held for
+  // 15 s in this very recording. They are a preview for looking at the ride: labelled as such,
+  // not stored, and never part of the derived data or of a prompt.
+  const hasProfileMax = Number.isFinite(Number(hrConfig?.maxHeartRate)) && Number(hrConfig.maxHeartRate) > 0;
+  const provisionalMaxHr = hasProfileMax ? null : (calculatePeakHeartRates(records, [15])[0]?.bpm ?? null);
+  const hrZones = hasProfileMax
+    ? computeHeartRateZones(records, hrConfig.maxHeartRate, hrConfig.thresholds, { restingHeartRate: athleteProfile?.restingHeartRate })
+    : { ...computeHeartRateZones(records, Number(provisionalMaxHr), null), provisional: provisionalMaxHr != null };
   // Heart rate keeps its zone colors wherever it is drawn, not only on its own chart.
   if (hrZones.enabled && Array.isArray(hrZones.thresholds) && hrZones.thresholds.length >= 4) {
     for (const overlays of [speedOverlays, altitudeOverlays]) {
@@ -711,6 +818,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const avgHrValue = positiveNumberOrBlank(activitySession.avg_hr);
   const maxHrValue = positiveNumberOrBlank(activitySession.max_hr);
   const activityDate = toDateOnly(activitySession.start_time) || '';
+  // `language` is a display name ("Russian") for the translation offer; dates need the locale code.
+  const dateParts = localeDateParts(String(dateLocale || vscode.env.language || 'en').replace(/_/g, '-'));
   const profileMaxHr = positiveNumberOrBlank(hrConfig?.maxHeartRate);
   const profileThresholds = Array.isArray(hrConfig?.thresholds) ? hrConfig.thresholds : [];
   const athleteSexValue = escapeHtml(athleteProfile?.sex || '');
@@ -785,6 +894,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       </div>` : '';
 
   const routeCardHtml = routeCard && !isComparison ? renderRouteCard(routeCard, ui, mapId) : '';
+  const riderPlanCardHtml = isComparison ? '' : renderRiderPlanCard(fitData.riderPlan, ui, mapId, activityDate, dateParts);
   const notesCardHtml = isComparison ? '' : renderSessionNotesCard(fitData.sessionNotes, ui, mapId, fitData.inferredNotes, fitData.knownGoals);
 
   // The analysis-model picker. It shows the model that produced the analysis on screen (when it
@@ -829,8 +939,6 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     ${primaryPower.source === 'estimated' ? `<section style="padding:12px;margin-bottom:16px;background:rgba(255,193,7,0.1);border-left:4px solid #ffc107;color:var(--ink);font-size:0.95rem;line-height:1.5;">
       <strong>${escapeHtml(ui.dataQualityNoteTitle)}</strong> ${escapeHtml(ui.dataQualityNote)}
     </section>` : ''}
-    ${notesCardHtml}
-    ${routeCardHtml}
     <section class="chart manualData">
       <h2>${escapeHtml(ui.manualActivityData)}</h2>
       <form id="${mapId}ManualDataForm" class="manualDataForm">
@@ -849,10 +957,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     </section>
     <section class="chart manualData">
       <h2>${escapeHtml(ui.heartRateZoneProfile)}</h2>
+      ${isComparison ? '' : renderHeartRateProfileHistory(fitData.hrProfiles, ui, hrConfig?.effectiveDate, dateParts)}
       <form id="${mapId}HrProfileForm" class="manualDataForm">
         <label>
           <span>${escapeHtml(ui.effectiveFrom)}</span>
-          <input id="${mapId}HrEffectiveDate" type="date" value="${escapeHtml(activityDate)}" required>
+          <input id="${mapId}HrEffectiveDate" type="text" inputmode="numeric" maxlength="12" placeholder="${escapeHtml(formatLocaleDate('2026-12-31', dateParts))}" title="${escapeHtml(formatLocaleDate('2026-12-31', dateParts))}" value="${escapeHtml(formatLocaleDate(activityDate, dateParts))}" required>
         </label>
         <label>
           <span>${escapeHtml(ui.maximumHeartRate)}</span>
@@ -905,7 +1014,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         <span id="${mapId}HrProfileStatus" class="manualDataStatus"></span>
       </form>
       ${wheelCalibrationHint}
-      <div class="mapHint">${escapeHtml(ui.autoCalcInfo)}${hrConfig?.effectiveDate ? ` ${escapeHtml(ui.currentlyApplied)} ${escapeHtml(hrConfig.effectiveDate)}.` : ''}</div>
+      <div class="mapHint">${escapeHtml(ui.autoCalcInfo)}${hrConfig?.effectiveDate ? ` ${escapeHtml(ui.currentlyApplied)} ${escapeHtml(formatLocaleDate(hrConfig.effectiveDate, dateParts))}.` : ''}</div>
     </section>
     <section class="chart resizable" data-resize-target="${mapId}SpeedSvg" data-resize-key="fitviz_speed_height" data-min-height="200" data-max-height="1200">
       <h2>${escapeHtml(ui.speedVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
@@ -927,9 +1036,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     </section>
     <section class="chart resizable" data-resize-target="${mapId}AltSvg" data-resize-key="fitviz_alt_height" data-min-height="200" data-max-height="1200">
       <h2>${escapeHtml(ui.altitudeVsDistance)}${hasOverlay ? ' <span class="compLegend">- ' + escapeHtml(ui.primary) + ' / ' + escapeHtml(ui.comparison) + '</span>' : ''}</h2>
-      ${renderStatsRow(altitudeChart.stats, 'm', false, ui)}${hasOverlay && altitudeChart.compStats ? renderStatsRow(altitudeChart.compStats, 'm', true, ui) : ''}
+      ${renderStatsRow(altitudeChart.stats, ui.meters, false, ui)}${hasOverlay && altitudeChart.compStats ? renderStatsRow(altitudeChart.compStats, ui.meters, true, ui) : ''}
       ${altitudeChart.points.length >= 2 ? renderOverlayControls(mapId + 'AltSvg', altitudeOverlays) : ''}
-      ${renderScaledLineChartSvg(altitudeChart, 'lineC', ui.distanceKm, ui.elevationGainM, true, { svgId: mapId + 'AltSvg', segmentBands: chartSegments })}
+      ${renderScaledLineChartSvg(altitudeChart, 'lineC', ui.distanceKm, ui.altitudeM, true, { svgId: mapId + 'AltSvg', segmentBands: chartSegments })}
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
@@ -960,6 +1069,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
       <div class="resizeHandle resizeHandleBottomRight" data-anchor="bottom-right" aria-label="Resize panel from bottom-right"></div>
     </section>
+    ${routeCardHtml}
+    ${riderPlanCardHtml}
+    ${notesCardHtml}
     <section class="chart">
       <h2>${escapeHtml(ui.aiAnalysis)}</h2>
       <div id="analysisProgress" class="analysisProgress" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>${escapeHtml(ui.analysisProgress)}</span></div>
@@ -992,6 +1104,23 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   <script nonce="${nonce}">
     (function () {
       const ui = ${safeJson(ui)};
+      // Dates travel to the extension as YYYY-MM-DD and are shown in the order of the interface language.
+      const dateParts = ${safeJson(dateParts)};
+      function showDate(isoDate) {
+        const bits = String(isoDate || '').split('-');
+        if (bits.length !== 3) return String(isoDate || '');
+        const values = { year: bits[0], month: bits[1], day: bits[2] };
+        return dateParts.map((part) => (part.field ? values[part.field] : part.literal)).join('');
+      }
+      function readDate(fieldId) {
+        const numbers = String(document.getElementById(fieldId)?.value || '').split(/[^0-9]+/).filter(Boolean);
+        const fields = dateParts.filter((part) => part.field).map((part) => part.field);
+        if (numbers.length !== 3) return '';
+        const values = {};
+        fields.forEach((field, index) => { values[field] = numbers[index]; });
+        if (values.year.length !== 4) return '';
+        return values.year + '-' + values.month.padStart(2, '0') + '-' + values.day.padStart(2, '0');
+      }
       function formatMessage(template) {
         const values = Array.prototype.slice.call(arguments, 1);
         // The page script sits inside a template literal: every backslash here must be doubled.
@@ -1023,6 +1152,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       const manualDataStatus = document.getElementById('${mapId}ManualDataStatus');
       const notesForm = document.getElementById('${mapId}NotesForm');
       const notesStatus = document.getElementById('${mapId}NotesStatus');
+      const riderPlanForm = document.getElementById('${mapId}RiderPlanForm');
+      const riderPlanStatus = document.getElementById('${mapId}RiderPlanStatus');
       const routeForm = document.getElementById('${mapId}RouteForm');
       const routeStatus = document.getElementById('${mapId}RouteStatus');
       const hrProfileForm = document.getElementById('${mapId}HrProfileForm');
@@ -1225,6 +1356,11 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             notesStatus.textContent = msg.error;
             notesStatus.classList.add('error');
           }
+        } else if (msg.type === 'riderPlanError') {
+          if (riderPlanStatus) {
+            riderPlanStatus.textContent = msg.error;
+            riderPlanStatus.classList.add('error');
+          }
         } else if (msg.type === 'routeError') {
           if (routeStatus) {
             routeStatus.textContent = msg.error;
@@ -1287,7 +1423,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           type: 'autoCalculateHeartRateProfile',
           id: window.currentActivityId,
           compId: document.getElementById('compSel')?.value || null,
-          effectiveDate: document.getElementById('${mapId}HrEffectiveDate').value,
+          effectiveDate: readDate('${mapId}HrEffectiveDate'),
           sex: document.getElementById('${mapId}AthleteSex').value,
           age: document.getElementById('${mapId}AthleteAge').value,
           restingHr: document.getElementById('${mapId}AthleteRestingHr').value,
@@ -1350,6 +1486,54 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         });
       });
 
+      // A profile from the history is loaded into the form; saving it under its date rewrites it.
+      document.querySelectorAll('.hrProfileEdit').forEach((button) => {
+        button.addEventListener('click', () => {
+          document.getElementById('${mapId}HrEffectiveDate').value = showDate(button.dataset.date || '');
+          document.getElementById('${mapId}ProfileMaxHr').value = button.dataset.max || '';
+          (button.dataset.zones || '').split(',').forEach((value, index) => {
+            document.getElementById('${mapId}Zone' + (index + 2) + 'Start').value = value;
+          });
+          document.getElementById('${mapId}ProfileLthr').value = button.dataset.lthr || '';
+          document.getElementById('${mapId}ProfileMaxHr').focus();
+        });
+      });
+      document.querySelectorAll('.hrProfileDelete').forEach((button) => {
+        button.addEventListener('click', () => {
+          vscode.postMessage({
+            type: 'deleteHeartRateProfile',
+            id: window.currentActivityId,
+            compId: document.getElementById('compSel')?.value || null,
+            effectiveDate: button.dataset.date,
+          });
+        });
+      });
+
+      // "Edit" loads an entry into the form; saving it under the same date rewrites that entry.
+      document.querySelectorAll('.riderPlanEdit').forEach((button) => {
+        button.addEventListener('click', () => {
+          document.getElementById('${mapId}RiderPlanDate').value = showDate(button.dataset.date || '');
+          document.getElementById('${mapId}RiderPlanTo').value = button.dataset.to ? showDate(button.dataset.to) : '';
+          const note = document.getElementById('${mapId}RiderPlanNote');
+          note.value = button.dataset.note || '';
+          note.focus();
+        });
+      });
+      riderPlanForm?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        riderPlanStatus.textContent = ui.saving;
+        riderPlanStatus.classList.remove('error');
+        vscode.postMessage({
+          type: 'updateRiderPlan',
+          id: window.currentActivityId,
+          compId: document.getElementById('compSel')?.value || null,
+          effectiveDate: readDate('${mapId}RiderPlanDate'),
+          // An end date typed but not understood must be refused, not silently dropped.
+          effectiveTo: document.getElementById('${mapId}RiderPlanTo').value.trim() ? (readDate('${mapId}RiderPlanTo') || 'invalid') : '',
+          note: document.getElementById('${mapId}RiderPlanNote').value,
+        });
+      });
+
       routeForm?.addEventListener('submit', (event) => {
         event.preventDefault();
         routeStatus.textContent = ui.saving;
@@ -1372,7 +1556,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           type: 'updateHeartRateProfile',
           id: window.currentActivityId,
           compId: document.getElementById('compSel')?.value || null,
-          effectiveDate: document.getElementById('${mapId}HrEffectiveDate').value,
+          effectiveDate: readDate('${mapId}HrEffectiveDate'),
           maxHr: document.getElementById('${mapId}ProfileMaxHr').value,
           thresholds: [2, 3, 4, 5].map((zone) => document.getElementById('${mapId}Zone' + zone + 'Start').value),
           lthr: document.getElementById('${mapId}ProfileLthr').value,
@@ -1563,23 +1747,28 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             + escapeSegmentHtml(segment.displayDetails);
         }
         const fields = [];
-        const type = segment.technical ? ui.technical : ui[segment.type];
+        const gradeForName = Number(segment.avgGrade);
+        const terrainKey = segment.type === 'flat' && segment.avgGrade != null && Number.isFinite(gradeForName)
+          ? (gradeForName >= 1 ? 'gentleClimb' : gradeForName <= -1 ? 'gentleDescent' : 'flat') : segment.type;
+        const type = segment.technical ? ui.technical : ui[terrainKey];
         if (type) fields.push('<strong>' + escapeSegmentHtml(type) + '</strong>');
         if (Number.isFinite(Number(segment.durationS))) fields.push(escapeSegmentHtml(ui.duration) + ': ' + Math.round(Number(segment.durationS) / 60) + ':' + String(Math.round(Number(segment.durationS)) % 60).padStart(2, '0'));
-        if (Number.isFinite(Number(segment.startDistanceKm)) && Number.isFinite(Number(segment.endDistanceKm))) fields.push(escapeSegmentHtml(ui.distance) + ': ' + Math.max(0, Number(segment.endDistanceKm) - Number(segment.startDistanceKm)).toFixed(2) + ' km');
+        if (Number.isFinite(Number(segment.startDistanceKm)) && Number.isFinite(Number(segment.endDistanceKm))) fields.push(escapeSegmentHtml(ui.distance) + ': ' + Math.max(0, Number(segment.endDistanceKm) - Number(segment.startDistanceKm)).toFixed(2) + ' ' + ui.kilometers);
         if (Number.isFinite(Number(segment.avgGrade))) fields.push(escapeSegmentHtml(ui.grade) + ': ' + Number(segment.avgGrade).toFixed(1) + '%');
-        if (Number.isFinite(Number(segment.avgSpeedKmh))) fields.push(escapeSegmentHtml(ui.speed) + ': ' + Number(segment.avgSpeedKmh).toFixed(1) + ' km/h');
-        if (Number.isFinite(Number(segment.avgHr))) fields.push(escapeSegmentHtml(ui.heartRate) + ': ' + Math.round(Number(segment.avgHr)) + ' bpm');
+        if (Number.isFinite(Number(segment.avgSpeedKmh))) fields.push(escapeSegmentHtml(ui.speed) + ': ' + Number(segment.avgSpeedKmh).toFixed(1) + ' ' + ui.kilometersPerHour);
+        if (Number.isFinite(Number(segment.avgHr))) fields.push(escapeSegmentHtml(ui.heartRate) + ': ' + Math.round(Number(segment.avgHr)) + ' ' + ui.beatsPerMinute);
         if (Number.isFinite(Number(segment.avgPower))) {
           if (segment.effortBasis === 'power' || segment.effortBasis === 'vpower') {
-            fields.push(escapeSegmentHtml(ui.effort) + ': ' + Math.round(Number(segment.avgPower)) + ' W');
+            fields.push(escapeSegmentHtml(ui.effort) + ': ' + Math.round(Number(segment.avgPower)) + ' ' + ui.wattsShort);
           } else if (segment.type === 'climb' && segment.vpowerUse && segment.vpowerUse !== 'not assessed') {
             // A motion-estimate exists for this climb but did not clear the checks for a
             // comparable number; say so, instead of silently quoting heart rate with no power line.
             fields.push(escapeSegmentHtml(ui.vpowerNotUsedBadge) + ' (\u2248' + Math.round(Number(segment.avgPower)) + ' W)');
+          } else if (segment.type === 'flat' && Number(segment.avgGrade) >= 1 && !segment.technical && segment.vpowerUse && segment.vpowerUse !== 'not assessed') {
+            fields.push('\u2248' + Math.round(Number(segment.avgPower)) + ' W (' + escapeSegmentHtml(ui.vpowerRoughShort) + ')');
           }
         }
-        if (Number.isFinite(Number(segment.elevGainM)) && Number(segment.elevGainM) > 0) fields.push(escapeSegmentHtml(ui.elevation) + ': +' + Math.round(Number(segment.elevGainM)) + ' m');
+        if (Number.isFinite(Number(segment.elevGainM)) && Number(segment.elevGainM) > 0) fields.push(escapeSegmentHtml(ui.elevation) + ': +' + Math.round(Number(segment.elevGainM)) + ' ' + ui.meters);
         if (segment.technical && type !== ui.technical) fields.push(escapeSegmentHtml(ui.technical));
         return fields.join('<br>');
       };
@@ -1638,8 +1827,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
         function formatRouteMetricTooltip(mode, value) {
           if (!Number.isFinite(value)) return '';
-          if (mode === 'speed') return '<strong>' + escapeSegmentHtml(ui.speed) + '</strong><br>' + value.toFixed(1) + ' km/h';
-          if (mode === 'heart_rate') return '<strong>' + escapeSegmentHtml(ui.heartRate) + '</strong><br>' + Math.round(value) + ' bpm';
+          if (mode === 'speed') return '<strong>' + escapeSegmentHtml(ui.speed) + '</strong><br>' + value.toFixed(1) + ' ' + ui.kilometersPerHour;
+          if (mode === 'heart_rate') return '<strong>' + escapeSegmentHtml(ui.heartRate) + '</strong><br>' + Math.round(value) + ' ' + ui.beatsPerMinute;
           return '';
         }
         // Kilometre splits, as sports watches show them: the track alternates between two colors
@@ -1667,8 +1856,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             const seconds = (next ? next.firstTime : split.lastTime) - split.firstTime;
             const km = (next ? next.firstKm : split.lastKm) - split.firstKm;
             const parts = ['<strong>' + escapeSegmentHtml(ui.kilometreSplitLabel.replace('{0}', String(index + 1))) + '</strong>'];
-            if (seconds > 0 && km > 0) parts.push(clock(seconds) + ' · ' + (km / (seconds / 3600)).toFixed(1).replace('.', ui.decimalSeparator) + ' km/h');
-            if (split.hrCount) parts.push(Math.round(split.hrSum / split.hrCount) + ' bpm');
+            if (seconds > 0 && km > 0) parts.push(clock(seconds) + ' · ' + (km / (seconds / 3600)).toFixed(1).replace('.', ui.decimalSeparator) + ' ' + ui.kilometersPerHour);
+            if (split.hrCount) parts.push(Math.round(split.hrSum / split.hrCount) + ' ' + ui.beatsPerMinute);
             return parts.join('<br>');
           };
           let previousIndex = null;
@@ -1700,8 +1889,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
                 if (seenSegmentIndexes[segment.displayIndex]) return false;
                 seenSegmentIndexes[segment.displayIndex] = true;
                 return segment.displayIndex >= 0;
-              }).map(function (segment) {
-                return '<span class="segmentLegendItem" title="' + escapeSegmentHtml(segment.displayTime + ' ' + segment.displayDetails) + '"><i style="background:' + escapeSegmentHtml(segment.displayColor) + '"></i>' + (segment.displayIndex + 1) + '</span>';
+              }).sort(function (a, b) { return a.displayIndex - b.displayIndex; }).map(function (segment) {
+                return '<span class="segmentLegendItem" title="' + escapeSegmentHtml(segment.displayTime + ' ' + segment.displayDetails) + '"><i style="background:' + escapeSegmentHtml(segment.displayColor) + '"></i>' + (segment.displayShortStops ? escapeSegmentHtml(ui.shortStopsLegend) : (segment.displayIndex + 1)) + '</span>';
               }).join('');
             }
           }
@@ -2358,13 +2547,20 @@ function sharedCss() {
       /* Form controls need a clearer edge than --border, especially on dark themes where a
          20% border disappears against the input background. Prefer the theme's own input
          border token and fall back to a stronger foreground mix. */
-      --input-border: var(--vscode-input-border, color-mix(in srgb, var(--vscode-input-foreground) 40%, transparent));
+      /* Dark themes give input borders the colour of the background next to them, and a form of
+         fifteen fields turns into loose numbers. The border is taken from the text colour instead,
+         so it is visible in any theme; a high-contrast theme keeps its own. */
+      --input-border: var(--vscode-contrastBorder, color-mix(in srgb, var(--vscode-input-foreground, var(--vscode-editor-foreground)) 40%, transparent));
       --input-bg: var(--vscode-input-background);
       --input-fg: var(--vscode-input-foreground);
     }
     * { box-sizing: border-box; }
     body { margin:0; font-family: Georgia,"Iowan Old Style","Palatino Linotype",serif; color:var(--ink); background:var(--bg); line-height:1.4; }
-    .wrap { width:100%; margin:0 auto; padding:clamp(12px,2vw,24px); display:grid; gap:18px; }
+    /* One column that never grows past the window. A grid track is by default as wide as its
+       widest item, so the segments table (which does not wrap) stretched every chart with it
+       once the window got narrow or the zoom went up; now the table scrolls inside its card. */
+    .wrap { width:100%; margin:0 auto; padding:clamp(12px,2vw,24px); display:grid; grid-template-columns:minmax(0,1fr); gap:18px; }
+    .wrap > * { min-width:0; }
     .hero { border:1px solid var(--border); border-radius:16px; background:linear-gradient(160deg,color-mix(in srgb,var(--card) 80%,var(--bg)),color-mix(in srgb,var(--card) 65%,var(--bg))); padding:20px; }
     h1 { margin:0 0 6px; font-size:1.4rem; letter-spacing:0.02em; }
     h2 { font-size:1rem; margin:2px 0 8px; }
@@ -2433,6 +2629,7 @@ function sharedCss() {
     .activityTableTabs button { border:1px solid var(--border); border-radius:4px; padding:5px 9px; background:var(--input-bg); color:var(--input-fg); cursor:pointer; }
     .activityTableTabs button[aria-pressed="true"] { background:var(--accent); color:var(--bg); }
     .activityTableWrap { overflow:auto; }
+    .effortRough { font-size:0.8em; color:var(--muted); }
     .activityTable { width:100%; border-collapse:collapse; font-size:.84rem; white-space:nowrap; }
     .activityTable th, .activityTable td { padding:6px 8px; border-bottom:1px solid var(--border); text-align:right; }
     .activityTable th:first-child, .activityTable td:first-child { text-align:left; }
@@ -2506,6 +2703,15 @@ function sharedCss() {
   `;
 }
 
+const SESSION_CLASS_UI = Object.freeze({
+  recovery: 'sessionClassRecovery', endurance: 'sessionClassEndurance', tempo: 'sessionClassTempo', threshold: 'sessionClassThreshold',
+  'vo2max/anaerobic': 'sessionClassVo2max', mixed: 'sessionClassMixed', unstructured: 'sessionClassUnstructured', undetermined: 'sessionClassUndetermined',
+});
+const SESSION_CLASS_REASON_UI = Object.freeze({
+  'no dated heart-rate profile': 'sessionClassNoProfile',
+  'no usable heart-rate samples': 'sessionClassNoHeartRate',
+});
+
 function renderSessionChips(fitData, ui) {
   const sessionClass = fitData?.sessionClass;
   const flags = Array.isArray(fitData?.qualityFlags) ? fitData.qualityFlags : [];
@@ -2517,7 +2723,12 @@ function renderSessionChips(fitData, ui) {
   ].filter(Boolean).join('\n') : null;
   const parts = [];
   if (sessionClass?.label) {
-    parts.push(`<span class="chip" title="${escapeHtml(classTitle)}">${escapeHtml(ui.sessionClassLabel)}: ${escapeHtml(String(sessionClass.label))}${sessionClass.confidence === 'low' ? ' ⚠' : ''}</span>`);
+    // The label is shown in the interface language; an undetermined class says why, because
+    // "undetermined" alone reads as a fault. The tooltip keeps the classifier's own evidence.
+    const name = ui[SESSION_CLASS_UI[sessionClass.label]] || String(sessionClass.label);
+    const why = sessionClass.label === 'undetermined'
+      ? ui[SESSION_CLASS_REASON_UI[sessionClass.reasons?.[0]]] : null;
+    parts.push(`<span class="chip" title="${escapeHtml(classTitle)}">${escapeHtml(ui.sessionClassLabel)}: ${escapeHtml(name)}${why ? ` (${escapeHtml(why)})` : ''}${sessionClass.confidence === 'low' && !why ? ' ⚠' : ''}</span>`);
   }
   for (const flag of flags) {
     parts.push(`<span class="chip ${flag.severity === 'warn' ? 'chipWarn' : 'chipInfo'}" title="${escapeHtml(`${flag.code}: ${flag.text || flag.detail || ''}`)}">${escapeHtml(flag.code)}</span>`);
@@ -2593,7 +2804,7 @@ function renderMapStats(route, ui) {
 
   return `<div class="statRow">
     ${statChip(ui.gpsPointsLabel, route.pointCount)}
-    ${statChip(ui.distance, `${formatLocalizedNumber(route.routeDistanceKm, ui)} km`)}
+    ${statChip(ui.distance, `${formatLocalizedNumber(route.routeDistanceKm, ui)} ${ui.kilometers}`)}
     ${statChip(`${ui.avg} ${ui.speed}`, speed.count ? `${formatLocalizedNumber(speed.avg, ui)} ${ui.kilometersPerHour}` : 'n/a')}
     ${statChip(`${ui.max} ${ui.speed}`, speed.count ? `${formatLocalizedNumber(speed.max, ui)} ${ui.kilometersPerHour}` : 'n/a')}
     ${statChip(`${ui.avg} ${ui.heartRate}`, hr.count ? `${formatLocalizedNumber(hr.avg, ui)} ${ui.beatsPerMinute}` : 'n/a')}
@@ -2639,7 +2850,7 @@ function renderHeartRateZones(zoneData, ui) {
   }).join('');
 
   return `<div class="zones">
-    <div class="zonesHead">${escapeHtml(formatUi(zoneData.customThresholds ? ui.heartRateZonesCustomInfo : ui.heartRateZonesInfo, zoneData.maxHeartRate).replace('bpm', ui.beatsPerMinute))}</div>
+    <div class="zonesHead">${escapeHtml(formatUi(zoneData.provisional ? ui.heartRateZonesProvisional : zoneData.customThresholds ? ui.heartRateZonesCustomInfo : ui.heartRateZonesInfo, zoneData.maxHeartRate).replace('bpm', ui.beatsPerMinute))}</div>
     <div class="zoneRows">${rows}</div>
   </div>`;
 }
