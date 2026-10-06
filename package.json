@@ -2,7 +2,7 @@
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
   "version": "0.30.0",
-  "description": "FIT file viewer and analyzer: charts, map, climb/descent segments, heart-rate zones, ride history and AI-assisted training analysis",
+  "description": "FIT file viewer and analyzer: charts, map, effort segments, heart-rate zones, ride history by route, and AI analysis against the goals you declare",
   "publisher": "AntonPetrusevich",
   "engines": {
     "vscode": "^1.95.0"
@@ -301,12 +301,12 @@
     "fit file viewer",
     "fit",
     "garmin",
+    "wahoo",
     "cycling",
     "running",
-    "wahoo",
-    "polar",
-    "coros",
-    "cycplus",
+    "gps",
+    "heart rate",
+    "training",
     "copilot"
   ],
   "author": "Anton Petrusevich",
