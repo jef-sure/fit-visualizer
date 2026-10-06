@@ -454,52 +454,15 @@ Before using AI features with activities that contain sensitive data, check your
 
 The context menu of a `.fit` file in the Explorer has two shortcuts to the commands above — **Visualize File** and **Index This File**; nothing else is added there, and segmentation, analysis and everything else happen in the visual editor once the file is open.
 
-## Settings
-
-Most settings can be left alone. The segmentation thresholds are needed mainly if your terrain or riding style differs noticeably from ordinary road or gravel riding.
-
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `fitVisualizer.maxHeartRate` | — | Legacy fallback maximum heart rate; prefer a dated zone profile on the activity page. |
-| `fitVisualizer.logLlmRequests` | `true` | Write each request to the AI and its answer to `.fit-visualizer/logs`. |
-| `fitVisualizer.llmLogRetentionDays` | `30` | Delete request logs older than this many days; `0` keeps them indefinitely. |
-| `fitVisualizer.llmChatLogRetentionDays` | `180` | Delete chat and comparison logs older than this many days; conversations are kept longer than one-off analyses. `0` keeps them indefinitely. |
-| `fitVisualizer.lmVendor` | `copilot` | VS Code language-model vendor ID used for analysis and chat. |
-| `fitVisualizer.analysisModelId` | `` | Pins one-off analyses to one model id, overriding the cheapest-model selection; useful for reproducible prompts. |
-| `fitVisualizer.comparisonModelId` | — | Pins the model for AI comparisons; the default is an automatic middle-tier choice (sonnet/gemini/gpt-5). |
-| `fitVisualizer.chatModelId` | — | Pins the model for the chat; the same middle-tier default. |
-| `fitVisualizer.powerModel.dragArea` | `0.32` | Effective frontal area CdA (m²) for estimated power: ~0.25 tucked on a TT bike, ~0.32 on the hoods, 0.40+ upright. |
-| `fitVisualizer.powerModel.rollingResistance` | `0.004` | Rolling resistance Crr; raise it for wider or knobbly tyres. |
-| `fitVisualizer.segmentation.gradeThresholdPct` | `2.5` | Grade (%) from which a segment is called a climb or a descent rather than flat. |
-| `fitVisualizer.segmentation.gradeHysteresisPct` | `0.5` | Margin for switching terrain type; used only for rides with neither heart rate nor power. |
-| `fitVisualizer.segmentation.minSegmentSeconds` | `45` | A shorter stretch of movement between two stops is treated as part of the stop. |
-| `fitVisualizer.segmentation.technicalGradePct` | `-8` | Descent grade below which an erratic speed trace marks the segment as technical (no effort estimate). |
-| `fitVisualizer.segmentation.effortMinSegmentSeconds` | `60` | Shortest stretch of steady effort that becomes a segment of its own. |
-| `fitVisualizer.routeSections.minRideSharePct` | `90` | A place where rides slow down (a junction, a crossing, a turn without a view) becomes a point of the route when at least this share of its rides slow down there; rides are compared by the stretches between the points. |
-| `fitVisualizer.routeSections.placeToleranceM` | `0` | How far from the route's road a ride may be and still count as riding it, in metres; `0` means 60 m. A ride further away on part of a stretch (a detour, an early variant of the route) is not compared on that stretch. |
-| `fitVisualizer.routeSections.minRides` | `5` | How many rides a route needs before it is cut into stretches; below that, rides are compared at marks. |
-| `fitVisualizer.routeSections.autoAdjust` | `true` | When no slow-down reaches the required share, lower it step by step (never below 70%) until the route has at least one point. |
-| `fitVisualizer.segmentation.effortHrStepBpm` | `5` | Heart-rate difference that counts as a different level of effort. Lower gives more segments. |
-| `fitVisualizer.segmentation.effortPowerStepWatts` | `30` | Power difference (measured or estimated) that counts as a different level of effort. Lower gives more segments. |
-| `fitVisualizer.segmentation.stopSpeedKmh` | `1` | Speed at or below which a record counts as stopped. |
-| `fitVisualizer.segmentation.stopMinSeconds` | `10` | Minimum duration of a stop or an auto-pause gap. |
-| `fitVisualizer.segmentation.gpsTrustMinKm` | `1` | Minimum continuous straight distance after which a GPS window can confirm the recorded speed or calibrate against it. |
-| `fitVisualizer.map.tiles` | `osm` | Map tiles: `osm` loads OpenStreetMap tiles over the network; `none` draws the route offline with no network requests. |
-
-> The table lists the keys most users need. `preferCheapAnalysisModel`, `cheapModelMarkers`, `analysisModelId` and `lmVendor` control which model answers; see the AI analysis section above.
-
 ## Upgrading
 
-New users can skip this section. If the local history already has rides, two kinds of stored results can go out of date after an update. They are refreshed by different commands from the Command Palette (`Ctrl+Shift+P`):
+There is nothing to do after an update. When a page is first opened, the extension puts the database in order by itself:
 
-| What is stored | Refresh with | When it is needed |
-|---|---|---|
-| **Saved AI analyses** — the text the model wrote for each ride | **FIT: Re-analyze Outdated Analyses** | After almost every update: the analysis prompt changes often, and the activity page marks older analyses as *Analyzed with an older version*. One request to the AI per outdated ride; current analyses are left alone. |
-| **Indexed data** — the figures read from the FIT files into the local database | **FIT: Index All Files** | Only when a release changes *what exactly is read from the file*. The changelog says so explicitly under *Upgrade Notes*. Last time — 0.29.0: device ascent and descent above 5000 m or below 5 m were stored with a wrong multiplier. If you have no such rides and indexed with 0.20.0 or later, it is not needed. |
+- **FIT files are re-read** if the new version reads something from them differently. The files are taken from where they were when indexed. Moved or deleted ones keep their earlier data, and the extension says how many there are.
+- **Derived data** (segments, zones, routes, route stretches) is recomputed, with a progress notification. The route names and notes you entered are carried over to the rebuilt routes.
+- **Saved AI analyses** of an earlier version are offered for an update, once. This step is not done by itself: each analysis is a request to the AI with the same contents as an ordinary analysis, and it spends the Copilot allowance. If you decline, old analyses stay where they are, marked as made by an earlier version; they can be updated later with **FIT: Re-analyze Outdated Analyses**. Rides you never analysed are not part of this offer.
 
-Derived data (segments, zones, routes, route stretches) needs no command: on the first start after an update that changed its format it is recomputed before the first page opens, with a progress notification ("FIT Visualizer: rebuilding derived features", N/M). The route names and notes you entered are carried over to the rebuilt routes. If you start a re-analysis while the recomputation is still running, the re-analysis simply waits for it to finish.
-
-Re-indexing is local and does not change the original FIT files. Re-running the AI analysis is not required: old analyses stay where they are, only marked as made by an earlier version. If you do run it, each request goes to the AI with the same contents as an ordinary analysis and spends the Copilot allowance.
+Re-reading and recomputing are local and do not change the original FIT files. Notes, goals, plan notes and zone profiles are kept.
 
 ## What a FIT File Is and Where to Get One
 
@@ -542,3 +505,37 @@ Anything else — write to [Issues](https://github.com/jef-sure/fit-visualizer/i
 - The hrTSS threshold is an estimate until a tested threshold heart rate is set.
 - The check of the model's answers is heuristic: it catches typical violations but does not guarantee that a single answer is right.
 - The description of the road on the route card is read-only.
+
+## Settings
+
+Most settings can be left alone. The segmentation thresholds are needed mainly if your terrain or riding style differs noticeably from ordinary road or gravel riding.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `fitVisualizer.maxHeartRate` | — | Legacy fallback maximum heart rate; prefer a dated zone profile on the activity page. |
+| `fitVisualizer.logLlmRequests` | `true` | Write each request to the AI and its answer to `.fit-visualizer/logs`. |
+| `fitVisualizer.llmLogRetentionDays` | `30` | Delete request logs older than this many days; `0` keeps them indefinitely. |
+| `fitVisualizer.llmChatLogRetentionDays` | `180` | Delete chat and comparison logs older than this many days; conversations are kept longer than one-off analyses. `0` keeps them indefinitely. |
+| `fitVisualizer.lmVendor` | `copilot` | VS Code language-model vendor ID used for analysis and chat. |
+| `fitVisualizer.analysisModelId` | `` | Pins one-off analyses to one model id, overriding the cheapest-model selection; useful for reproducible prompts. |
+| `fitVisualizer.comparisonModelId` | — | Pins the model for AI comparisons; the default is an automatic middle-tier choice (sonnet/gemini/gpt-5). |
+| `fitVisualizer.chatModelId` | — | Pins the model for the chat; the same middle-tier default. |
+| `fitVisualizer.powerModel.dragArea` | `0.32` | Effective frontal area CdA (m²) for estimated power: ~0.25 tucked on a TT bike, ~0.32 on the hoods, 0.40+ upright. |
+| `fitVisualizer.powerModel.rollingResistance` | `0.004` | Rolling resistance Crr; raise it for wider or knobbly tyres. |
+| `fitVisualizer.segmentation.gradeThresholdPct` | `2.5` | Grade (%) from which a segment is called a climb or a descent rather than flat. |
+| `fitVisualizer.segmentation.gradeHysteresisPct` | `0.5` | Margin for switching terrain type; used only for rides with neither heart rate nor power. |
+| `fitVisualizer.segmentation.minSegmentSeconds` | `45` | A shorter stretch of movement between two stops is treated as part of the stop. |
+| `fitVisualizer.segmentation.technicalGradePct` | `-8` | Descent grade below which an erratic speed trace marks the segment as technical (no effort estimate). |
+| `fitVisualizer.segmentation.effortMinSegmentSeconds` | `60` | Shortest stretch of steady effort that becomes a segment of its own. |
+| `fitVisualizer.routeSections.minRideSharePct` | `90` | A place where rides slow down (a junction, a crossing, a turn without a view) becomes a point of the route when at least this share of its rides slow down there; rides are compared by the stretches between the points. |
+| `fitVisualizer.routeSections.placeToleranceM` | `0` | How far from the route's road a ride may be and still count as riding it, in metres; `0` means 60 m. A ride further away on part of a stretch (a detour, an early variant of the route) is not compared on that stretch. |
+| `fitVisualizer.routeSections.minRides` | `5` | How many rides a route needs before it is cut into stretches; below that, rides are compared at marks. |
+| `fitVisualizer.routeSections.autoAdjust` | `true` | When no slow-down reaches the required share, lower it step by step (never below 70%) until the route has at least one point. |
+| `fitVisualizer.segmentation.effortHrStepBpm` | `5` | Heart-rate difference that counts as a different level of effort. Lower gives more segments. |
+| `fitVisualizer.segmentation.effortPowerStepWatts` | `30` | Power difference (measured or estimated) that counts as a different level of effort. Lower gives more segments. |
+| `fitVisualizer.segmentation.stopSpeedKmh` | `1` | Speed at or below which a record counts as stopped. |
+| `fitVisualizer.segmentation.stopMinSeconds` | `10` | Minimum duration of a stop or an auto-pause gap. |
+| `fitVisualizer.segmentation.gpsTrustMinKm` | `1` | Minimum continuous straight distance after which a GPS window can confirm the recorded speed or calibrate against it. |
+| `fitVisualizer.map.tiles` | `osm` | Map tiles: `osm` loads OpenStreetMap tiles over the network; `none` draws the route offline with no network requests. |
+
+> The table lists the keys most users need. `preferCheapAnalysisModel`, `cheapModelMarkers`, `analysisModelId` and `lmVendor` control which model answers; see the AI analysis section above.

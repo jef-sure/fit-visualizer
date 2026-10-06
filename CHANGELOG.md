@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.30.1 - unreleased
+
+### Changed
+
+- **Nothing to do after an update.** What the upgrade notes used to ask for now happens by itself when a page is first opened. FIT files are re-read from where they were indexed when a version reads them differently (moved or deleted files keep their earlier data, and a message says how many); derived data is rebuilt after that in the same run. Saved analyses of an earlier format are offered for an update once per format, with one button: this is the only step that is not automatic, because each analysis is a request to the AI. Rides that were never analysed are not part of the offer; the mark on the page and **FIT: Re-analyze Outdated Analyses** remain. A database indexed by any earlier version is re-read once after this update, which also applies the device ascent/descent correction of 0.29.0 (0.29.0 itself was never published; its changes reached users with 0.30.0).
+
 ## 0.30.0 - 2026-10-06
 
 ### Added
