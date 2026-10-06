@@ -1,6 +1,10 @@
 const UI_STRINGS = {
   startBatchAnalysis: 'Start',
   confirmBatchAnalysis: 'Update analyses for {0} activities? This includes outdated and missing analyses and uses one Copilot request per activity.',
+  upgradeOfferReanalysis: 'FIT Visualizer was updated: {0} saved analyses were made by an earlier version. Updating them sends one request to the AI per activity.',
+  upgradeUpdateAnalyses: 'Update analyses',
+  upgradeLater: 'Later',
+  upgradeRereadSummary: 'FIT Visualizer was updated and re-read {0} FIT file(s). {1} could not be re-read (moved, deleted or unreadable) and keep their earlier data.',
   updatingModelPrices: 'Updating Copilot model prices',
   modelPricesUpdated: 'Model prices updated: {0} models ({1}).',
   modelPriceUpdateFailed: 'FIT model price update failed',

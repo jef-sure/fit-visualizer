@@ -29,6 +29,7 @@ const { measureRideOnSkeleton, rideFrame, summarizeSections } = require('./route
 const { MODEL_PRICE_CACHE_KEY, restoreModelPriceCache, updateModelPrices } = require('./model-pricing');
 const { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, buildTranslationPrompt } = require('./activity-webview');
 const { ensureDatabaseSchema } = require('./database-schema');
+const { indexedFilePaths, markIndexVersion, needsReindex, outdatedSavedAnalyses, shouldOfferReanalysis } = require('./upgrade-steps');
 const { applyHeartRateProfileUpsert, deleteHeartRateProfile, readHeartRateProfiles } = require('./heart-rate-profiles');
 const { createManualActivity, parseManualStartTime } = require('./manual-activity');
 const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, localDate } = require('./activity-time');
@@ -217,10 +218,91 @@ function scheduleDerivedFeatureAutoRebuild() {
   if (derivedFeatureAutoRebuildStarted) return;
   derivedFeatureAutoRebuildStarted = true;
   setTimeout(() => {
-    rebuildDerivedFeatures({ reason: 'auto' }).catch(() => {
+    const dbPath = extensionContextRef?.globalState?.get(LAST_DB_PATH_KEY);
+    const run = dbPath ? runUpgradeSteps(dbPath) : rebuildDerivedFeatures({ reason: 'auto' });
+    run.catch(() => {
       // A failed background rebuild leaves the lazy path in charge; nothing to report.
     });
   }, 1500);
+}
+
+// Everything an update of the extension requires of a database, run without being asked: rows read
+// by an earlier version are re-read from their files, derived data is rebuilt, and saved analyses
+// of an earlier format are offered for an update. Re-reading and rebuilding are local and free;
+// an analysis spends a request, so that one is only ever offered.
+const pendingUpgradeSteps = new Map();
+
+function runUpgradeSteps(dbPath, options = {}) {
+  if (!dbPath) return Promise.resolve();
+  let run = pendingUpgradeSteps.get(dbPath);
+  if (!run) {
+    run = runUpgradeStepsNow(dbPath).finally(() => pendingUpgradeSteps.delete(dbPath));
+    pendingUpgradeSteps.set(dbPath, run);
+  }
+  return options.offerReanalysis
+    ? run.then(() => { offerReanalysis(dbPath).catch(() => undefined); })
+    : run;
+}
+
+async function runUpgradeStepsNow(dbPath) {
+  if (!(await fileExists(dbPath))) return;
+  const paths = await enqueueDatabaseTask(async () => {
+    const SQL = await getSqlJs();
+    const db = await openDatabase(SQL, dbPath);
+    try {
+      ensureDatabaseSchema(db);
+      return needsReindex(db) ? indexedFilePaths(db) : null;
+    } finally {
+      db.close();
+    }
+  });
+  if (!paths) {
+    if (await derivedRebuildPending(dbPath)) await rebuildDerivedFeatures({ reason: 'auto', dbPath });
+    return;
+  }
+  const present = [];
+  for (const filePath of paths) {
+    if (await fileExists(filePath)) present.push(vscode.Uri.file(filePath));
+  }
+  const missing = paths.length - present.length;
+  const result = present.length
+    ? await indexFitUris(present, dbPath, `Re-reading ${present.length} FIT file(s) after an update...`, { quiet: true })
+    : { saved: 0, failed: 0 };
+  // Marked even when some files are gone or unreadable: they will not come back, and their rows
+  // stay as they were read. The rebuild follows the re-read in the same run.
+  await enqueueDatabaseTask(async () => {
+    const SQL = await getSqlJs();
+    const db = await openDatabase(SQL, dbPath);
+    try {
+      ensureDatabaseSchema(db);
+      markIndexVersion(db);
+      await persistDatabase(db, dbPath);
+    } finally {
+      db.close();
+    }
+  });
+  await rebuildDerivedFeatures({ silent: true, skipStaleCheck: true, reason: 'indexing', dbPath });
+  if (missing > 0 || result.failed > 0) {
+    vscode.window.showInformationMessage(vscode.l10n.t(
+      'FIT Visualizer was updated and re-read {0} FIT file(s). {1} could not be re-read (moved, deleted or unreadable) and keep their earlier data.',
+      result.saved, missing + result.failed));
+  }
+}
+
+const REANALYSIS_OFFER_KEY = 'fitVisualizer.reanalysisOffered';
+
+async function offerReanalysis(dbPath) {
+  const state = extensionContextRef?.globalState;
+  if (!state) return;
+  const offered = state.get(REANALYSIS_OFFER_KEY) || {};
+  const outdated = outdatedSavedAnalyses(await getAnalysisActivities(dbPath, { onlyOutdated: true }), ANALYSIS_VERSION);
+  if (!shouldOfferReanalysis(offered[dbPath], ANALYSIS_VERSION, outdated.length)) return;
+  await state.update(REANALYSIS_OFFER_KEY, { ...offered, [dbPath]: ANALYSIS_VERSION });
+  const update = vscode.l10n.t('Update analyses');
+  const choice = await vscode.window.showInformationMessage(
+    vscode.l10n.t('FIT Visualizer was updated: {0} saved analyses were made by an earlier version. Updating them sends one request to the AI per activity.', outdated.length),
+    update, vscode.l10n.t('Later'));
+  if (choice === update) await runReanalysisBatch(dbPath, outdated, null);
 }
 
 // Preserve model-task ordering and serialize the rebuild's database lifecycle with other saves.
@@ -808,13 +890,14 @@ async function pickSingleFitFile() {
   return picked?.[0] || null;
 }
 
-async function indexFitUris(fitUris, dbPath, heading) {
+async function indexFitUris(fitUris, dbPath, heading, options = {}) {
   // Indexing rewrites the activity rows; wait for a background derived-feature rebuild so its
   // final write cannot land on top of the freshly indexed file.
   await awaitDerivedFeatureRebuild();
   const output = vscode.window.createOutputChannel('FIT Visualizer: DB Index');
   output.clear();
-  output.show(true);
+  // Shown for a command the user ran; an automatic re-read after an update stays in the background.
+  if (!options.quiet) output.show(true);
   output.appendLine(heading);
 
   let saved = 0;
@@ -1281,7 +1364,7 @@ async function getIndexedFilePaths(dbPath) {
 async function openActivityBrowser(context, dbPath, preselectId, compId) {
   // After an update the derived data is rebuilt before the page is drawn, not behind its back.
   try {
-    if (await derivedRebuildPending(dbPath)) await rebuildDerivedFeatures({ reason: 'auto', dbPath });
+    await runUpgradeSteps(dbPath, { offerReanalysis: true });
   } catch (error) {
     reportAnalysisWarning(`Derived-feature rebuild before opening failed: ${error instanceof Error ? error.message : error}`, 'warn');
   }
@@ -2581,10 +2664,13 @@ async function reanalyzeSelectedActivities(selectionText) {
 }
 
 async function runReanalysisBatch(dbPath, targets, confirmation) {
-  const start = vscode.l10n.t('Start');
-  const confirmed = await vscode.window.showInformationMessage(confirmation, { modal: true }, start);
-  if (confirmed !== start) {
-    return;
+  // Without a confirmation text the caller has already asked.
+  if (confirmation) {
+    const start = vscode.l10n.t('Start');
+    const confirmed = await vscode.window.showInformationMessage(confirmation, { modal: true }, start);
+    if (confirmed !== start) {
+      return;
+    }
   }
 
   const result = await vscode.window.withProgress({

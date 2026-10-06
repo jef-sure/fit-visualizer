@@ -6922,3 +6922,48 @@ test('the altitude chart axis is labelled as altitude and the segment table head
   const ru = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'l10n', 'bundle.l10n.ru.json'), 'utf8'));
   assert.equal(ru['Altitude (m)'], 'Высота (м)');
 });
+
+test('upgrade steps: a fresh database is stamped, one read by an earlier version asks for a re-read once', async () => {
+  const { INDEX_VERSION, indexedFilePaths, markIndexVersion, needsReindex, readIndexVersion } = require('../upgrade-steps');
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const fresh = new SQL.Database();
+  try {
+    ensureDatabaseSchema(fresh);
+    assert.equal(readIndexVersion(fresh), INDEX_VERSION);
+    fresh.run("INSERT INTO activities (file_path, file_name, source) VALUES ('/rides/a.fit', 'a.fit', 'fit')");
+    ensureDatabaseSchema(fresh);
+    assert.equal(needsReindex(fresh), false);
+  } finally {
+    fresh.close();
+  }
+  // A database of an earlier version: activities are there, the stamp is not.
+  const old = new SQL.Database();
+  try {
+    ensureDatabaseSchema(old);
+    old.run("DELETE FROM derived_state WHERE key = 'index_version'");
+    old.run("INSERT INTO activities (file_path, file_name, source, start_time) VALUES ('/rides/b.fit', 'b.fit', 'fit', '2026-08-02T10:00:00Z')");
+    old.run("INSERT INTO activities (file_path, file_name, source, start_time) VALUES ('/rides/a.fit', 'a.fit', 'fit', '2026-08-01T10:00:00Z')");
+    old.run("INSERT INTO activities (file_path, file_name, source) VALUES ('manual:1', 'manual', 'manual')");
+    ensureDatabaseSchema(old);
+    assert.equal(readIndexVersion(old), null);
+    assert.equal(needsReindex(old), true);
+    assert.deepEqual(indexedFilePaths(old), ['/rides/a.fit', '/rides/b.fit']);
+    markIndexVersion(old);
+    assert.equal(needsReindex(old), false);
+  } finally {
+    old.close();
+  }
+});
+
+test('upgrade steps: only saved analyses of an earlier format are offered, once per format', () => {
+  const { outdatedSavedAnalyses, shouldOfferReanalysis } = require('../upgrade-steps');
+  const rows = [{ id: 1, analysisVersion: 44 }, { id: 2, analysisVersion: null }, { id: 3, analysisVersion: 46 }, { id: 4, analysisVersion: 45 }];
+  assert.deepEqual(outdatedSavedAnalyses(rows, 46).map((row) => row.id), [1, 4]);
+  assert.equal(shouldOfferReanalysis(undefined, 46, 2), true);
+  assert.equal(shouldOfferReanalysis(46, 46, 2), false);
+  assert.equal(shouldOfferReanalysis(45, 46, 2), true);
+  assert.equal(shouldOfferReanalysis(undefined, 46, 0), false);
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /await runUpgradeSteps\(dbPath, \{ offerReanalysis: true \}\);/);
+  assert.match(source, /if \(choice === update\) await runReanalysisBatch\(dbPath, outdated, null\);/);
+});

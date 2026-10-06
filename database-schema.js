@@ -1,4 +1,5 @@
 const { collapseDuplicateHeartRateProfiles } = require('./heart-rate-profiles');
+const { stampFreshDatabase } = require('./upgrade-steps');
 
 function ensureDatabaseSchema(db) {
   db.run(`
@@ -276,6 +277,7 @@ function ensureDatabaseSchema(db) {
   // A saved comparison is a model answer like an analysis: it needs to say which format wrote it.
   addColumnIfMissing(db, 'activity_comparisons', 'analysis_version', 'INTEGER');
   addColumnIfMissing(db, 'activity_features', 'route_frame_json', 'TEXT');
+  stampFreshDatabase(db);
 }
 
 function addColumnIfMissing(db, table, column, type) {
