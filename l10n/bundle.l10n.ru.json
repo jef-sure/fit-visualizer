@@ -4,6 +4,8 @@
   "Later": "Позже",
   "FIT Visualizer was updated: {0} saved analyses were made by an earlier version. Updating them sends one request to the AI per activity.": "FIT Visualizer обновился: сохранённых анализов, сделанных прежней версией, — {0}. Обновление отправляет ИИ один запрос на каждую активность.",
   "FIT Visualizer was updated and re-read {0} FIT file(s). {1} could not be re-read (moved, deleted or unreadable) and keep their earlier data.": "FIT Visualizer обновился и заново прочитал FIT-файлы: {0}. Не удалось прочитать: {1} (перемещены, удалены или не читаются) — у них остались прежние данные.",
+  "Another VS Code window is updating the FIT database. Waiting for it to finish.": "Другое окно VS Code обновляет базу FIT Visualizer. Ожидание, пока оно закончит.",
+  "FIT Visualizer is putting the database in order after an update. The page opens when it is done.": "FIT Visualizer приводит базу в порядок после обновления. Страница откроется, когда он закончит.",
   "Update analyses for {0} activities? This includes outdated and missing analyses and uses one Copilot request per activity.": "Обновить анализы для {0} активностей? Будут обработаны устаревшие и отсутствующие анализы, по одному запросу Copilot на активность.",
   "Updating Copilot model prices": "Обновление цен моделей Copilot",
   "Model prices updated: {0} models ({1}).": "Цены моделей обновлены: моделей {0}, дата {1}.",

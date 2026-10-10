@@ -29,7 +29,7 @@ const { measureRideOnSkeleton, rideFrame, summarizeSections } = require('./route
 const { MODEL_PRICE_CACHE_KEY, restoreModelPriceCache, updateModelPrices } = require('./model-pricing');
 const { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, buildTranslationPrompt } = require('./activity-webview');
 const { ensureDatabaseSchema } = require('./database-schema');
-const { indexedFilePaths, markIndexVersion, needsReindex, outdatedSavedAnalyses, shouldOfferReanalysis } = require('./upgrade-steps');
+const { INDEX_VERSION, needsReread, outdatedSavedAnalyses, shouldOfferReanalysis } = require('./upgrade-steps');
 const { applyHeartRateProfileUpsert, deleteHeartRateProfile, readHeartRateProfiles } = require('./heart-rate-profiles');
 const { createManualActivity, parseManualStartTime } = require('./manual-activity');
 const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, localDate } = require('./activity-time');
@@ -199,6 +199,7 @@ function activate(context) {
     selectDatabaseFolder,
     showActivityBrowserInPanel,
     updateModelPriceTable,
+    upgradeBeforeOpening,
   }));
 }
 
@@ -226,17 +227,21 @@ function scheduleDerivedFeatureAutoRebuild() {
   }, 1500);
 }
 
-// Everything an update of the extension requires of a database, run without being asked: rows read
-// by an earlier version are re-read from their files, derived data is rebuilt, and saved analyses
-// of an earlier format are offered for an update. Re-reading and rebuilding are local and free;
-// an analysis spends a request, so that one is only ever offered.
+// What an update of the extension requires of a database, run without being asked: derived data
+// is rebuilt once when its format changed, and saved analyses of an earlier format are offered for
+// an update. Rides read by an earlier version are not touched here: each is re-read from its file
+// when it is next needed (see ensureRideCurrent). The rebuild is local and free; an analysis
+// spends a request, so that one is only ever offered.
 const pendingUpgradeSteps = new Map();
 
 function runUpgradeSteps(dbPath, options = {}) {
   if (!dbPath) return Promise.resolve();
   let run = pendingUpgradeSteps.get(dbPath);
-  if (!run) {
-    run = runUpgradeStepsNow(dbPath).finally(() => pendingUpgradeSteps.delete(dbPath));
+  if (run) {
+    // A run in flight is doing the work; a page that joins it waits for the same thing.
+    options.onWork?.();
+  } else {
+    run = runUpgradeStepsNow(dbPath, options.onWork).finally(() => pendingUpgradeSteps.delete(dbPath));
     pendingUpgradeSteps.set(dbPath, run);
   }
   return options.offerReanalysis
@@ -244,65 +249,103 @@ function runUpgradeSteps(dbPath, options = {}) {
     : run;
 }
 
-async function runUpgradeStepsNow(dbPath) {
+async function runUpgradeStepsNow(dbPath, onWork) {
   if (!(await fileExists(dbPath))) return;
-  const paths = await enqueueDatabaseTask(async () => {
-    const SQL = await getSqlJs();
-    const db = await openDatabase(SQL, dbPath);
-    try {
-      ensureDatabaseSchema(db);
-      return needsReindex(db) ? indexedFilePaths(db) : null;
-    } finally {
-      db.close();
+  for (;;) {
+    if (!(await derivedRebuildPending(dbPath))) return;
+    onWork?.();
+    onWork = null;
+    const lock = await acquireUpgradeLock(dbPath);
+    if (!lock) {
+      // Another window is at it; once it is done, the check above finds nothing left.
+      await waitForOtherWindow(dbPath);
+      continue;
     }
-  });
-  if (!paths) {
-    if (await derivedRebuildPending(dbPath)) await rebuildDerivedFeatures({ reason: 'auto', dbPath });
+    try {
+      await rebuildDerivedFeatures({ reason: 'auto', dbPath });
+    } finally {
+      await fs.rm(lock, { force: true });
+    }
     return;
-  }
-  const present = [];
-  for (const filePath of paths) {
-    if (await fileExists(filePath)) present.push(vscode.Uri.file(filePath));
-  }
-  const missing = paths.length - present.length;
-  const result = present.length
-    ? await indexFitUris(present, dbPath, `Re-reading ${present.length} FIT file(s) after an update...`, { quiet: true })
-    : { saved: 0, failed: 0 };
-  // Marked even when some files are gone or unreadable: they will not come back, and their rows
-  // stay as they were read. The rebuild follows the re-read in the same run.
-  await enqueueDatabaseTask(async () => {
-    const SQL = await getSqlJs();
-    const db = await openDatabase(SQL, dbPath);
-    try {
-      ensureDatabaseSchema(db);
-      markIndexVersion(db);
-      await persistDatabase(db, dbPath);
-    } finally {
-      db.close();
-    }
-  });
-  await rebuildDerivedFeatures({ silent: true, skipStaleCheck: true, reason: 'indexing', dbPath });
-  if (missing > 0 || result.failed > 0) {
-    vscode.window.showInformationMessage(vscode.l10n.t(
-      'FIT Visualizer was updated and re-read {0} FIT file(s). {1} could not be re-read (moved, deleted or unreadable) and keep their earlier data.',
-      result.saved, missing + result.failed));
   }
 }
 
+// Two windows on one database would both rebuild it, and the result of one would land on top of
+// the other's. The window that starts writes a lock beside the database; another window
+// waits until it is gone and then finds nothing left to do. A lock whose process is gone, or that
+// is older than an hour, is taken over.
+const UPGRADE_LOCK_MAX_AGE_MS = 60 * 60 * 1000;
+const UPGRADE_LOCK_POLL_MS = 500;
+
+function upgradeLockPath(dbPath) {
+  return `${dbPath}.upgrade.lock`;
+}
+
+async function acquireUpgradeLock(dbPath) {
+  const lockPath = upgradeLockPath(dbPath);
+  for (;;) {
+    try {
+      await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), { flag: 'wx' });
+      return lockPath;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+    if (await upgradeLockIsHeld(lockPath)) return null;
+    await fs.rm(lockPath, { force: true });
+  }
+}
+
+// Whether the lock belongs to a window that is still running.
+async function upgradeLockIsHeld(lockPath) {
+  let pid;
+  try {
+    const stat = await fs.stat(lockPath);
+    if (Date.now() - stat.mtimeMs > UPGRADE_LOCK_MAX_AGE_MS) return false;
+    pid = Number(JSON.parse(await fs.readFile(lockPath, 'utf8')).pid);
+  } catch {
+    return false;
+  }
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // A process of another user answers EPERM: it is there.
+    return error.code === 'EPERM';
+  }
+}
+
+async function waitForOtherWindow(dbPath) {
+  const lockPath = upgradeLockPath(dbPath);
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: vscode.l10n.t('Another VS Code window is updating the FIT database. Waiting for it to finish.'), cancellable: false },
+    async () => {
+      while (await upgradeLockIsHeld(lockPath)) await new Promise((resolve) => setTimeout(resolve, UPGRADE_LOCK_POLL_MS));
+    });
+}
+
 const REANALYSIS_OFFER_KEY = 'fitVisualizer.reanalysisOffered';
+// Two pages opened at once would both read the saved state before either wrote it and ask twice;
+// an answer to each would send every request twice.
+const reanalysisOffersInFlight = new Set();
 
 async function offerReanalysis(dbPath) {
   const state = extensionContextRef?.globalState;
-  if (!state) return;
-  const offered = state.get(REANALYSIS_OFFER_KEY) || {};
-  const outdated = outdatedSavedAnalyses(await getAnalysisActivities(dbPath, { onlyOutdated: true }), ANALYSIS_VERSION);
-  if (!shouldOfferReanalysis(offered[dbPath], ANALYSIS_VERSION, outdated.length)) return;
-  await state.update(REANALYSIS_OFFER_KEY, { ...offered, [dbPath]: ANALYSIS_VERSION });
-  const update = vscode.l10n.t('Update analyses');
-  const choice = await vscode.window.showInformationMessage(
-    vscode.l10n.t('FIT Visualizer was updated: {0} saved analyses were made by an earlier version. Updating them sends one request to the AI per activity.', outdated.length),
-    update, vscode.l10n.t('Later'));
-  if (choice === update) await runReanalysisBatch(dbPath, outdated, null);
+  if (!state || reanalysisOffersInFlight.has(dbPath)) return;
+  reanalysisOffersInFlight.add(dbPath);
+  try {
+    const offered = state.get(REANALYSIS_OFFER_KEY) || {};
+    const outdated = outdatedSavedAnalyses(await getAnalysisActivities(dbPath, { onlyOutdated: true }), ANALYSIS_VERSION);
+    if (!shouldOfferReanalysis(offered[dbPath], ANALYSIS_VERSION, outdated.length)) return;
+    await state.update(REANALYSIS_OFFER_KEY, { ...offered, [dbPath]: ANALYSIS_VERSION });
+    const update = vscode.l10n.t('Update analyses');
+    const choice = await vscode.window.showInformationMessage(
+      vscode.l10n.t('FIT Visualizer was updated: {0} saved analyses were made by an earlier version. Updating them sends one request to the AI per activity.', outdated.length),
+      update, vscode.l10n.t('Later'));
+    if (choice === update) await runReanalysisBatch(dbPath, outdated, null);
+  } finally {
+    reanalysisOffersInFlight.delete(dbPath);
+  }
 }
 
 // Preserve model-task ordering and serialize the rebuild's database lifecycle with other saves.
@@ -390,17 +433,18 @@ async function rebuildDerivedFeaturesInDatabase({ silent = false, skipStaleCheck
   }
 }
 
-// A rebuild is needed when any stored feature row predates the current derived-feature version
-// (or routes exist without assignments). Fresh databases skip it entirely.
+// A rebuild is needed when any stored feature row predates the current derived-feature version or
+// the whole was last rebuilt for an earlier one. Fresh databases skip it entirely. A ride without
+// derived data is not a reason: its page computes them when it is shown, and a whole rebuild for
+// every new ride would grow with the history.
 function needsDerivedFeatureRebuild(db) {
   const activities = Number(db.exec("SELECT COUNT(*) FROM activities WHERE source != 'manual'")[0]?.values?.[0]?.[0] || 0);
   if (!activities) return false;
   const stale = Number(db.exec(`SELECT COUNT(*) FROM activity_features WHERE features_version != ${FEATURES_VERSION}`)[0]?.values?.[0]?.[0] || 0);
-  const fresh = Number(db.exec(`SELECT COUNT(*) FROM activity_features WHERE features_version = ${FEATURES_VERSION}`)[0]?.values?.[0]?.[0] || 0);
   // Rows of the current version are not proof of a rebuild: a page that needs a ride's features
   // refreshes them on the spot, one ride at a time, and that path keeps every ride on the route it
   // already had. Only the whole rebuild re-derives routes, so it is tracked on its own.
-  return stale > 0 || fresh < activities || readDerivedVersion(db) !== FEATURES_VERSION;
+  return stale > 0 || readDerivedVersion(db) !== FEATURES_VERSION;
 }
 
 function readDerivedVersion(db) {
@@ -906,21 +950,30 @@ async function indexFitUris(fitUris, dbPath, heading, options = {}) {
     location: vscode.ProgressLocation.Notification,
     title: vscode.l10n.t('Indexing FIT files'),
     cancellable: false,
-  }, async (progress) => {
-    for (const fitUri of fitUris) {
-      progress.report({ message: vscode.l10n.t('{0}/{1}: {2}', saved + failed + 1, fitUris.length, path.basename(fitUri.fsPath)) });
-      try {
-        const parsed = await parseFitFile(fitUri.fsPath);
-        await saveFitToLocalDb(fitUri.fsPath, parsed, dbPath);
-        saved += 1;
-        output.appendLine(`Indexed: ${fitUri.fsPath}`);
-      } catch (error) {
-        failed += 1;
-        output.appendLine(`Failed: ${fitUri.fsPath} -> ${error instanceof Error ? error.message : String(error)}`);
+  }, (progress) => enqueueDatabaseTask(async () => {
+    // One write for the whole pass: a write per file copies the whole database once per file,
+    // which on a long history is gigabytes and minutes.
+    const SQL = await getSqlJs();
+    const db = await openDatabase(SQL, dbPath);
+    try {
+      ensureDatabaseSchema(db);
+      for (const fitUri of fitUris) {
+        progress.report({ message: vscode.l10n.t('{0}/{1}: {2}', saved + failed + 1, fitUris.length, path.basename(fitUri.fsPath)) });
+        try {
+          upsertActivityOrRollBack(db, fitUri.fsPath, await parseFitFile(fitUri.fsPath));
+          saved += 1;
+          output.appendLine(`Indexed: ${fitUri.fsPath}`);
+        } catch (error) {
+          failed += 1;
+          output.appendLine(`Failed: ${fitUri.fsPath} -> ${error instanceof Error ? error.message : String(error)}`);
+        }
+        progress.report({ increment: 100 / fitUris.length });
       }
-      progress.report({ increment: 100 / fitUris.length });
+      if (saved > 0) await persistDatabase(db, dbPath);
+    } finally {
+      db.close();
     }
-  });
+  }));
   output.appendLine(vscode.l10n.t('FIT DB index complete: {0} indexed, {1} failed.', saved, failed));
   return { saved, failed };
 }
@@ -1361,13 +1414,18 @@ async function getIndexedFilePaths(dbPath) {
   }
 }
 
-async function openActivityBrowser(context, dbPath, preselectId, compId) {
-  // After an update the derived data is rebuilt before the page is drawn, not behind its back.
+// After an update the database is put in order before a page is drawn, not behind its back. Every
+// way of opening a page comes through here: the commands and the editor of a .fit file.
+async function upgradeBeforeOpening(dbPath, onWork) {
   try {
-    await runUpgradeSteps(dbPath, { offerReanalysis: true });
+    await runUpgradeSteps(dbPath, { offerReanalysis: true, onWork });
   } catch (error) {
     reportAnalysisWarning(`Derived-feature rebuild before opening failed: ${error instanceof Error ? error.message : error}`, 'warn');
   }
+}
+
+async function openActivityBrowser(context, dbPath, preselectId, compId) {
+  await upgradeBeforeOpening(dbPath);
   const panel = vscode.window.createWebviewPanel(
     'fitVisualizer.view',
     'FIT Visualizer',
@@ -1757,7 +1815,71 @@ function readStoredRouteFrame(db, activityId) {
   }
 }
 
+// A ride read by an earlier version is re-read from its file at the moment it is needed - when its
+// page opens, when it is compared, when it goes into a prompt - and not before: rides nobody looks
+// at again stay as they were read. A file that is gone keeps its row, and a note says so once.
+const rereadFileMissingReported = new Set();
+
+async function rereadOutdatedRides(db, rows) {
+  let reread = 0;
+  for (const row of rows) {
+    if (!needsReread(row) || !row.file_path) continue;
+    if (!(await fileExists(row.file_path))) {
+      const key = `${row.id}:${row.file_path}`;
+      if (!rereadFileMissingReported.has(key)) {
+        rereadFileMissingReported.add(key);
+        reportAnalysisWarning(`Activity ${row.id} was read by an earlier version and its file is no longer at ${row.file_path}; it keeps the data as read.`, 'info');
+      }
+      continue;
+    }
+    try {
+      upsertActivityOrRollBack(db, row.file_path, await parseFitFile(row.file_path));
+      reread += 1;
+    } catch (error) {
+      reportAnalysisWarning(`Activity ${row.id}: cannot re-read ${row.file_path}: ${error.message}`, 'warn');
+    }
+  }
+  return reread;
+}
+
+function ensureRideCurrent(dbPath, activityId) {
+  return enqueueDatabaseTask(async () => {
+    const SQL = await getSqlJs();
+    const db = await openDatabase(SQL, dbPath);
+    try {
+      const stmt = db.prepare('SELECT id, file_path, source, index_version FROM activities WHERE id = ?');
+      stmt.bind([activityId]);
+      const row = stmt.step() ? stmt.getAsObject() : null;
+      stmt.free();
+      if (!needsReread(row)) return false;
+      const reread = await rereadOutdatedRides(db, [row]);
+      if (reread > 0) await persistDatabase(db, dbPath);
+      return reread > 0;
+    } finally {
+      db.close();
+    }
+  });
+}
+
+// The rides a prompt takes as history: the days before the ride that getTrainingContextFromDb reads.
+const PROMPT_HISTORY_DAYS = 90;
+
+function promptHistoryRows(db, activityId) {
+  const stmt = db.prepare(`SELECT a.id, a.file_path, a.source, a.index_version FROM activities a, activities s
+    WHERE s.id = ? AND datetime(a.start_time) < datetime(s.start_time)
+      AND datetime(a.start_time) >= datetime(s.start_time, '-${PROMPT_HISTORY_DAYS} days')`);
+  try {
+    stmt.bind([activityId]);
+    const rows = [];
+    while (stmt.step()) rows.push(stmt.getAsObject());
+    return rows;
+  } finally {
+    stmt.free();
+  }
+}
+
 async function loadFitDataFromDb(dbPath, activityId) {
+  await ensureRideCurrent(dbPath, activityId);
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
@@ -1867,6 +1989,19 @@ async function loadFitDataFromDb(dbPath, activityId) {
   }
 }
 
+// Half a ride is worse than the row as it was.
+function upsertActivityOrRollBack(db, filePath, fitData) {
+  db.run('SAVEPOINT fit_file');
+  try {
+    upsertActivity(db, filePath, fitData);
+    db.run('RELEASE fit_file');
+  } catch (error) {
+    db.run('ROLLBACK TO fit_file');
+    db.run('RELEASE fit_file');
+    throw error;
+  }
+}
+
 function saveFitToLocalDb(filePath, fitData, targetDbPath) {
   return enqueueDatabaseTask(() => saveFitToLocalDbNow(filePath, fitData, targetDbPath));
 }
@@ -1934,6 +2069,8 @@ async function persistDatabase(db, dbPath) {
   const bytes = db.export();
   const temporaryPath = `${dbPath}.${process.pid}.tmp`;
   try {
+    // The first save of a database started beside an opened file: its folder does not exist yet.
+    await fs.mkdir(path.dirname(dbPath), { recursive: true });
     await fs.writeFile(temporaryPath, Buffer.from(bytes), { mode: 0o600 });
     await fs.rename(temporaryPath, dbPath);
   } finally {
@@ -2034,6 +2171,7 @@ function upsertActivity(db, filePath, fitData) {
     Number.isFinite(deviceDescentM) && deviceDescentM > 0 ? deviceDescentM : null,
     (() => { const moving = asNumber(session.total_moving_time); return Number.isFinite(moving) && moving > 0 ? moving : null; })(),
     elapsed.deviceElapsedS,
+    INDEX_VERSION,
   ];
 
   const upsertStmt = db.prepare(`
@@ -2046,7 +2184,8 @@ function upsertActivity(db, filePath, fitData) {
       training_stress_score, intensity_factor, xpower, relative_intensity_gc, bike_stress_score, decoupling_pct, hr_tss, trimp,
       total_training_effect, aerobic_training_effect, anaerobic_training_effect,
       total_calories, record_count, lap_count, laps_json, rider_mass_kg, bike_mass_kg,
-      utc_offset_s, offset_source, device_ascent_m, device_descent_m, device_moving_time_s, device_elapsed_s
+      utc_offset_s, offset_source, device_ascent_m, device_descent_m, device_moving_time_s, device_elapsed_s,
+      index_version
     ) VALUES (${upsertValues.map(() => '?').join(',')})
     ON CONFLICT(file_path) DO UPDATE SET
       file_name=excluded.file_name, imported_at=excluded.imported_at,
@@ -2076,7 +2215,8 @@ function upsertActivity(db, filePath, fitData) {
       bike_mass_kg=COALESCE(activities.bike_mass_kg, excluded.bike_mass_kg),
       utc_offset_s=excluded.utc_offset_s, offset_source=excluded.offset_source,
       device_ascent_m=excluded.device_ascent_m, device_descent_m=excluded.device_descent_m,
-      device_moving_time_s=excluded.device_moving_time_s, device_elapsed_s=excluded.device_elapsed_s
+      device_moving_time_s=excluded.device_moving_time_s, device_elapsed_s=excluded.device_elapsed_s,
+      index_version=excluded.index_version
   `);
 
   upsertStmt.run(upsertValues);
@@ -2093,6 +2233,9 @@ function upsertActivity(db, filePath, fitData) {
   const activityId = Number(row.id);
 
   db.run('DELETE FROM records WHERE activity_id = ?', [activityId]);
+  // The ride's derived data came from the records being replaced; a page recomputes it when it
+  // next needs it, on the route the ride already has.
+  db.run('UPDATE activity_features SET feature_cache_key = NULL WHERE activity_id = ?', [activityId]);
 
   const insertRecord = db.prepare(`
     INSERT INTO records (
@@ -3470,6 +3613,8 @@ async function getProgressSummaryFromDbNow(dbPath, activityId, currentData = nul
     stmt.free();
     stmt = null;
     const changesBefore = totalChanges(db);
+    // History read by an earlier version goes into the prompt as this version reads it.
+    await rereadOutdatedRides(db, promptHistoryRows(db, activityId));
     summary.trainingContext = getTrainingContextFromDb(db, activityId, currentData);
     // Lazily computed features, route assignments and elevation profiles must survive the connection.
     if (totalChanges(db) !== changesBefore) await persistDatabase(db, dbPath);
@@ -3497,7 +3642,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   const rows = readRows(`SELECT a.*, aa.analysis_text, aa.analysis_version, aa.summary_json, aac.chat_json
     FROM activities a LEFT JOIN activity_analysis aa ON aa.activity_id = a.id
     LEFT JOIN activity_analysis_chat aac ON aac.activity_id = a.id
-    WHERE datetime(a.start_time) < datetime(?) AND datetime(a.start_time) >= datetime(?, '-90 days')
+    WHERE datetime(a.start_time) < datetime(?) AND datetime(a.start_time) >= datetime(?, '-${PROMPT_HISTORY_DAYS} days')
     ORDER BY datetime(a.start_time) DESC, a.id DESC`, [selected.start_time, selected.start_time]);
   const profile = getAthleteProfileFromDbConnection(db);
   const detailedPerSport = new Map();

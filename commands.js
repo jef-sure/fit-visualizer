@@ -21,6 +21,7 @@ function registerCommands(context, services) {
     selectDatabaseFolder,
     showActivityBrowserInPanel,
     updateModelPriceTable,
+    upgradeBeforeOpening,
   } = services;
 
   const register = (command, errorPrefix, handler) => vscode.commands.registerCommand(
@@ -105,6 +106,7 @@ function registerCommands(context, services) {
       escapeHtml,
       prepareFitForVisualization,
       showActivityBrowserInPanel,
+      upgradeBeforeOpening,
     }),
     {
       supportsMultipleEditorsPerDocument: false,
@@ -126,6 +128,10 @@ function createFitEditorProvider(context, services) {
       try {
         const { dbPath, activityId } = await services.prepareFitForVisualization(document.uri.fsPath);
         panel.title = path.basename(document.uri.fsPath);
+        // While an update puts the database in order, the tab says so instead of staying blank.
+        await services.upgradeBeforeOpening(dbPath, () => {
+          panel.webview.html = `<!DOCTYPE html><html><body><p>${services.escapeHtml(vscode.l10n.t('FIT Visualizer is putting the database in order after an update. The page opens when it is done.'))}</p></body></html>`;
+        });
         await services.showActivityBrowserInPanel(context, panel, dbPath, activityId);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

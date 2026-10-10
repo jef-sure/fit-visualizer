@@ -1,10 +1,14 @@
 # Changelog
 
-## 0.30.1 - unreleased
+## 0.30.1 - 2026-10-11
 
 ### Changed
 
-- **Nothing to do after an update.** What the upgrade notes used to ask for now happens by itself when a page is first opened. FIT files are re-read from where they were indexed when a version reads them differently (moved or deleted files keep their earlier data, and a message says how many); derived data is rebuilt after that in the same run. Saved analyses of an earlier format are offered for an update once per format, with one button: this is the only step that is not automatic, because each analysis is a request to the AI. Rides that were never analysed are not part of the offer; the mark on the page and **FIT: Re-analyze Outdated Analyses** remain. A database indexed by any earlier version is re-read once after this update, which also applies the device ascent/descent correction of 0.29.0 (0.29.0 itself was never published; its changes reached users with 0.30.0).
+- **Nothing to do after an update.** What the upgrade notes used to ask for now happens by itself. Each ride carries the version that read its file; when a version reads something differently, a ride is re-read from where its file was indexed at the moment it is needed - when its page opens, when it is compared, or when it goes into a prompt as history - and not in bulk. A moved or deleted file keeps the ride as it was read, with a note in the "FIT Visualizer: Analysis" output. Derived data is rebuilt once when its format changes, before the first page opens; a `.fit` file opened from the Explorer goes through the same step as the commands, and its tab says so while it runs. A second VS Code window on the same database waits for the first to finish instead of doing the work again; a lock left by a window that is gone is taken over. Saved analyses of an earlier format are offered for an update once per format, with one button: this is the only step that is not automatic, because each analysis is a request to the AI. Rides that were never analysed are not part of the offer; the mark on the page and **FIT: Re-analyze Outdated Analyses** remain. Indexing writes the database once per run instead of once per file. Rides indexed by any earlier version are re-read this way after this update, which applies the device ascent/descent correction of 0.29.0 as they are opened (0.29.0 itself was never published; its changes reached users with 0.30.0).
+
+### Fixed
+
+- Opening a FIT file in a folder that had no database yet failed with `ENOENT: no such file or directory` on `.fit-visualizer/fit-data.sqlite.<pid>.tmp`: the database was written before its `.fit-visualizer` folder was created. The folder is now created at the first save ([#1](https://github.com/jef-sure/fit-visualizer/issues/1)).
 
 ## 0.30.0 - 2026-10-06
 

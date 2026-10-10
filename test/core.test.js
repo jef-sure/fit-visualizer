@@ -193,7 +193,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { runUpgradeSteps, offerReanalysis, loadFitDataFromDb, promptHistoryRows, rereadOutdatedRides, getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -857,6 +857,29 @@ test('FIT indexing reports progress and a persistent completion summary includin
     assert.deepEqual(reports.filter((report) => report.message).map((report) => report.message), ['1/2: good.fit', '2/2: bad.fit']);
     assert.equal(reports.reduce((sum, report) => sum + (report.increment || 0), 0), 100);
     assert.equal(events.at(-2), 'progress finished');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('the first save of a database creates its .fit-visualizer folder', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-first-database-'));
+  const dbPath = path.join(directory, '.fit-visualizer', 'fit-data.sqlite');
+  const lines = [];
+  const internals = loadExtensionInternalsForTest({
+    l10n: { t: (text, ...values) => text.replace(/\{(\d+)\}/g, (_, index) => values[index]) },
+    ProgressLocation: { Notification: 15 },
+    window: {
+      createOutputChannel: () => ({ clear() {}, show() {}, appendLine: (line) => lines.push(line) }),
+      withProgress: async (options, task) => task({ report: () => {} }),
+    },
+  }, { parseFitFile: async () => ({ records: [], sessions: [] }) });
+  try {
+    assert.equal(fs.existsSync(path.dirname(dbPath)), false);
+    const result = await internals.indexFitUris([{ fsPath: path.join(directory, 'first.fit') }], dbPath, 'Indexing one FIT file...');
+    assert.deepEqual(result, { saved: 1, failed: 0 }, lines.join('\n'));
+    assert.ok(fs.statSync(dbPath).size > 0);
+    assert.deepEqual(fs.readdirSync(path.dirname(dbPath)), ['fit-data.sqlite'], 'no temporary export is left behind');
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -5578,7 +5601,10 @@ test('a stale derived-feature version triggers one background rebuild with progr
     ensureDatabaseSchema(db);
     assert.equal(needsDerivedFeatureRebuild(db), false, 'empty database needs nothing');
     db.run("INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (1, 'a', 'a', '2026-08-01T10:00:00Z', 'fit')");
-    assert.equal(needsDerivedFeatureRebuild(db), true, 'an activity without feature rows is not covered');
+    assert.equal(needsDerivedFeatureRebuild(db), true, 'a database never rebuilt as a whole is not covered');
+    db.run(`INSERT INTO derived_state (key, value) VALUES ('features_version', '${require('../activity-features').FEATURES_VERSION}')`);
+    assert.equal(needsDerivedFeatureRebuild(db), false, 'a ride without derived data is computed when its page is shown, not by a rebuild of the whole');
+    db.run("DELETE FROM derived_state WHERE key = 'features_version'");
     db.run(`INSERT INTO activity_features (activity_id, features_version, feature_cache_key) VALUES (1, ${require('../activity-features').FEATURES_VERSION}, 'k')`);
     // Rows refreshed one by one do not make a rebuilt database: the routes were never re-derived.
     assert.equal(needsDerivedFeatureRebuild(db), true, 'fresh rows without a rebuild of the whole are not enough');
@@ -6923,35 +6949,25 @@ test('the altitude chart axis is labelled as altitude and the segment table head
   assert.equal(ru['Altitude (m)'], 'Высота (м)');
 });
 
-test('upgrade steps: a fresh database is stamped, one read by an earlier version asks for a re-read once', async () => {
-  const { INDEX_VERSION, indexedFilePaths, markIndexVersion, needsReindex, readIndexVersion } = require('../upgrade-steps');
+test('upgrade steps: each ride carries the version that read it; the database-wide stamp of the beta is taken over', async () => {
+  const { INDEX_VERSION, needsReread } = require('../upgrade-steps');
+  assert.equal(needsReread({ source: 'fit', index_version: null }), true, 'read before rows carried a version');
+  assert.equal(needsReread({ source: 'fit', index_version: INDEX_VERSION - 1 }), true);
+  assert.equal(needsReread({ source: 'fit', index_version: INDEX_VERSION }), false);
+  assert.equal(needsReread({ source: 'manual', index_version: null }), false, 'a manual activity has no file');
+  assert.equal(needsReread(null), false);
   const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
-  const fresh = new SQL.Database();
+  const db = new SQL.Database();
   try {
-    ensureDatabaseSchema(fresh);
-    assert.equal(readIndexVersion(fresh), INDEX_VERSION);
-    fresh.run("INSERT INTO activities (file_path, file_name, source) VALUES ('/rides/a.fit', 'a.fit', 'fit')");
-    ensureDatabaseSchema(fresh);
-    assert.equal(needsReindex(fresh), false);
+    ensureDatabaseSchema(db);
+    db.run("INSERT INTO activities (id, file_path, file_name, source) VALUES (1, '/rides/a.fit', 'a.fit', 'fit'), (2, '/rides/b.fit', 'b.fit', 'fit')");
+    db.run('UPDATE activities SET index_version = ? WHERE id = 2', [INDEX_VERSION]);
+    db.run("INSERT INTO derived_state (key, value) VALUES ('index_version', '7')");
+    ensureDatabaseSchema(db);
+    assert.deepEqual(db.exec('SELECT id, index_version FROM activities ORDER BY id')[0].values, [[1, 7], [2, INDEX_VERSION]]);
+    assert.deepEqual(db.exec("SELECT value FROM derived_state WHERE key = 'index_version'"), []);
   } finally {
-    fresh.close();
-  }
-  // A database of an earlier version: activities are there, the stamp is not.
-  const old = new SQL.Database();
-  try {
-    ensureDatabaseSchema(old);
-    old.run("DELETE FROM derived_state WHERE key = 'index_version'");
-    old.run("INSERT INTO activities (file_path, file_name, source, start_time) VALUES ('/rides/b.fit', 'b.fit', 'fit', '2026-08-02T10:00:00Z')");
-    old.run("INSERT INTO activities (file_path, file_name, source, start_time) VALUES ('/rides/a.fit', 'a.fit', 'fit', '2026-08-01T10:00:00Z')");
-    old.run("INSERT INTO activities (file_path, file_name, source) VALUES ('manual:1', 'manual', 'manual')");
-    ensureDatabaseSchema(old);
-    assert.equal(readIndexVersion(old), null);
-    assert.equal(needsReindex(old), true);
-    assert.deepEqual(indexedFilePaths(old), ['/rides/a.fit', '/rides/b.fit']);
-    markIndexVersion(old);
-    assert.equal(needsReindex(old), false);
-  } finally {
-    old.close();
+    db.close();
   }
 });
 
@@ -6964,6 +6980,225 @@ test('upgrade steps: only saved analyses of an earlier format are offered, once 
   assert.equal(shouldOfferReanalysis(45, 46, 2), true);
   assert.equal(shouldOfferReanalysis(undefined, 46, 0), false);
   const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
-  assert.match(source, /await runUpgradeSteps\(dbPath, \{ offerReanalysis: true \}\);/);
+  assert.match(source, /await runUpgradeSteps\(dbPath, \{ offerReanalysis: true, onWork \}\);/);
   assert.match(source, /if \(choice === update\) await runReanalysisBatch\(dbPath, outdated, null\);/);
+});
+
+// A database as an earlier version left it: two indexed rides without a row version, what the
+// rider entered, derived data of the current version.
+async function createEarlierVersionDatabaseForTest(directory) {
+  const { FEATURES_VERSION } = require('../activity-features');
+  const dbPath = path.join(directory, '.fit-visualizer', 'fit-data.sqlite');
+  const presentPath = path.join(directory, 'present.fit');
+  const gonePath = path.join(directory, 'gone.fit');
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  fs.writeFileSync(presentPath, '');
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  ensureDatabaseSchema(db);
+  db.run(`INSERT INTO activities (id, file_path, file_name, start_time, source, sport, total_timer_s, total_distance_km, manual_avg_hr)
+    VALUES (1, ?, 'present.fit', '2026-08-01T10:00:00.000Z', 'fit', 'cycling', 600, 5, 141),
+           (2, ?, 'gone.fit', '2026-08-02T10:00:00.000Z', 'fit', 'cycling', 600, 5, NULL)`, [presentPath, gonePath]);
+  db.run("INSERT INTO activity_analysis (activity_id, analysis_text, analysis_version) VALUES (1, 'Saved analysis', 1)");
+  db.run("INSERT INTO activity_notes (activity_id, note) VALUES (1, 'my own note')");
+  db.run("INSERT INTO activity_features (activity_id, features_version, feature_cache_key) VALUES (1, ?, 'k1'), (2, ?, 'k2')", [FEATURES_VERSION, FEATURES_VERSION]);
+  db.run("INSERT INTO derived_state (key, value) VALUES ('features_version', ?)", [String(FEATURES_VERSION)]);
+  fs.writeFileSync(dbPath, Buffer.from(db.export()));
+  db.close();
+  const read = (sql) => {
+    const copy = new SQL.Database(fs.readFileSync(dbPath));
+    try {
+      return copy.exec(sql)[0]?.values || [];
+    } finally {
+      copy.close();
+    }
+  };
+  return { dbPath, presentPath, gonePath, read, SQL };
+}
+
+test('a ride read by an earlier version is re-read when its page loads; one whose file is gone keeps its row', async () => {
+  const { INDEX_VERSION } = require('../upgrade-steps');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-lazy-reread-'));
+  const { dbPath, presentPath, gonePath, read } = await createEarlierVersionDatabaseForTest(directory);
+  const parsed = [];
+  const log = [];
+  const titles = [];
+  const internals = loadExtensionInternalsForTest({
+    l10n: { t: (text, ...values) => text.replace(/\{(\d+)\}/g, (_, index) => values[index]) },
+    ProgressLocation: { Notification: 15 },
+    window: {
+      createOutputChannel: () => ({ clear() {}, show() {}, appendLine: (line) => log.push(line) }),
+      showInformationMessage: async () => undefined,
+      showWarningMessage: async () => undefined,
+      withProgress: async (options, task) => { titles.push(options.title); return task({ report() {} }, { isCancellationRequested: false }); },
+    },
+  }, { parseFitFile: async (file) => { parsed.push(file); return { records: [{ timestamp: '2026-08-01T10:00:00.000Z', elapsed_time: 0, distance: 0, heart_rate: 130 }], sessions: [{ start_time: '2026-08-01T10:00:00.000Z', sport: 'cycling', total_timer_time: 600 }] }; } });
+  try {
+    // The update itself has nothing to do: derived data is current and rides are re-read on demand.
+    await internals.runUpgradeSteps(dbPath);
+    assert.deepEqual(titles, []);
+    assert.deepEqual(parsed, []);
+
+    const data = await internals.loadFitDataFromDb(dbPath, 1);
+    assert.deepEqual(parsed, [presentPath], 'the ride is re-read from where it was indexed');
+    assert.equal(data.records.length, 1);
+    assert.deepEqual(read('SELECT id, index_version FROM activities ORDER BY id'), [[1, INDEX_VERSION], [2, null]], 'only the ride that was needed');
+    assert.deepEqual(read('SELECT activity_id, feature_cache_key FROM activity_features ORDER BY activity_id'), [[1, null], [2, 'k2']], 'its derived data is owed a recompute, the other ride keeps its own');
+    assert.deepEqual(read('SELECT activity_id, analysis_text FROM activity_analysis'), [[1, 'Saved analysis']]);
+    assert.deepEqual(read('SELECT activity_id, note FROM activity_notes'), [[1, 'my own note']]);
+    assert.deepEqual(read('SELECT manual_avg_hr FROM activities WHERE id = 1'), [[141]]);
+
+    const written = fs.statSync(dbPath).mtimeMs;
+    await internals.loadFitDataFromDb(dbPath, 1);
+    assert.equal(parsed.length, 1, 'a second load reads nothing');
+    assert.equal(fs.statSync(dbPath).mtimeMs, written, 'and writes nothing');
+
+    const gone = await internals.loadFitDataFromDb(dbPath, 2);
+    assert.ok(gone, 'the ride is still shown');
+    assert.equal(parsed.length, 1);
+    assert.deepEqual(read('SELECT index_version FROM activities WHERE id = 2'), [[null]], 'still owed, should the file come back');
+    assert.equal(log.filter((line) => line.includes(`no longer at ${gonePath}`)).length, 1);
+    await internals.loadFitDataFromDb(dbPath, 2);
+    assert.equal(log.filter((line) => line.includes('no longer at')).length, 1, 'said once');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('the history a prompt takes is re-read first; rides outside the window are left as read', async () => {
+  const { INDEX_VERSION } = require('../upgrade-steps');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-prompt-reread-'));
+  const files = Object.fromEntries(['ride', 'recent', 'old', 'later'].map((name) => [name, path.join(directory, `${name}.fit`)]));
+  for (const file of Object.values(files)) fs.writeFileSync(file, '');
+  const parsed = [];
+  const internals = loadExtensionInternalsForTest({
+    window: { createOutputChannel: () => ({ clear() {}, show() {}, appendLine() {} }) },
+  }, { parseFitFile: async (file) => { parsed.push(path.basename(file)); return { records: [], sessions: [{ start_time: '2026-06-01T10:00:00.000Z', sport: 'cycling' }] }; } });
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    db.run(`INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES
+      (1, ?, 'ride.fit', '2026-09-01T10:00:00.000Z', 'fit'),
+      (2, ?, 'recent.fit', '2026-08-20T10:00:00.000Z', 'fit'),
+      (3, ?, 'old.fit', '2026-05-01T10:00:00.000Z', 'fit'),
+      (4, ?, 'later.fit', '2026-09-05T10:00:00.000Z', 'fit'),
+      (5, 'manual:1', 'manual', '2026-08-25T10:00:00.000Z', 'manual')`, [files.ride, files.recent, files.old, files.later]);
+    const history = internals.promptHistoryRows(db, 1);
+    assert.deepEqual(history.map((row) => row.id).sort(), [2, 5], 'the 90 days before the ride');
+    assert.equal(await internals.rereadOutdatedRides(db, history), 1);
+    assert.deepEqual(parsed, ['recent.fit']);
+    assert.deepEqual(db.exec('SELECT id, index_version FROM activities ORDER BY id')[0].values,
+      [[1, null], [2, INDEX_VERSION], [3, null], [4, null], [5, null]]);
+  } finally {
+    db.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('upgrade steps run before the page of a .fit file opened in the editor, as for the commands', async () => {
+  let provider;
+  const originalLoad = Module._load;
+  const modulePath = require.resolve('../commands');
+  Module._load = function load(request, parent, isMain) {
+    if (request === 'vscode') return {
+      l10n: { t: (text) => text },
+      commands: { registerCommand: () => ({ dispose() {} }) },
+      window: { registerCustomEditorProvider: (viewType, value) => { provider = value; return { dispose() {} }; }, showErrorMessage: () => undefined },
+    };
+    return originalLoad.call(this, request, parent, isMain);
+  };
+  const calls = [];
+  try {
+    const loaded = new Module(modulePath, module);
+    loaded.filename = modulePath;
+    loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
+    loaded._compile(fs.readFileSync(modulePath, 'utf8'), modulePath);
+    loaded.exports.registerCommands({}, {
+      escapeHtml: (text) => text,
+      prepareFitForVisualization: async (filePath) => { calls.push(`prepare ${filePath}`); return { dbPath: '/rides/.fit-visualizer/fit-data.sqlite', activityId: 7 }; },
+      upgradeBeforeOpening: async (dbPath, onWork) => { calls.push(`upgrade ${dbPath}`); onWork(); },
+      showActivityBrowserInPanel: async (context, panel, dbPath, activityId) => { calls.push(`show ${activityId}`); },
+    });
+  } finally {
+    Module._load = originalLoad;
+  }
+  const panel = { webview: {} };
+  await provider.resolveCustomEditor({ uri: { fsPath: '/rides/a.fit' } }, panel);
+  assert.deepEqual(calls, ['prepare /rides/a.fit', 'upgrade /rides/.fit-visualizer/fit-data.sqlite', 'show 7']);
+  assert.match(panel.webview.html, /putting the database in order/);
+  const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.match(source, /async function openActivityBrowser\(context, dbPath, preselectId, compId\) \{\n  await upgradeBeforeOpening\(dbPath\);/);
+});
+
+test('upgrade steps: two pages opened at once after an update ask about the analyses only once', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-upgrade-offer-'));
+  const { dbPath } = await createEarlierVersionDatabaseForTest(directory);
+  const messages = [];
+  const stored = new Map();
+  const internals = loadExtensionInternalsForTest({
+    l10n: { t: (text, ...values) => text.replace(/\{(\d+)\}/g, (_, index) => values[index]) },
+    window: { showInformationMessage: async (message) => { messages.push(message); } },
+  });
+  internals.setContext({ globalState: { get: (key) => stored.get(key), update: async (key, value) => { stored.set(key, value); } } });
+  try {
+    await Promise.all([internals.offerReanalysis(dbPath), internals.offerReanalysis(dbPath)]);
+    assert.equal(messages.length, 1, messages.join('\n'));
+    assert.match(messages[0], /1 saved analyses were made by an earlier version/);
+    await internals.offerReanalysis(dbPath);
+    assert.equal(messages.length, 1, 'declined once, not asked again for this format');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('upgrade steps: a second VS Code window waits for the first; a lock left by a dead one is taken over', async () => {
+  const { FEATURES_VERSION } = require('../activity-features');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-upgrade-lock-'));
+  const { dbPath, read, SQL } = await createEarlierVersionDatabaseForTest(directory);
+  const lockPath = `${dbPath}.upgrade.lock`;
+  const titles = [];
+  const internals = loadExtensionInternalsForTest({
+    l10n: { t: (text, ...values) => text.replace(/\{(\d+)\}/g, (_, index) => values[index]) },
+    ProgressLocation: { Notification: 15 },
+    window: {
+      createOutputChannel: () => ({ clear() {}, show() {}, appendLine() {} }),
+      showInformationMessage: async () => undefined,
+      showWarningMessage: async () => undefined,
+      withProgress: async (options, task) => { titles.push(options.title); return task({ report() {} }, { isCancellationRequested: false }); },
+    },
+  });
+  const setDerivedVersion = (value) => {
+    const db = new SQL.Database(fs.readFileSync(dbPath));
+    db.run("UPDATE derived_state SET value = ? WHERE key = 'features_version'", [value]);
+    fs.writeFileSync(dbPath, Buffer.from(db.export()));
+    db.close();
+  };
+  try {
+    // Derived data of an earlier format: a rebuild is due. The lock is held by a process that is
+    // running (the test runner): this window waits.
+    setDerivedVersion('1');
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.ppid }));
+    const run = internals.runUpgradeSteps(dbPath);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.deepEqual(read("SELECT value FROM derived_state WHERE key = 'features_version'"), [['1']], 'nothing is written while the other window works');
+    // The other window finishes: it rebuilt the database and removed its lock.
+    setDerivedVersion(String(FEATURES_VERSION));
+    fs.unlinkSync(lockPath);
+    await run;
+    assert.ok(titles.some((title) => /Another VS Code window/.test(title)), titles.join(' | '));
+    assert.ok(!titles.some((title) => /rebuilding derived features/.test(title)), 'the work is not done a second time');
+
+    // A lock of a process that is gone is taken over.
+    titles.length = 0;
+    setDerivedVersion('1');
+    const dead = require('node:child_process').spawnSync(process.execPath, ['-e', '0']).pid;
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: dead }));
+    await internals.runUpgradeSteps(dbPath);
+    assert.ok(titles.some((title) => /rebuilding derived features/.test(title)), titles.join(' | '));
+    assert.deepEqual(read("SELECT value FROM derived_state WHERE key = 'features_version'"), [[String(FEATURES_VERSION)]]);
+    assert.equal(fs.existsSync(lockPath), false, 'the lock is removed afterwards');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });

@@ -1,5 +1,5 @@
 const { collapseDuplicateHeartRateProfiles } = require('./heart-rate-profiles');
-const { stampFreshDatabase } = require('./upgrade-steps');
+const { migrateIndexVersionStamp } = require('./upgrade-steps');
 
 function ensureDatabaseSchema(db) {
   db.run(`
@@ -277,7 +277,9 @@ function ensureDatabaseSchema(db) {
   // A saved comparison is a model answer like an analysis: it needs to say which format wrote it.
   addColumnIfMissing(db, 'activity_comparisons', 'analysis_version', 'INTEGER');
   addColumnIfMissing(db, 'activity_features', 'route_frame_json', 'TEXT');
-  stampFreshDatabase(db);
+  // Which version of the extension read the ride's file into its rows (see upgrade-steps.js).
+  addColumnIfMissing(db, 'activities', 'index_version', 'INTEGER');
+  migrateIndexVersionStamp(db);
 }
 
 function addColumnIfMissing(db, table, column, type) {

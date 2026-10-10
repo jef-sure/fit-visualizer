@@ -4,6 +4,8 @@
   "Later": "Later",
   "FIT Visualizer was updated: {0} saved analyses were made by an earlier version. Updating them sends one request to the AI per activity.": "FIT Visualizer was updated: {0} saved analyses were made by an earlier version. Updating them sends one request to the AI per activity.",
   "FIT Visualizer was updated and re-read {0} FIT file(s). {1} could not be re-read (moved, deleted or unreadable) and keep their earlier data.": "FIT Visualizer was updated and re-read {0} FIT file(s). {1} could not be re-read (moved, deleted or unreadable) and keep their earlier data.",
+  "Another VS Code window is updating the FIT database. Waiting for it to finish.": "Another VS Code window is updating the FIT database. Waiting for it to finish.",
+  "FIT Visualizer is putting the database in order after an update. The page opens when it is done.": "FIT Visualizer is putting the database in order after an update. The page opens when it is done.",
   "Update analyses for {0} activities? This includes outdated and missing analyses and uses one Copilot request per activity.": "Update analyses for {0} activities? This includes outdated and missing analyses and uses one Copilot request per activity.",
   "Updating Copilot model prices": "Updating Copilot model prices",
   "Model prices updated: {0} models ({1}).": "Model prices updated: {0} models ({1}).",

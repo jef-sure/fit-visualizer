@@ -5,6 +5,8 @@ const UI_STRINGS = {
   upgradeUpdateAnalyses: 'Update analyses',
   upgradeLater: 'Later',
   upgradeRereadSummary: 'FIT Visualizer was updated and re-read {0} FIT file(s). {1} could not be re-read (moved, deleted or unreadable) and keep their earlier data.',
+  upgradeWaitingForOtherWindow: 'Another VS Code window is updating the FIT database. Waiting for it to finish.',
+  upgradeInProgressPage: 'FIT Visualizer is putting the database in order after an update. The page opens when it is done.',
   updatingModelPrices: 'Updating Copilot model prices',
   modelPricesUpdated: 'Model prices updated: {0} models ({1}).',
   modelPriceUpdateFailed: 'FIT model price update failed',

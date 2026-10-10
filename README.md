@@ -456,10 +456,10 @@ The context menu of a `.fit` file in the Explorer has two shortcuts to the comma
 
 ## Upgrading
 
-There is nothing to do after an update. When a page is first opened, the extension puts the database in order by itself:
+There is nothing to do after an update. The extension puts the database in order by itself:
 
-- **FIT files are re-read** if the new version reads something from them differently. The files are taken from where they were when indexed. Moved or deleted ones keep their earlier data, and the extension says how many there are.
-- **Derived data** (segments, zones, routes, route stretches) is recomputed, with a progress notification. The route names and notes you entered are carried over to the rebuilt routes.
+- **FIT files are re-read** if the new version reads something from them differently. Each ride carries the version that read its file, and a ride is re-read from where its file was when indexed at the moment it is needed: when its page opens, when it is compared, or when it goes into a prompt as history. Nothing is re-read in bulk. A moved or deleted file keeps the ride as it was read; a note about it goes to the "FIT Visualizer: Analysis" output.
+- **Derived data** (segments, zones, routes, route stretches) is recomputed once when its format changes, before the first page opens, with a progress notification. The route names and notes you entered are carried over to the rebuilt routes. A second VS Code window on the same database waits for the first to finish.
 - **Saved AI analyses** of an earlier version are offered for an update, once. This step is not done by itself: each analysis is a request to the AI with the same contents as an ordinary analysis, and it spends the Copilot allowance. If you decline, old analyses stay where they are, marked as made by an earlier version; they can be updated later with **FIT: Re-analyze Outdated Analyses**. Rides you never analysed are not part of this offer.
 
 Re-reading and recomputing are local and do not change the original FIT files. Notes, goals, plan notes and zone profiles are kept.
