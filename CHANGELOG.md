@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A FIT file opened with **View only**, and the first ride of a folder that had no database yet, opened as if after an update: the tab said the database was being put in order after an update, a rebuild of derived data ran with its progress, and it ended with "Derived features rebuilt for 1 activities". A database started now carries the current version of its derived data from the start.
+- Files opened with **View only** shared one database that was emptied for each new file. A second file took the first one's id while the first page was still open, and that page then showed, saved notes to and analysed the second ride. Each file now has a database of its own; those not used for a day are removed.
+- The crosshair read-out of a metric overlay on the charts took the value at the chart's own point index. An overlay is thinned from the samples that carry its metric, so when a sensor started late or dropped out the value came from elsewhere in the ride (at km 2, a heart rate from km 13). It is now looked up by distance, and nothing is shown where the overlay has no data.
+- A recording of more than about 125 000 samples (a 1 Hz ride of some 35 hours) could not be indexed or shown: taking the maximum over every sample overflowed the call stack.
+- The chat model picker named the comparison model as its default when `fitVisualizer.chatModelId` and `fitVisualizer.comparisonModelId` were pinned to different models.
+- Four messages of **FIT: Re-analyze Selected Activities** and **FIT: Select Analysis Model** were not translated.
+
 ## 0.30.1 - 2026-10-11
 
 ### Changed

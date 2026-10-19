@@ -873,7 +873,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
     ...modelPickerModels.map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(modelLabel(model))}</option>`),
   ].join('');
   const compareModelOptions = tierOptions(modelPicker?.middleDefaultName || ui.middleTierModel);
-  const chatModelOptions = tierOptions(modelPicker?.middleDefaultName || ui.middleTierModel);
+  const chatModelOptions = tierOptions(modelPicker?.chatDefaultName || modelPicker?.middleDefaultName || ui.middleTierModel);
 
   const comparedId = Number(comparedActivityId);
   const canCompare = Number.isFinite(comparedId) && comparedId > 0;
@@ -2099,6 +2099,17 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         return lo;
       }
 
+      // An overlay is thinned on its own, from the samples that carry its metric: a sensor that
+      // started late or dropped out leaves it with fewer points than the chart, and the chart's
+      // index then pointed elsewhere in the ride (at km 2, a heart rate from km 13). It is looked up
+      // by distance, and inside a gap of the overlay no value is shown.
+      function overlayPointAt(series, x, maxGap) {
+        if (!series.xs) series.xs = series.points.map(function (p) { return p[0]; });
+        if (!series.xs.length) return null;
+        var point = series.points[nearestIndex(series.xs, x)];
+        return Math.abs(point[0] - x) <= maxGap ? point : null;
+      }
+
       function formatCrosshairValue(value, unit) {
         var digits = Math.abs(value) >= 100 ? 0 : Math.abs(value) >= 10 ? 1 : 2;
         return value.toFixed(digits).replace('.', decimalSeparator) + (unit ? ' ' + unit : '');
@@ -2420,9 +2431,12 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
             labelX.textContent = formatCrosshairValue(point[0], payload.xUnit);
             labelY.textContent = formatCrosshairValue(point[1], payload.yUnit);
             label.querySelectorAll('.crosshairOverlayValue').forEach(function (element) { element.remove(); });
+            // Five times the chart's mean spacing: wider than any step of a thinned series, far
+            // narrower than a sensor gap.
+            var maxOverlayGap = 5 * (payload.xMax - payload.xMin) / Math.max(1, payload.points.length - 1);
             Object.keys(instance.activeOverlays || {}).forEach(function (metricKey) {
               var series = payload.overlays && payload.overlays[metricKey];
-              var overlayPoint = series && series.points[index];
+              var overlayPoint = series && overlayPointAt(series, point[0], maxOverlayGap);
               if (!series || !overlayPoint || !Number.isFinite(overlayPoint[1])) return;
               var overlayLabel = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
               overlayLabel.setAttribute('class', 'crosshairOverlayValue');

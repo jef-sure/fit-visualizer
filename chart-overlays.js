@@ -38,8 +38,10 @@ function buildOverlayOptions(overlayMetrics, ownKey, labels = OVERLAY_METRIC_LAB
     if (key === ownKey) continue;
     const series = overlayMetrics[key];
     if (!series || series.points.length < 2 || !series.yValues.length) continue;
-    const min = Math.min(...series.yValues);
-    const max = Math.max(...series.yValues);
+    // Every sample of the ride, not the thinned points: folded, since a spread of them overflows
+    // the call stack on a very long recording.
+    const min = series.yValues.reduce((low, value) => (value < low ? value : low), Infinity);
+    const max = series.yValues.reduce((high, value) => (value > high ? value : high), -Infinity);
     if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) continue;
     const ticks = buildTicks(min, max, 18);
     result[key] = { points: series.points.map((point) => [roundTo(point.x, 4), roundTo(point.y, 2)]), min, max,

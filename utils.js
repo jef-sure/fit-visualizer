@@ -48,7 +48,7 @@ function estimateDuration(records) {
   const elapsed = records
     .map((record) => asNumber(record.elapsed_time))
     .filter((value) => Number.isFinite(value));
-  return elapsed.length ? Math.max(...elapsed) : 0;
+  return maxOrZero(elapsed);
 }
 
 function formatHms(value) {
@@ -2144,8 +2144,10 @@ function calculateHrTss(input) {
   return (durationSec / 3600) * (intensity(avgHeartRate) ** 2) * 100;
 }
 
+// Folded, not spread: a spread of a whole ride's samples overflows the call stack past about
+// 125 000 values (a 1 Hz recording of some 35 hours).
 function maxOrZero(values) {
-  return values.length ? Math.max(...values) : 0;
+  return values.length ? values.reduce((max, value) => (value > max ? value : max), -Infinity) : 0;
 }
 
 function asNumber(value) {

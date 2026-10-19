@@ -137,7 +137,7 @@ function computeDataQualityFlags({ records, session = {}, wheelRatio, elapsedMis
   const temps = list.map((record) => Number(record?.temperature_c ?? record?.temperature)).filter((value) => Number.isFinite(value));
   if (temps.length > DQ.tempMinSamples / 10) {
     const avg = temps.reduce((sum, value) => sum + value, 0) / temps.length;
-    const max = Math.max(...temps);
+    const max = temps.reduce((highest, value) => (value > highest ? value : highest), -Infinity);
     if (max - avg > DQ.tempHotMaxDeltaC || (max - avg > DQ.tempDeviceHotDelta && (max > DQ.tempHotMaxC || avg > DQ.tempMildAvgC))) {
       push('TEMP_DEVICE_HOT', 'warn', `device temperature peaks at ${max.toFixed(1)} C against an average of ${avg.toFixed(1)} C; likely sun on the device, not air temperature`, { maxC: Math.round(max * 10) / 10, avgC: Math.round(avg * 10) / 10 });
     }

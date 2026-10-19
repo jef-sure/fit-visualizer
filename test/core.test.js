@@ -193,7 +193,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { runUpgradeSteps, offerReanalysis, loadFitDataFromDb, promptHistoryRows, rereadOutdatedRides, getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { prepareGuestDatabase, saveFitToLocalDb, derivedRebuildPending, runUpgradeSteps, offerReanalysis, loadFitDataFromDb, promptHistoryRows, rereadOutdatedRides, getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -6847,7 +6847,44 @@ test('a FIT file opened from elsewhere does not start a database or take over as
   // Viewing only goes to a database that is emptied first and never remembered.
   assert.match(source, /await fs\.rm\(dbPath, \{ force: true \}\);/);
   assert.match(source, /if \(remember\) await rememberDatabasePath\(dbPath\);/);
-  assert.match(source, /choice === startHere \? \{ dbPath: ownDbPath, remember: true \} : \{ dbPath: await prepareGuestDatabase\(\), remember: false \}/);
+  assert.match(source, /choice === startHere \? \{ dbPath: ownDbPath, remember: true \} : \{ dbPath: await prepareGuestDatabase\(filePath\), remember: false \}/);
+});
+
+test('each file opened for viewing only has its own database, and a new database is not rebuilt as if after an update', async () => {
+  const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-guest-'));
+  const records = Array.from({ length: 120 }, (_, i) => ({
+    timestamp: new Date(Date.UTC(2026, 9, 1, 8, 0, i)).toISOString(), elapsed_time: i, distance: i * 0.008, speed: 28.8,
+    heart_rate: 130, altitude: 0.1, position_lat: 50 + i * 1e-5, position_long: 14,
+  }));
+  const ride = (sport) => ({ records, sessions: [{ start_time: records[0].timestamp, sport, total_timer_time: 120, total_elapsed_time: 120 }], laps: [] });
+  const internals = loadExtensionInternalsForTest();
+  internals.setContext({ globalStorageUri: { fsPath: storage } });
+  try {
+    const first = await internals.prepareGuestDatabase('/downloads/a.fit');
+    await internals.saveFitToLocalDb('/downloads/a.fit', ride('cycling'), first);
+    // A second file viewed while the first page is open does not take the first one's database.
+    const second = await internals.prepareGuestDatabase('/downloads/b.fit');
+    assert.notEqual(second, first);
+    await internals.saveFitToLocalDb('/downloads/b.fit', ride('running'), second);
+    const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+    const sportOf = (dbPath) => new SQL.Database(fs.readFileSync(dbPath)).exec('SELECT sport FROM activities WHERE id = 1')[0].values[0][0];
+    assert.equal(sportOf(first), 'cycling', 'the first page still finds its own ride under its id');
+    assert.equal(sportOf(second), 'running');
+    // Opening the same file again starts its database afresh.
+    assert.equal(await internals.prepareGuestDatabase('/downloads/a.fit'), first);
+    assert.equal(fs.existsSync(first), false);
+    // A database just started holds nothing from an earlier version: no rebuild, no "after an update" page.
+    assert.equal(await internals.derivedRebuildPending(second), false);
+    // The shared database of earlier versions and databases untouched for over a day are removed.
+    fs.writeFileSync(path.join(storage, 'guest', 'fit-data.sqlite'), '');
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(path.dirname(second), old, old);
+    await internals.prepareGuestDatabase('/downloads/c.fit');
+    assert.equal(fs.existsSync(path.join(storage, 'guest', 'fit-data.sqlite')), false);
+    assert.equal(fs.existsSync(path.dirname(second)), false);
+  } finally {
+    fs.rmSync(storage, { recursive: true, force: true });
+  }
 });
 
 test('the map can color the route by kilometre splits', () => {
@@ -7201,4 +7238,68 @@ test('upgrade steps: a second VS Code window waits for the first; a lock left by
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('a crosshair takes an overlay value at its own distance, and none inside a gap of the overlay', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  const nearest = /function nearestIndex\(sortedValues, target\) \{[\s\S]*?\n      \}/.exec(source)[0];
+  const lookup = /function overlayPointAt\(series, x, maxGap\) \{[\s\S]*?\n      \}/.exec(source)[0];
+  const overlayPointAt = new Function(`${nearest}\n${lookup}\nreturn overlayPointAt;`)();
+  // A heart-rate strap that connected at km 12: the overlay has no points before it.
+  const series = { points: Array.from({ length: 50 }, (_, i) => [12 + i * 0.5, 120 + i]) };
+  assert.equal(overlayPointAt(series, 2, 0.1), null, 'no heart rate where none was recorded');
+  assert.deepEqual(overlayPointAt(series, 13.4, 0.1), [13.5, 123]);
+  assert.match(source, /var overlayPoint = series && overlayPointAt\(series, point\[0\], maxOverlayGap\);/);
+  assert.doesNotMatch(source, /series\.points\[index\]/, 'the chart\'s own index never addresses an overlay');
+});
+
+test('every message the extension shows through vscode.l10n.t has a Russian translation', () => {
+  const ru = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'l10n', 'bundle.l10n.ru.json'), 'utf8'));
+  const root = path.join(__dirname, '..');
+  const missing = [];
+  for (const file of fs.readdirSync(root).filter((name) => name.endsWith('.js'))) {
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
+    for (const match of source.matchAll(/l10n\.t\(\s*'((?:\\'|[^'])*)'/g)) {
+      const message = match[1].replace(/\\'/g, "'");
+      if (!ru[message]) missing.push(`${file}: ${message}`);
+    }
+  }
+  assert.deepEqual(missing, []);
+});
+
+test('the chat model picker names the chat model as its default, not the comparison model', async () => {
+  const pins = { comparisonModelId: 'compare-model', chatModelId: 'chat-model' };
+  const { getModelPickerData } = loadExtensionInternalsForTest({
+    lm: { selectChatModels: async () => [
+      { id: 'compare-model', name: 'Compare Model', vendor: 'copilot' },
+      { id: 'chat-model', name: 'Chat Model', vendor: 'copilot' },
+    ] },
+    workspace: { getConfiguration: () => ({ get: (key) => pins[key] }) },
+  });
+  const picker = await getModelPickerData();
+  assert.equal(picker.middleDefaultName, 'Compare Model');
+  assert.equal(picker.chatDefaultName, 'Chat Model');
+  const page = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
+  assert.match(page, /const chatModelOptions = tierOptions\(modelPicker\?\.chatDefaultName/);
+});
+
+test('a recording longer than the call stack allows to spread is still summarised', () => {
+  const { estimateDuration, maxOrZero } = require('../utils');
+  const { computeDataQualityFlags } = require('../data-quality');
+  // 150 000 samples: a 1 Hz recording of some 42 hours. Math.max(...values) throws past about 125 000.
+  const records = Array.from({ length: 150000 }, (_, i) => ({
+    elapsed_time: i, distance: i * 0.008, speed: 28.8, heart_rate: 120 + (i % 40), altitude: 0.1, cadence: 85, power: 180, temperature: 20,
+  }));
+  assert.equal(maxOrZero(records.map((record) => record.heart_rate)), 159);
+  assert.equal(maxOrZero([]), 0);
+  assert.equal(estimateDuration(records), 149999);
+  const summary = buildSummary(records, [], {});
+  assert.equal(summary.maxHr, 159);
+  assert.ok(summary.distanceKm > 1199);
+  assert.doesNotThrow(() => computeDataQualityFlags({ records, session: {} }));
+  const overlays = buildOverlayOptions({ heart_rate: { points: [{ x: 0, y: 120 }, { x: 1, y: 159 }], yValues: records.map((record) => record.heart_rate) } }, 'speed');
+  assert.equal(overlays.heart_rate.min, 120);
+  assert.equal(overlays.heart_rate.max, 159);
+  const extension = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+  assert.doesNotMatch(extension, /Math\.max\(\.\.\.timestamps\)/);
 });

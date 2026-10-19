@@ -1,4 +1,5 @@
 const vscode = require('vscode');
+const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { buildSegmentContext, generateAnalysisPromptParts, generateAnalysisChatPrompt, generateComparisonPrompt, requestCopilotAnalysis, selectPreferredModel, summarizePromptBlocks } = require('./analysis');
@@ -826,11 +827,20 @@ async function getModelPickerData() {
     modelId: getComparisonModelId(),
     cheapModelMarkers: getCheapModelMarkers(),
   }, vscode.l10n.t('middle-tier model'));
+  // Chat has a pin of its own (fitVisualizer.chatModelId); its "Default" names the model a reply
+  // would use, not the one a comparison would.
+  const chatDefault = getChatModelId() === getComparisonModelId() ? middleDefault : await resolveDefault({
+    preferCheapModel: true,
+    tier: 'middle',
+    modelId: getChatModelId(),
+    cheapModelMarkers: getCheapModelMarkers(),
+  }, vscode.l10n.t('middle-tier model'));
   return {
     vendor,
     models: models.map((model) => ({ id: model.id, name: model.name || model.id, vendor: model.vendor })),
     defaultName: analysisDefault,
     middleDefaultName: middleDefault,
+    chatDefaultName: chatDefault,
   };
 }
 
@@ -1071,17 +1081,45 @@ function fitFileToDbPath(fitFilePath) {
   return path.join(workspaceRoot || path.dirname(fitFilePath), '.fit-visualizer', 'fit-data.sqlite');
 }
 
-// A database that holds one file at a time, for looking at a FIT file without adding it to any
-// history. It lives in the extension's own storage, is emptied before each use, and is never
-// remembered as the last database, so it cannot be picked up by the other commands.
-async function prepareGuestDatabase() {
+// A database that holds one file, for looking at a FIT file without adding it to any history. It
+// lives in the extension's own storage, is emptied before each use, and is never remembered as the
+// last database, so it cannot be picked up by the other commands. Each file has its own: with one
+// shared database, a second file opened this way took id 1 while the first one's page was still
+// open, and that page then showed, saved notes to and analysed the second ride.
+const GUEST_DATABASE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+async function prepareGuestDatabase(filePath) {
   const base = extensionContextRef?.globalStorageUri?.fsPath;
   if (!base) throw new Error('Cannot open the file without a database: the extension storage is unavailable.');
-  const dir = path.join(base, 'guest');
+  const root = path.join(base, 'guest');
+  await fs.mkdir(root, { recursive: true });
+  await removeStaleGuestDatabases(root);
+  const dir = path.join(root, crypto.createHash('sha256').update(normalizeFilePath(filePath)).digest('hex').slice(0, 16));
   await fs.mkdir(dir, { recursive: true });
   const dbPath = path.join(dir, 'fit-data.sqlite');
   await fs.rm(dbPath, { force: true });
   return dbPath;
+}
+
+// Databases of files looked at more than a day ago, and the single shared one of 0.30 and earlier.
+async function removeStaleGuestDatabases(root) {
+  let entries = [];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const entryPath = path.join(root, entry.name);
+    try {
+      // A save writes a temporary file beside the database and renames it: the folder's time is
+      // the time of the last save.
+      if (entry.isDirectory() && Date.now() - (await fs.stat(entryPath)).mtimeMs <= GUEST_DATABASE_MAX_AGE_MS) continue;
+      await fs.rm(entryPath, { recursive: true, force: true });
+    } catch {
+      // Another window may be removing the same entry.
+    }
+  }
 }
 
 // Opening a file is not a decision about where the rider's history lives. Inside a folder that has
@@ -1103,7 +1141,7 @@ async function chooseDatabaseForOpenedFit(filePath) {
     { modal: true }, viewOnly, startHere
   );
   // Closing the dialog is the safe answer: nothing is created beside the file, nothing switches.
-  return choice === startHere ? { dbPath: ownDbPath, remember: true } : { dbPath: await prepareGuestDatabase(), remember: false };
+  return choice === startHere ? { dbPath: ownDbPath, remember: true } : { dbPath: await prepareGuestDatabase(filePath), remember: false };
 }
 
 async function prepareFitForVisualization(filePath) {
@@ -2058,6 +2096,10 @@ async function openDatabase(SQL, dbPath) {
   }
   const db = new SQL.Database();
   ensureDatabaseSchema(db);
+  // A database started now holds nothing derived by an earlier version. Without the mark, its first
+  // page (a file opened for viewing, a folder's first ride) opened as if after an update: a full
+  // rebuild with its progress and "putting the database in order after an update".
+  markDerivedVersion(db);
   return db;
 }
 
@@ -2128,7 +2170,10 @@ function upsertActivity(db, filePath, fitData) {
   });
   // The CYCPLUS session elapsed can cover a device left running; records are the ground truth then.
   const timestamps = records.map((record) => Date.parse(record.timestamp)).filter(Number.isFinite);
-  const recordSpanS = timestamps.length >= 2 ? (Math.max(...timestamps) - Math.min(...timestamps)) / 1000 : null;
+  // Folded, not spread: spreading every record into Math.max overflows the call stack past about
+  // 125 000 of them, a 1 Hz recording of some 35 hours.
+  const recordSpanS = timestamps.length >= 2
+    ? (timestamps.reduce((a, b) => Math.max(a, b)) - timestamps.reduce((a, b) => Math.min(a, b))) / 1000 : null;
   const gapSeconds = records.length >= 2
     ? Math.max(0, recordSpanS - (records.at(-1).elapsed_time - records[0].elapsed_time)) : 0;
   const elapsed = reconcileSessionElapsed({
