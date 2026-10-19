@@ -3,6 +3,13 @@ const { computeHeartRateZones, calculatePeakHeartRates, PEAK_HEART_RATE_WINDOWS 
 const { localDate } = require('./activity-time');
 const { loadRhythm } = require('./trend-metrics');
 
+// The earlier rides of the same sport whose figures and saved analyses a prompt reads as history:
+// the latest RECENT_HISTORY_RIDES within PROMPT_HISTORY_DAYS before the ride (extension.js reads that
+// window from the database). The offer to update saved analyses after an update stops at the same
+// depth (upgrade-steps.js).
+const RECENT_HISTORY_RIDES = 12;
+const PROMPT_HISTORY_DAYS = 90;
+
 function compareSegmentStructures(currentSegments, priorSegments) {
   const current = (currentSegments || []).filter((segment) => segment.type !== 'stopped' && segment.durationS >= 60);
   const prior = (priorSegments || []).filter((segment) => segment.type !== 'stopped' && segment.durationS >= 60);
@@ -110,7 +117,7 @@ function buildTrainingContext(activities, referenceTime, currentSport, currentSe
     const gapDays = (reference - new Date(last.startTime).getTime()) / 86400000;
     if (gapDays >= 14) interruptions.push({ before: last.startTime, after: referenceTime, gapDays });
   }
-  const recent = sameSport.slice(-12);
+  const recent = sameSport.slice(-RECENT_HISTORY_RIDES);
   const trend = (field) => calculateRobustTrend(currentWindow.map((activity) => asNumber(activity[field])));
   const peakBest = (seconds, days) => sameSport
     .filter((activity) => new Date(activity.startTime).getTime() >= reference - days * 86400000)
@@ -252,4 +259,6 @@ function attachActivityZones(activity, records, heartRateConfig) {
     peakHr: calculatePeakHeartRates(records) };
 }
 
-module.exports = { attachActivityZones, buildTrainingContext, compareSegmentStructures, computeLoadRhythm, computeLoadRhythmSeries };
+module.exports = {
+  PROMPT_HISTORY_DAYS,
+  RECENT_HISTORY_RIDES, attachActivityZones, buildTrainingContext, compareSegmentStructures, computeLoadRhythm, computeLoadRhythmSeries };

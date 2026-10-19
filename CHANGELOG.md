@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.30.2 - unreleased
+
+### Added
+
+- **The ride replayed on the map.** A play button under the interactive map moves a point along the route; a slider sets the speed from ×1 to ×600 seconds of the ride per second (×60 by default), another one moves to any moment of the ride. A label beside the point shows the values ticked under the map: time, distance, speed, heart rate, power, cadence, altitude, grade. Only values the file has are offered; a sensor silent at that moment shows a dash, and a value is always the nearest recorded sample, not a blend of two. Power is shown only when measured: an estimate from speed and grade swings by a hundred watts from one second to the next. A break in the recording (auto-pause, a device switched off) plays as a short step, while the clock shows how long it was; a stop the device recorded plays as it was. The map follows the point when it nears the edge of the view. The ticked values and the speed are remembered for the next ride.
 
 ### Fixed
 
@@ -10,6 +14,8 @@
 - A recording of more than about 125 000 samples (a 1 Hz ride of some 35 hours) could not be indexed or shown: taking the maximum over every sample overflowed the call stack.
 - The chat model picker named the comparison model as its default when `fitVisualizer.chatModelId` and `fitVisualizer.comparisonModelId` were pinned to different models.
 - Four messages of **FIT: Re-analyze Selected Activities** and **FIT: Select Analysis Model** were not translated.
+- The offer of 0.30.1 to update saved analyses after an update took every outdated analysis in the database, and its button re-analysed them oldest first: on a database of 39 rides, 37 requests, starting with rides that no later analysis reads. It now offers only the analyses a prompt reads as history: those of the latest 12 rides of each sport within the last 90 days (10 of the 37 there), so after a long break there may be nothing to offer. Older ones keep their mark and are updated from their page or with **FIT: Re-analyze Outdated Analyses**.
+- Saving **Manual Activity Data** deleted the saved AI analysis of the ride, also for a ride whose own heart-rate series means the typed numbers never reach the AI. The analysis now stays, and the message after saving says whether the numbers go to the AI: only for a ride whose file has no heart rate, marked as reported by the rider, and only after a re-analysis. A ride with typed heart rate also no longer loses its analysis as the base of its follow-up chat and as history for later rides; in that history, as for the ride itself since 0.30.0, the typed numbers are reported only for a ride without a series of its own. The hint under the form, which said manually entered heart rate is never sent, now says when it is.
 
 ## 0.30.1 - 2026-10-11
 

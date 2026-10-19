@@ -8,6 +8,7 @@ const { buildSummary } = require('./activity-summary');
 const { buildGpsRoute: buildGpsRouteFromModule, buildLineChart: buildLineChartFromModule } = require('./chart-model');
 const { extractGpsPoints, mapSegmentsToDistanceRanges } = require('./chart-data');
 const { buildDistanceMarkers, formatTick } = require('./chart-geometry');
+const { PLAYBACK_FIELDS, buildPlaybackTrack } = require('./route-playback');
 const { createChartSvgRenderer } = require('./chart-svg');
 const { translationMessages } = require('./dynamic-localization');
 const {
@@ -92,6 +93,207 @@ const renderMarkdown = (text) => {
     const level = Math.min(Math.max(block.level, 1), 6);
     return `<h${level} style="margin:0.85em 0 0.35em 0;font-size:${headingSize[level]};font-weight:600;">${block.html}</h${level}>`;
   }).join('');
+};
+
+// The ride replayed on the map: a point moves along the route at the chosen speed, and a label
+// beside it shows the values ticked under the map. Runs in the page: its source is injected with
+// toString() and is never called here, so it uses nothing from this module; env carries the page
+// globals, which lets a test drive it without a browser. The track comes from route-playback.js.
+const setupRoutePlayer = function setupRoutePlayer(map, L, track, text, mapId, env) {
+  const doc = env.document;
+  const byId = (suffix) => doc.getElementById(mapId + suffix);
+  const panel = byId('Player');
+  const fieldsRow = byId('PlayFields');
+  const playButton = byId('PlayBtn');
+  const position = byId('PlayPos');
+  const clockLabel = byId('PlayClock');
+  const speedInput = byId('PlaySpeed');
+  const speedLabel = byId('PlaySpeedLabel');
+  const count = track && Array.isArray(track.t) ? track.t.length : 0;
+  if (!map || !L || typeof L.marker !== 'function' || !panel || !playButton || !position || !speedInput || count < 2) return null;
+  const end = track.t[count - 1];
+  if (!(end > 0)) return null;
+
+  // Seconds of the ride per second of playback.
+  const SPEEDS = [1, 2, 5, 10, 20, 30, 60, 120, 300, 600];
+  const DEFAULT_SPEED = 60;
+  const FIELD_ORDER = ['distance', 'speed', 'heart_rate', 'power', 'cadence', 'altitude', 'grade'];
+  const DIGITS = { distance: 2, speed: 1, heart_rate: 0, power: 0, cadence: 0, altitude: 0, grade: 1 };
+  const UNITS = {
+    distance: ' ' + text.kilometers, speed: ' ' + text.kilometersPerHour, heart_rate: ' ' + text.beatsPerMinute,
+    power: ' ' + text.wattsShort, cadence: ' ' + text.rpm, altitude: ' ' + text.meters, grade: '%',
+  };
+  const PLAY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9.5-5.5z"/></svg>';
+  const PAUSE_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 2.5h3.2v11H3.5zM9.3 2.5h3.2v11H9.3z"/></svg>';
+  const FIELDS_KEY = 'fitviz_player_fields';
+  const SPEED_KEY = 'fitviz_player_speed';
+
+  // The choices are a convenience of this viewer: a page without storage works the same.
+  const read = (key) => { try { return env.storage().getItem(key); } catch (error) { return null; } };
+  const write = (key, value) => { try { env.storage().setItem(key, value); } catch (error) { /* not kept */ } };
+  const escape = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const clock = (seconds) => {
+    const total = Math.max(0, Math.round(seconds));
+    return Math.floor(total / 3600) + ':' + String(Math.floor((total % 3600) / 60)).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0');
+  };
+  // A sensor that was silent at this moment shows a dash, so the label keeps its lines.
+  const format = (key, value) => (value == null ? '–' : Number(value).toFixed(DIGITS[key]).replace('.', text.decimalSeparator)) + UNITS[key];
+
+  let t = 0;
+  let playing = false;
+  let frame = null;
+  let lastFrameTime = null;
+  let dragging = false;
+  let panning = false;
+  let marker = null;
+  let lastLabel = null;
+
+  // Ticked fields. Only the fields this ride has are offered; a saved choice of the others is kept
+  // for rides that have them.
+  const boxes = fieldsRow ? Array.from(fieldsRow.querySelectorAll('input[data-play-field]')) : [];
+  const fieldOf = (box) => box.getAttribute('data-play-field');
+  let savedFields = null;
+  try { savedFields = JSON.parse(read(FIELDS_KEY) || 'null'); } catch (error) { savedFields = null; }
+  if (Array.isArray(savedFields)) boxes.forEach((box) => { box.checked = savedFields.includes(fieldOf(box)); });
+  let shown = [];
+  const readShown = () => { shown = boxes.filter((box) => box.checked).map(fieldOf); };
+  readShown();
+  boxes.forEach((box) => box.addEventListener('change', () => {
+    readShown();
+    const offered = boxes.map(fieldOf);
+    savedFields = (Array.isArray(savedFields) ? savedFields.filter((field) => !offered.includes(field)) : []).concat(shown);
+    write(FIELDS_KEY, JSON.stringify(savedFields));
+    if (marker) render();
+  }));
+
+  const savedSpeed = Number(read(SPEED_KEY));
+  let speedIndex = SPEEDS.indexOf(SPEEDS.includes(savedSpeed) ? savedSpeed : DEFAULT_SPEED);
+  speedInput.value = String(speedIndex);
+  const showSpeed = () => { if (speedLabel) speedLabel.textContent = '×' + SPEEDS[speedIndex]; };
+  speedInput.addEventListener('input', () => {
+    speedIndex = Math.max(0, Math.min(SPEEDS.length - 1, Math.round(Number(speedInput.value) || 0)));
+    showSpeed();
+    write(SPEED_KEY, String(SPEEDS[speedIndex]));
+  });
+
+  function indexAt(time) {
+    let low = 0;
+    let high = count - 1;
+    while (high - low > 1) {
+      const middle = (low + high) >> 1;
+      if (track.t[middle] <= time) low = middle; else high = middle;
+    }
+    return low;
+  }
+
+  function label(sample, elapsed) {
+    const rows = [];
+    if (shown.includes('time')) rows.push('<strong>' + clock(elapsed) + '</strong>');
+    FIELD_ORDER.forEach((key) => {
+      if (shown.includes(key) && track.fields && track.fields[key]) rows.push(escape(format(key, track.fields[key][sample])));
+    });
+    return rows.join('<br>');
+  }
+
+  function setLabel(html) {
+    if (html === lastLabel) return;
+    lastLabel = html;
+    const bound = marker.getTooltip && marker.getTooltip();
+    if (!html) {
+      if (bound) marker.unbindTooltip();
+    } else if (bound) {
+      marker.setTooltipContent(html);
+    } else {
+      marker.bindTooltip(html, { permanent: true, direction: 'auto', offset: [12, 0], className: 'segmentLeafletTooltip routePlayerTooltip' });
+      marker.openTooltip();
+    }
+  }
+
+  // The map follows the point when it nears the edge, and leaves the view alone otherwise.
+  function keepInView(latLng) {
+    if (panning || typeof map.getBounds !== 'function') return;
+    if (map.getBounds().pad(-0.15).contains(latLng)) return;
+    panning = true;
+    map.once('moveend', () => { panning = false; });
+    map.panTo(latLng, { animate: true, duration: 0.4 });
+  }
+
+  function render() {
+    const i = indexAt(t);
+    const j = Math.min(count - 1, i + 1);
+    const span = track.t[j] - track.t[i];
+    const share = span > 0 ? Math.min(1, Math.max(0, (t - track.t[i]) / span)) : 0;
+    const latLng = [track.lat[i] + (track.lat[j] - track.lat[i]) * share, track.lon[i] + (track.lon[j] - track.lon[i]) * share];
+    // Values are the nearest recorded sample, not a blend of two: a number shown was measured.
+    const sample = share < 0.5 ? i : j;
+    const elapsed = track.elapsed[i] + (track.elapsed[j] - track.elapsed[i]) * share;
+    if (!marker) {
+      marker = L.marker(latLng, {
+        icon: L.divIcon({ className: 'routePlayerMarker', iconSize: [18, 18], iconAnchor: [9, 9] }),
+        interactive: false, keyboard: false, zIndexOffset: 1000,
+      }).addTo(map);
+    }
+    marker.setLatLng(latLng);
+    setLabel(label(sample, elapsed));
+    if (clockLabel) clockLabel.textContent = clock(elapsed) + ' / ' + clock(track.elapsed[count - 1]);
+    if (!dragging) position.value = String(t);
+    keepInView(latLng);
+  }
+
+  function setButton() {
+    const name = playing ? text.playbackPause : text.playbackPlay;
+    playButton.innerHTML = playing ? PAUSE_ICON : PLAY_ICON;
+    playButton.setAttribute('aria-label', name);
+    playButton.setAttribute('aria-pressed', String(playing));
+    playButton.title = name;
+  }
+
+  function step(now) {
+    if (!playing) return;
+    // A hidden tab gets no frames; on its return the point goes on from where it was.
+    if (lastFrameTime != null) t = Math.min(end, t + Math.min(0.25, Math.max(0, (now - lastFrameTime) / 1000)) * SPEEDS[speedIndex]);
+    lastFrameTime = now;
+    render();
+    if (t >= end) {
+      pause();
+      return;
+    }
+    frame = env.requestAnimationFrame(step);
+  }
+
+  function play() {
+    if (t >= end) t = 0;
+    playing = true;
+    lastFrameTime = null;
+    setButton();
+    frame = env.requestAnimationFrame(step);
+  }
+
+  function pause() {
+    playing = false;
+    if (frame != null) env.cancelAnimationFrame(frame);
+    frame = null;
+    setButton();
+  }
+
+  function seek(time) {
+    t = Math.min(end, Math.max(0, Number(time) || 0));
+    render();
+  }
+
+  playButton.addEventListener('click', () => (playing ? pause() : play()));
+  position.max = String(end);
+  position.value = '0';
+  position.addEventListener('pointerdown', () => { dragging = true; });
+  position.addEventListener('pointerup', () => { dragging = false; });
+  position.addEventListener('change', () => { dragging = false; });
+  position.addEventListener('input', () => seek(position.value));
+  setButton();
+  showSpeed();
+  if (clockLabel) clockLabel.textContent = clock(0) + ' / ' + clock(track.elapsed[count - 1]);
+  panel.hidden = false;
+  if (fieldsRow) fieldsRow.hidden = false;
+  return { play, pause, seek, state: () => ({ t, playing, end, speed: SPEEDS[speedIndex], shown: shown.slice() }) };
 };
 
 function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null, qualityFlags = [], routeFilter = null, modelPicker = null) {
@@ -810,6 +1012,15 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
   const gpsRoutePointBudget = Math.min(6000, Math.max(1200, records.length));
   const gpsRoute = buildGpsRouteFromModule(records, 1400, 420, gpsRoutePointBudget, { noPointsText: ui.noGpsPoints });
   const compGpsPoints = hasOverlay ? safeJson(extractGpsPoints(compRecords).slice(0, gpsRoutePointBudget).map((p) => ({ lat: p.y, lon: p.x }))) : 'null';
+  // The map player's track: the same records and the same thinning as the drawn route, so the
+  // moving point stays on the line. Power only as recorded (see route-playback.js).
+  const playbackTrack = gpsRoute.geoPoints.length >= 2 ? buildPlaybackTrack(records, gpsRoutePointBudget) : null;
+  const playbackFields = playbackTrack ? ['time', ...PLAYBACK_FIELDS.filter((field) => playbackTrack.fields[field])] : [];
+  const playerText = {
+    playbackPlay: ui.playbackPlay, playbackPause: ui.playbackPause, decimalSeparator: ui.decimalSeparator,
+    kilometers: ui.kilometers, kilometersPerHour: ui.kilometersPerHour, beatsPerMinute: ui.beatsPerMinute,
+    wattsShort: ui.wattsShort, rpm: ui.rpm, meters: ui.meters,
+  };
 
   const mapPayload = safeJson(gpsRoute.geoPoints);
   const segmentPayload = safeJson(presentationSegments);
@@ -1064,6 +1275,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         </div>
         <div id="${mapId}SegmentLegend" class="segmentLegend" style="display:none"></div>
         <div id="${mapId}"></div>
+        ${playbackTrack ? renderRoutePlayer(mapId, ui) : ''}
+        ${playbackTrack ? renderPlaybackFields(mapId, playbackFields, ui) : ''}
         <div class="mapHint">${escapeHtml(mapTiles === 'none' ? ui.mapTilesOffline : ui.mapTiles)}</div>
       </div>
       <div class="resizeHandle resizeHandleTopRight" data-anchor="top-right" aria-label="Resize panel from top-right"></div>
@@ -1717,6 +1930,17 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       }
     }());
   </script>
+  ${playbackTrack ? `<script nonce="${nonce}">
+    window.fitRoutePlayers = window.fitRoutePlayers || {};
+    window.fitRoutePlayers['${mapId}'] = function (map) {
+      return (${setupRoutePlayer.toString()})(map, window.L, ${safeJson(playbackTrack)}, ${safeJson(playerText)}, '${mapId}', {
+        document: document,
+        requestAnimationFrame: (callback) => window.requestAnimationFrame(callback),
+        cancelAnimationFrame: (handle) => window.cancelAnimationFrame(handle),
+        storage: () => window.localStorage,
+      });
+    };
+  </script>` : ''}
   <script nonce="${nonce}">
     (function () {
       const routePoints = ${mapPayload};
@@ -1934,6 +2158,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
 
         map.whenReady(() => setTimeout(() => { map.invalidateSize(false); }, 0));
+        const setupPlayer = window.fitRoutePlayers && window.fitRoutePlayers['${mapId}'];
+        if (typeof setupPlayer === 'function') setupPlayer(map);
       }
     }());
   </script>
@@ -2688,6 +2914,19 @@ function sharedCss() {
     .mapControls select { border:1px solid var(--input-border); border-radius:6px; padding:4px 8px; background:var(--input-bg); color:var(--input-fg); font-size:0.9rem; }
     #fitMap, #fitMapComp { height:var(--map-height,clamp(320px,52vh,760px)); border:1px solid var(--border); border-radius:10px; overflow:hidden; background:color-mix(in srgb,var(--card) 65%,var(--bg)); }
     .mapHint { color:var(--muted); font-size:0.85rem; }
+    .routePlayer { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; color:var(--ink); font-size:0.85rem; }
+    .routePlayer[hidden], .routePlayerFields[hidden] { display:none; }
+    .routePlayerBtn { flex:0 0 auto; width:30px; height:30px; padding:0; display:inline-flex; align-items:center; justify-content:center; border:none; border-radius:50%; background:var(--accent); color:var(--bg); cursor:pointer; }
+    .routePlayerBtn svg { width:14px; height:14px; max-height:none; border-radius:0; background:none; fill:currentColor; }
+    .routePlayerPos { flex:1 1 160px; min-width:100px; margin:0; }
+    .routePlayerClock { font-variant-numeric:tabular-nums; white-space:nowrap; }
+    .routePlayerSpeed { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; color:var(--muted); }
+    .routePlayerSpeed input { width:90px; margin:0; }
+    .routePlayerSpeed output { min-width:3.2em; color:var(--ink); font-variant-numeric:tabular-nums; }
+    .routePlayerFields { display:flex; gap:6px 14px; flex-wrap:wrap; align-items:center; color:var(--muted); font-size:0.85rem; }
+    .routePlayerFields label { display:inline-flex; gap:4px; align-items:center; }
+    .routePlayerMarker { border-radius:50%; background:var(--accent, #1e88e5); border:3px solid #fff; box-shadow:0 0 0 1.5px rgba(0,0,0,.65), 0 1px 5px rgba(0,0,0,.45); box-sizing:border-box; }
+    .routePlayerTooltip { font-variant-numeric:tabular-nums; white-space:nowrap; }
     .mapZoomHint { position:absolute; inset:0; z-index:1200; display:flex; align-items:center; justify-content:center; pointer-events:none; opacity:0; transition:opacity 140ms ease; background:color-mix(in srgb,var(--bg) 55%,transparent); color:var(--ink); font-size:1.05rem; font-weight:700; letter-spacing:0.03em; }
     .mapZoomHint.visible { opacity:1; }
     .chip { border:1px solid var(--border); border-radius:10px; padding:2px 9px; font-size:0.78rem; color:var(--muted); cursor:help; }
@@ -2808,6 +3047,25 @@ function renderComparisonTable(a, b, aName, bName, glossary, ui) {
   </table></section>`;
 }
 
+// The player is a row under the map, not over it: the map stays whole. The values it shows are
+// ticked in the row below.
+function renderRoutePlayer(mapId, ui) {
+  return `<div id="${mapId}Player" class="routePlayer" hidden>
+            <button type="button" id="${mapId}PlayBtn" class="routePlayerBtn" aria-label="${escapeHtml(ui.playbackPlay)}" title="${escapeHtml(ui.playbackPlay)}"></button>
+            <input type="range" id="${mapId}PlayPos" class="routePlayerPos" min="0" max="1" step="1" value="0" aria-label="${escapeHtml(ui.playbackPosition)}">
+            <span id="${mapId}PlayClock" class="routePlayerClock"></span>
+            <label class="routePlayerSpeed" title="${escapeHtml(ui.playbackSpeed)}"><input type="range" id="${mapId}PlaySpeed" min="0" max="9" step="1" value="6" aria-label="${escapeHtml(ui.playbackSpeed)}"><output id="${mapId}PlaySpeedLabel" for="${mapId}PlaySpeed"></output></label>
+          </div>`;
+}
+
+const PLAYBACK_FIELD_UI = { time: 'time', distance: 'distance', speed: 'speed', heart_rate: 'heartRate', power: 'power', cadence: 'cadence', altitude: 'altitude', grade: 'grade' };
+const PLAYBACK_DEFAULT_FIELDS = ['time', 'distance', 'speed', 'heart_rate'];
+
+function renderPlaybackFields(mapId, fields, ui) {
+  const boxes = fields.map((field) => `<label><input type="checkbox" data-play-field="${field}"${PLAYBACK_DEFAULT_FIELDS.includes(field) ? ' checked' : ''}> ${escapeHtml(ui[PLAYBACK_FIELD_UI[field]])}</label>`).join('');
+  return `<div id="${mapId}PlayFields" class="routePlayerFields" hidden><span>${escapeHtml(ui.playbackShows)}</span>${boxes}</div>`;
+}
+
 function renderMapStats(route, ui) {
   if (!route || !route.pointCount) {
     return `<div class="muted">${escapeHtml(ui.noGpsStatsAvailable)}</div>`;
@@ -2869,4 +3127,4 @@ function renderHeartRateZones(zoneData, ui) {
   </div>`;
 }
 
-module.exports = { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, renderMarkdown, buildTranslationPrompt };
+module.exports = { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, renderMarkdown, buildTranslationPrompt, setupRoutePlayer };

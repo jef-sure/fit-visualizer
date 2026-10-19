@@ -3,37 +3,26 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { buildSegmentContext, generateAnalysisPromptParts, generateAnalysisChatPrompt, generateComparisonPrompt, requestCopilotAnalysis, selectPreferredModel, summarizePromptBlocks } = require('./analysis');
-const { localizeGlossary } = require('./glossary');
 const { formatUi, localizeUi } = require('./ui-strings');
-const { buildCartesianGeometry, buildDistanceMarkers, buildTicks, formatTick, padRange, padYAxisRange } = require('./chart-geometry');
-const { computeElevationGainLoss, computeRouteDistanceKm, computeStats, extractGpsPoints, extractXYPoints } = require('./chart-data');
 const { buildSummary } = require('./activity-summary');
-const { attachActivityZones, buildTrainingContext, computeLoadRhythm, computeLoadRhythmSeries } = require('./training-context');
-const { buildGpsRoute: buildGpsRouteFromModule, buildLineChart: buildLineChartFromModule } = require('./chart-model');
-const { createChartSvgRenderer } = require('./chart-svg');
-const {
-  buildChartClientPayload: buildChartClientPayloadFromModule,
-  buildOverlayMetrics: buildOverlayMetricsFromModule,
-  buildOverlayOptions: buildOverlayOptionsFromModule,
-} = require('./chart-overlays');
+const { PROMPT_HISTORY_DAYS, attachActivityZones, buildTrainingContext, computeLoadRhythm, computeLoadRhythmSeries } = require('./training-context');
 const {
   loadBundledTranslationBundle,
   loadGeneratedTranslationBundle,
   parseGeneratedBundle,
   saveGeneratedTranslationBundle,
-  translationMessages,
   validateTranslationBundle,
 } = require('./dynamic-localization');
 const { registerCommands } = require('./commands');
 const { normalizeFilePath, openedFitDatabaseRule } = require('./file-paths');
 const { measureRideOnSkeleton, rideFrame, summarizeSections } = require('./route-sections');
 const { MODEL_PRICE_CACHE_KEY, restoreModelPriceCache, updateModelPrices } = require('./model-pricing');
-const { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, buildTranslationPrompt } = require('./activity-webview');
+const { displayLanguage, renderActivityBrowserHtml, buildTranslationPrompt } = require('./activity-webview');
 const { ensureDatabaseSchema } = require('./database-schema');
-const { INDEX_VERSION, needsReread, outdatedSavedAnalyses, shouldOfferReanalysis } = require('./upgrade-steps');
+const { INDEX_VERSION, needsReread, outdatedAnalysesInHistory, shouldOfferReanalysis } = require('./upgrade-steps');
 const { applyHeartRateProfileUpsert, deleteHeartRateProfile, readHeartRateProfiles } = require('./heart-rate-profiles');
 const { createManualActivity, parseManualStartTime } = require('./manual-activity');
-const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel, localClock, localDate } = require('./activity-time');
+const { deriveUtcOffsetS, detectOffsetChange, formatOffsetLabel } = require('./activity-time');
 const { reconcileSessionElapsed } = require('./activity-session-checks');
 const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require('./session-class');
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
@@ -66,59 +55,28 @@ const {
   calculatePeakHeartRates,
   computeHeartRateZones,
   estimateLactateThresholdHeartRate,
-  getHeartRateZoneIndex: getHrZoneIndex,
 } = require('./heart-rate');
 const { ageFromBirthYear, birthYearFromAge } = require('./heart-rate');
 const {
   addEstimatedPowerWhenMissing,
   asNumber,
-  average,
   buildActivitySegments,
-  calculateBanisterTrimp,
-  calculateBikeStressScore,
-  calculateHistoricalMeanMaximalPower,
   calculateMeanMaximalPower,
-  calculateHrTss,
-  calculateIntensityFactor,
-  calculateIntervalsDecoupling,
-  calculateNormalizedPower,
   calculateRobustTrend,
-  calculateTrainingStressScore,
-  calculateXPower,
-  computeGpsDerivedSpeed,
   computeGrade,
-  createNonce,
-  deriveSpeedsFromDistance,
-  despikeSeries,
-  detectStops,
-  downsamplePoints,
   estimateFtpCandidates,
   estimatePowerFromMotion,
   escapeHtml,
-  estimateDuration,
-  estimateSpeedConfidence,
   estimateWheelCalibrationRatio,
   formatHms,
-  formatNumber,
-  haversineKm,
-  maxOrZero,
   normalizeCoordinate,
   normalizeRecordSpeeds,
   roundTo,
-  safeJson,
   segmentLineBudget,
   selectFtpEstimate,
-  smoothSeries,
   toDateOnly,
   toSqlStr,
 } = require('./utils');
-
-const { renderGpsRouteSvg, renderOverlayControls, renderScaledLineChartSvg } = createChartSvgRenderer({
-  buildDistanceMarkers,
-  escapeHtml,
-  formatTick,
-  getHrZoneIndex: getHrZoneIndex,
-});
 
 let extensionContextRef;
 let sqlJsInitPromise = null;
@@ -336,12 +294,13 @@ async function offerReanalysis(dbPath) {
   reanalysisOffersInFlight.add(dbPath);
   try {
     const offered = state.get(REANALYSIS_OFFER_KEY) || {};
-    const outdated = outdatedSavedAnalyses(await getAnalysisActivities(dbPath, { onlyOutdated: true }), ANALYSIS_VERSION);
+    // Every ride, not only the outdated ones: the depth of the history is counted in rides.
+    const outdated = outdatedAnalysesInHistory(await getAnalysisActivities(dbPath, { onlyOutdated: false }), ANALYSIS_VERSION, { now: Date.now() });
     if (!shouldOfferReanalysis(offered[dbPath], ANALYSIS_VERSION, outdated.length)) return;
     await state.update(REANALYSIS_OFFER_KEY, { ...offered, [dbPath]: ANALYSIS_VERSION });
     const update = vscode.l10n.t('Update analyses');
     const choice = await vscode.window.showInformationMessage(
-      vscode.l10n.t('FIT Visualizer was updated: {0} saved analyses were made by an earlier version. Updating them sends one request to the AI per activity.', outdated.length),
+      vscode.l10n.t('FIT Visualizer was updated: {0} saved analyses of recent rides, the ones the next analysis reads as history, were made by an earlier version. Updating them sends one request to the AI per activity; older analyses stay as they are and can be updated from their page.', outdated.length),
       update, vscode.l10n.t('Later'));
     if (choice === update) await runReanalysisBatch(dbPath, outdated, null);
   } finally {
@@ -758,18 +717,6 @@ function ensureFeaturesForActivity(db, activityId) {
     summary.trimp ?? null, summary.hrTss ?? null,
     zones?.enabled && timerS > 0 ? 100 * zones.totalSeconds / timerS : null]);
   db.run('UPDATE activity_features SET route_frame_json = ? WHERE activity_id = ?', [routeFrame ? JSON.stringify(routeFrame) : null, row.id]);
-}
-
-async function countFitActivities(dbPath) {
-  const SQL = await getSqlJs();
-  const db = await openDatabase(SQL, dbPath);
-  try {
-    const rows = db.exec("SELECT id FROM activities WHERE source != 'manual'")[0]?.values || [];
-    const ids = new Set(rows.map((value) => Number(value[0])));
-    return { ids, maxId: rows.reduce((max, value) => Math.max(max, Number(value[0])), 0) };
-  } finally {
-    db.close();
-  }
 }
 
 async function updateModelPriceTable() {
@@ -1550,7 +1497,6 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       const id = Number(value);
       return Number.isInteger(id) && id > 0 ? id : null;
     };
-    const hasCompId = msg.compId != null && msg.compId !== '';
     if (['selectActivity', 'analysisStateRequest', 'analyzeActivity', 'analysisChatTurn', 'updateActivityHeartRate',
       'updateHeartRateProfile', 'updateRoute', 'updateActivityNotes', 'autoCalculateHeartRateProfile', 'compareActivitiesAI', 'removeComparison']
       .includes(msg.type)) {
@@ -1701,9 +1647,11 @@ async function showActivityBrowserInPanel(context, panel, dbPath, preselectId, c
       }
     } else if (msg.type === 'updateActivityHeartRate') {
       try {
-        await updateActivityHeartRate(dbPath, msg.id, msg.avgHr, msg.maxHr);
+        const { reachesAnalysis } = await updateActivityHeartRate(dbPath, msg.id, msg.avgHr, msg.maxHr);
         await render(Number(msg.id), msg.compId ? Number(msg.compId) : null);
-        vscode.window.showInformationMessage('Manual heart-rate data saved.');
+        vscode.window.showInformationMessage(reachesAnalysis
+          ? 'Manual heart-rate data saved. Re-analyze to apply it to the AI analysis.'
+          : 'Manual heart-rate data saved. The ride has its own heart-rate series, so these numbers are not sent to the AI.');
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         panel.webview.postMessage({ type: 'manualDataError', error: errorMsg });
@@ -1899,8 +1847,7 @@ function ensureRideCurrent(dbPath, activityId) {
   });
 }
 
-// The rides a prompt takes as history: the days before the ride that getTrainingContextFromDb reads.
-const PROMPT_HISTORY_DAYS = 90;
+// The rides a prompt takes as history: the PROMPT_HISTORY_DAYS before the ride that getTrainingContextFromDb reads.
 
 function promptHistoryRows(db, activityId) {
   const stmt = db.prepare(`SELECT a.id, a.file_path, a.source, a.index_version FROM activities a, activities s
@@ -2006,9 +1953,6 @@ async function loadFitDataFromDb(dbPath, activityId) {
           && (activity.manual_avg_hr != null || activity.manual_max_hr != null)
           ? activity.manual_max_hr : null,
         _source:               activity.source || 'fit',
-        _hasManualHrOverrides: activity.source === 'manual'
-          || activity.manual_avg_hr != null
-          || activity.manual_max_hr != null,
       }],
       laps: parseStoredLaps(activity.laps_json),
       sessionNotes: readActivityNotes(db, activityId),
@@ -2630,8 +2574,7 @@ async function buildAnalysisPromptForActivity(dbPath, numId) {
   const analysisData = await prepareAnalysisData(dbPath, current, numId);
   const summary = await getProgressSummaryFromDb(dbPath, numId, analysisData);
   const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time, await getAthleteProfile(dbPath, numId));
-  const hasManualHrOverrides = Boolean(analysisData.sessions?.[0]?._hasManualHrOverrides);
-  const previousResult = hasManualHrOverrides ? null : await getLatestAnalysisAnyVersion(dbPath, numId);
+  const previousResult = await getLatestAnalysisAnyVersion(dbPath, numId);
   const previousAnalysis = previousResult?.version >= ANALYSIS_VERSION ? previousResult.text : null;
   const storedChat = await getAnalysisChatFromDb(dbPath, numId);
   const followUpHistory = previousResult?.version >= ANALYSIS_VERSION
@@ -3022,8 +2965,15 @@ async function updateActivityHeartRateNow(dbPath, activityId, avgHrInput, maxHrI
       'UPDATE activities SET manual_avg_hr = ?, manual_max_hr = ? WHERE id = ?',
       [avgHr, maxHr, id]
     );
-    db.run('DELETE FROM activity_analysis WHERE activity_id = ?', [id]);
+    // The saved analysis stays: it used to be deleted here, a paid answer lost to one click, even
+    // for a ride whose own series means these numbers never reach the AI. They reach it only for
+    // a ride whose file has no heart rate (see loadFitDataFromDb), and then as a re-analysis.
+    const stmt = db.prepare('SELECT source, avg_hr FROM activities WHERE id = ?');
+    stmt.bind([id]);
+    const row = stmt.step() ? stmt.getAsObject() : null;
+    stmt.free();
     await persistDatabase(db, dbPath);
+    return { reachesAnalysis: Boolean(row) && row.source !== 'manual' && !(Number(row.avg_hr) > 0) };
   } finally {
     db.close();
   }
@@ -3453,78 +3403,6 @@ async function getLatestAnalysisAnyVersion(dbPath, activityId) {
   }
 }
 
-// Analyses of *other*, earlier activities, so the model sees a trend instead of judging each ride in a vacuum.
-async function getRecentAnalysesContext(dbPath, activityId, referenceDate, windowDays = 30) {
-  const SQL = await getSqlJs();
-  const db = await openDatabase(SQL, dbPath);
-  const reference = toSqlStr(referenceDate);
-  if (!reference) {
-    db.close();
-    return [];
-  }
-
-  const columns = `a.id AS id, a.start_time AS start_time, a.total_distance_km AS total_distance_km,
-      a.total_timer_s AS total_timer_s, a.training_stress_score AS training_stress_score,
-      aa.analysis_text AS analysis_text, aac.chat_json AS chat_json`;
-  const from = `FROM activities a
-      JOIN activity_analysis aa ON aa.activity_id = a.id
-      LEFT JOIN activity_analysis_chat aac ON aac.activity_id = a.id`;
-    const measuredHrOnly = `AND a.source = 'fit' AND a.manual_avg_hr IS NULL AND a.manual_max_hr IS NULL`;
-
-  const read = (sql, params) => {
-    const stmt = db.prepare(sql);
-    stmt.bind(params);
-    const rows = [];
-    while (stmt.step()) {
-      const row = stmt.getAsObject();
-      let chatCount = 0;
-      try {
-        const parsed = JSON.parse(row.chat_json || '[]');
-        chatCount = Array.isArray(parsed) ? parsed.filter((entry) => entry?.role === 'user').length : 0;
-      } catch {
-        chatCount = 0;
-      }
-      rows.push({
-        activityId: Number(row.id),
-        startTime: row.start_time,
-        distanceKm: row.total_distance_km,
-        durationS: row.total_timer_s,
-        trainingStressScore: row.training_stress_score,
-        analysisText: row.analysis_text,
-        chatCount,
-      });
-    }
-    stmt.free();
-    return rows;
-  };
-
-  try {
-    const recent = read(
-      `SELECT ${columns} ${from}
-       WHERE a.id != ? AND a.start_time >= date(?, '-${Number(windowDays) || 30} days') AND a.start_time < ?
-         AND aa.analysis_version >= ?
-         AND COALESCE(a.sport, '') = COALESCE((SELECT sport FROM activities WHERE id = ?), '') ${measuredHrOnly}
-       ORDER BY a.start_time ASC`,
-      [activityId, reference, reference, ANALYSIS_VERSION, activityId]
-    );
-    if (recent.length) {
-      return recent;
-    }
-
-    return read(
-      `SELECT ${columns} ${from}
-       WHERE a.id != ? AND a.start_time < ?
-         AND aa.analysis_version >= ?
-         AND COALESCE(a.sport, '') = COALESCE((SELECT sport FROM activities WHERE id = ?), '') ${measuredHrOnly}
-       ORDER BY a.start_time DESC
-       LIMIT 1`,
-      [activityId, reference, ANALYSIS_VERSION, activityId]
-    );
-  } finally {
-    db.close();
-  }
-}
-
 function getOutdatedAnalysisActivities(dbPath) {
   return getAnalysisActivities(dbPath, { onlyOutdated: true });
 }
@@ -3536,7 +3414,7 @@ async function getAnalysisActivities(dbPath, { onlyOutdated }) {
   try {
     // Chronological order matters: an activity's prompt may cite analyses of earlier activities.
     stmt = db.prepare(`
-      SELECT a.id AS id, a.file_name AS file_name, aa.analysis_version AS analysis_version
+      SELECT a.id AS id, a.file_name AS file_name, a.start_time AS start_time, a.sport AS sport, a.source AS source, aa.analysis_version AS analysis_version
       FROM activities a
       LEFT JOIN activity_analysis aa ON aa.activity_id = a.id
       WHERE ? = 0 OR aa.activity_id IS NULL OR aa.analysis_version < ?
@@ -3550,6 +3428,9 @@ async function getAnalysisActivities(dbPath, { onlyOutdated }) {
       rows.push({
         id: Number(row.id),
         fileName: row.file_name || `Activity ${row.id}`,
+        startTime: row.start_time ?? null,
+        sport: row.sport ?? null,
+        source: row.source || 'fit',
         analysisVersion: Number.isFinite(version) ? version : null,
       });
     }
@@ -3810,8 +3691,10 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       subSport: row.sub_sport, durationS: row.total_timer_s, distanceKm: row.total_distance_km,
       elevationM: row.total_ascent_m, avgSpeedKmh: row.avg_speed_kmh,
       avgHr: row.source === 'fit' ? row.avg_hr : null,
-      reportedAvgHr: row.source === 'fit' ? row.manual_avg_hr : null,
-      reportedMaxHr: row.source === 'fit' ? row.manual_max_hr : null,
+      // As for the ride itself (loadFitDataFromDb): numbers typed in by hand are reported only for a
+      // ride whose file has no heart rate; beside a recorded series they are not "another device".
+      reportedAvgHr: row.source === 'fit' && !(Number(row.avg_hr) > 0) ? row.manual_avg_hr : null,
+      reportedMaxHr: row.source === 'fit' && !(Number(row.avg_hr) > 0) ? row.manual_max_hr : null,
       powerSource: detail?.powerSource || 'unknown',
       trainingStressScore: detail?.powerSource === 'measured' ? row.training_stress_score : null,
       hrProfileDate: detail?.hrConfig?.effectiveDate || null,
@@ -3824,10 +3707,8 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       checkpoints: detail?.checkpoints || [],
       segments: detail?.segments || [], conversation,
       source: row.source,
-      analysisText: row.source === 'fit' && row.analysis_version >= ANALYSIS_VERSION && row.manual_avg_hr == null && row.manual_max_hr == null
-        ? row.analysis_text : null,
-      analysisSummary: row.source === 'fit' && row.analysis_version >= ANALYSIS_VERSION && row.manual_avg_hr == null && row.manual_max_hr == null
-        ? parseStoredSummary(row.summary_json) : null,
+      analysisText: row.source === 'fit' && row.analysis_version >= ANALYSIS_VERSION ? row.analysis_text : null,
+      analysisSummary: row.source === 'fit' && row.analysis_version >= ANALYSIS_VERSION ? parseStoredSummary(row.summary_json) : null,
       analysisVersion: row.analysis_version,
     };
     return attachActivityZones(activity, detail?.records || [], detail?.hrConfig);
@@ -4319,11 +4200,12 @@ async function runActivityChatReply(dbPath, activityId, history, userQuestion, m
   const analysisData = await prepareAnalysisData(dbPath, current, activityId);
   const summary = await getProgressSummaryFromDb(dbPath, activityId, analysisData);
   const hrConfig = await getHeartRateConfigForActivity(dbPath, analysisData.sessions?.[0]?.start_time, await getAthleteProfile(dbPath, activityId));
-  const hasManualHrOverrides = Boolean(analysisData.sessions?.[0]?._hasManualHrOverrides);
-  const previousResult = hasManualHrOverrides ? null : await getLatestAnalysisAnyVersion(dbPath, activityId);
+  // Manual heart rate is not a reason to hide the ride's own analysis: the numbers reach the AI
+  // only for a ride without a series of its own, and then labelled as reported.
+  const previousResult = await getLatestAnalysisAnyVersion(dbPath, activityId);
   const hasCurrentAnalysis = previousResult?.version >= ANALYSIS_VERSION;
   const baseAnalysis = hasCurrentAnalysis ? previousResult.text : null;
-  const safeHistory = hasCurrentAnalysis && !hasManualHrOverrides
+  const safeHistory = hasCurrentAnalysis
     ? history
     : history.filter((entry) => entry?.role === 'user');
   const prompt = generateAnalysisChatPrompt(

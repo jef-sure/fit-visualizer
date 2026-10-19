@@ -151,6 +151,7 @@ My own data is cycling only so far, and that is what everything is tested on. Ru
 - The GPS track on an interactive map
 - The route coloured by speed, heart rate, segments or kilometres; each segment has its own colour, and the legend above the map carries the segment numbers — the same as in the table
 - **Kilometres** mode: the track alternates two colours every kilometre, numbers stand at the boundaries, and hovering shows the time, speed and heart rate of that kilometre — as you know it from a sports watch
+- Replay of the ride on the map: a point moves along the track at ×1 to ×600, and a slider moves to any moment of the ride; beside the point are the values ticked under the map: time, distance, speed, heart rate, power, cadence, altitude, grade. Breaks in the recording are skipped, and power is shown only when measured
 - The same segments as translucent bands on all distance charts, with one shared toggle; on a familiar route dashed lines mark the boundaries of its stretches
 - A tooltip on a segment on the map or on its band on a chart: duration, distance, grade, speed, heart rate, effort, elevation, a mark for a technical stretch
 - A compact table of the detected segments and, if the device recorded them, of laps
@@ -276,7 +277,7 @@ Analysis progress survives browsing other activities: the page asks the extensio
 
 ### The Chat
 
-In the chat the model receives the same ride summary, the original analysis and the whole history of the conversation. If the data is not enough, it must say so and ask one clarifying question. Outdated answers and manually entered heart rate do not reach the context, but your corrections are not lost: in August I clarified in the chat that there had been two rest days before a ride, not three, and the analysis of the same ride made anew on 5 October already says two. The date of a message and the period you are talking about are told apart.
+In the chat the model receives the same ride summary, the original analysis and the whole history of the conversation. If the data is not enough, it must say so and ask one clarifying question. Outdated answers do not reach the context, but your corrections are not lost: in August I clarified in the chat that there had been two rest days before a ride, not three, and the analysis of the same ride made anew on 5 October already says two. The date of a message and the period you are talking about are told apart. Manually entered heart rate reaches the model only when the ride's file has no heart rate of its own, and it is marked as yours rather than recorded.
 
 The analysis and the chat answers are in the VS Code interface language by default. Only the current question in the chat can change the answer language; earlier messages, archived questions and old AI answers do not affect it. For example, the interface can stay English while you discuss training in another language.
 
@@ -460,7 +461,7 @@ There is nothing to do after an update. The extension puts the database in order
 
 - **FIT files are re-read** if the new version reads something from them differently. Each ride carries the version that read its file, and a ride is re-read from where its file was when indexed at the moment it is needed: when its page opens, when it is compared, or when it goes into a prompt as history. Nothing is re-read in bulk. A moved or deleted file keeps the ride as it was read; a note about it goes to the "FIT Visualizer: Analysis" output.
 - **Derived data** (segments, zones, routes, route stretches) is recomputed once when its format changes, before the first page opens, with a progress notification. The route names and notes you entered are carried over to the rebuilt routes. A second VS Code window on the same database waits for the first to finish.
-- **Saved AI analyses** of an earlier version are offered for an update, once. This step is not done by itself: each analysis is a request to the AI with the same contents as an ordinary analysis, and it spends the Copilot allowance. If you decline, old analyses stay where they are, marked as made by an earlier version; they can be updated later with **FIT: Re-analyze Outdated Analyses**. Rides you never analysed are not part of this offer.
+- **Saved AI analyses** of an earlier version are offered for an update, once. This step is not done by itself: each analysis is a request to the AI with the same contents as an ordinary analysis, and it spends the Copilot allowance. If you decline, old analyses stay where they are, marked as made by an earlier version; they can be updated later with **FIT: Re-analyze Outdated Analyses**. Rides you never analysed are not part of this offer. Only the analyses the next analysis will read as history are offered: those of the latest 12 rides of each sport within 90 days. After a long break there may be nothing to offer. Older ones stay marked as made by an earlier version and can be updated from their page or with the same command.
 
 Re-reading and recomputing are local and do not change the original FIT files. Notes, goals, plan notes and zone profiles are kept.
 
