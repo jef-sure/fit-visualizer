@@ -24,6 +24,7 @@
   "No activity matches: {0}": "Не найдено активностей по запросу: {0}",
   "Re-analyze {0} selected activities? This replaces their saved analyses and uses one Copilot request per activity.": "Заново проанализировать {0} выбранных активностей? Их сохранённые анализы будут заменены, по одному запросу Copilot на активность.",
   "Indexing FIT files": "Индексация FIT-файлов",
+  "Routes and segments: {0}/{1}": "Маршруты и отрезки: {0}/{1}",
   "{0}/{1}: {2}": "{0}/{1}: {2}",
   "FIT DB index complete: {0} indexed, {1} failed.": "Индексация FIT завершена: проиндексировано {0}, ошибок {1}.",
   "AI Analysis": "Анализ ИИ",

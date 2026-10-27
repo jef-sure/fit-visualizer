@@ -24,6 +24,7 @@
   "No activity matches: {0}": "No activity matches: {0}",
   "Re-analyze {0} selected activities? This replaces their saved analyses and uses one Copilot request per activity.": "Re-analyze {0} selected activities? This replaces their saved analyses and uses one Copilot request per activity.",
   "Indexing FIT files": "Indexing FIT files",
+  "Routes and segments: {0}/{1}": "Routes and segments: {0}/{1}",
   "{0}/{1}: {2}": "{0}/{1}: {2}",
   "FIT DB index complete: {0} indexed, {1} failed.": "FIT DB index complete: {0} indexed, {1} failed.",
   "AI Analysis": "AI Analysis",

@@ -85,10 +85,13 @@ function registerCommands(context, services) {
       || path.dirname(targetUri.fsPath);
     const dbPath = await getLocalDbPath(baseDir);
     await rememberDatabasePath(dbPath);
-    const result = await indexFitUris([targetUri], dbPath, 'Indexing one FIT file...');
-    // Re-indexing replaces the records, and the cached segments, checkpoints and route of the
-    // ride are derived from them; routes are derived oldest ride first, so the whole set is redone.
-    await rebuildDerivedFeatures({ silent: false, skipStaleCheck: true, reason: 'indexing', dbPath });
+    const result = await indexFitUris([targetUri], dbPath, 'Indexing one FIT file...', { derive: true });
+    // The ride's segments, checkpoints and route are derived again as it is read, on the route it
+    // already has; the whole history is rebuilt only when the database still owes the installed
+    // version a rebuild.
+    if (result.rebuildNeeded) {
+      await rebuildDerivedFeatures({ silent: false, skipStaleCheck: true, reason: 'indexing', dbPath });
+    }
     vscode.window.showInformationMessage(
       vscode.l10n.t('FIT DB index complete: {0} indexed, {1} failed.', result.saved, result.failed)
     );

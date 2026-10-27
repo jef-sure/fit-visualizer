@@ -7514,7 +7514,8 @@ test('manual heart rate never deletes or hides the AI analysis; beside a recorde
     (1, 'own.fit', '2026-08-20T08:00:00.000Z', 'cycling', 600, 10, 140),
     (2, 'strapless.fit', '2026-08-21T08:00:00.000Z', 'cycling', 600, 10, NULL),
     (3, 'current.fit', '2026-08-25T08:00:00.000Z', 'cycling', 600, 10, 142)`);
-  seed.run("INSERT INTO activity_analysis (activity_id, analysis_text, analysis_version) VALUES (1, 'Analysis of ride 1', 46), (2, 'Analysis of ride 2', 46)");
+  const currentFormat = Number(/const ANALYSIS_VERSION = (\d+);/.exec(fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8'))[1]);
+  seed.run('INSERT INTO activity_analysis (activity_id, analysis_text, analysis_version) VALUES (1, \'Analysis of ride 1\', ?), (2, \'Analysis of ride 2\', ?)', [currentFormat, currentFormat]);
   fs.writeFileSync(dbPath, Buffer.from(seed.export()));
   seed.close();
   const internals = loadExtensionInternalsForTest();
@@ -7746,5 +7747,47 @@ test('AI logs are not written or pruned through a link in place of the logs fold
     assert.match(warnings.join('\n'), /not a plain folder/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('indexing new files derives only the new rides and keeps the routes; a pending rebuild is left to the caller', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-index-new-'));
+  const dbPath = path.join(directory, '.fit-visualizer', 'fit-data.sqlite');
+  const ride = (day) => {
+    const start = Date.parse(`2026-08-${String(day).padStart(2, '0')}T08:00:00.000Z`);
+    const records = straightGpsRecords(1200, 30).map((record) => ({ ...record, timestamp: new Date(start + record.elapsed_time * 1000).toISOString(), heart_rate: 140 }));
+    return { records, sessions: [{ start_time: new Date(start).toISOString(), sport: 'cycling', total_timer_time: 1199, total_elapsed_time: 1199, total_distance: 10 }] };
+  };
+  const internals = loadExtensionInternalsForTest({
+    l10n: { t: (text, ...values) => text.replace(/\{(\d+)\}/g, (_, index) => values[index]) },
+    ProgressLocation: { Notification: 15 },
+    window: { createOutputChannel: () => ({ clear() {}, show() {}, appendLine() {} }), withProgress: async (options, task) => task({ report: () => {} }) },
+  }, { parseFitFile: async (file) => ride(Number(path.basename(file, '.fit'))) });
+  const SQL = await initSqlJs({ locateFile: (file) => path.join(__dirname, '..', 'vendor', 'sql-wasm', file) });
+  const read = (sql) => { const db = new SQL.Database(fs.readFileSync(dbPath)); try { return db.exec(sql)[0]?.values || []; } finally { db.close(); } };
+  try {
+    const first = await internals.indexFitUris([{ fsPath: path.join(directory, '10.fit') }, { fsPath: path.join(directory, '12.fit') }], dbPath, 'two', { derive: true });
+    assert.deepEqual(first, { saved: 2, failed: 0, rebuildNeeded: false });
+    const before = read('SELECT activity_id, computed_at FROM activity_features ORDER BY activity_id');
+    assert.equal(before.length, 2);
+    const routes = read('SELECT id FROM routes');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = await internals.indexFitUris([{ fsPath: path.join(directory, '14.fit') }], dbPath, 'one', { derive: true });
+    assert.deepEqual(second, { saved: 1, failed: 0, rebuildNeeded: false });
+    const after = read('SELECT activity_id, computed_at FROM activity_features ORDER BY activity_id');
+    assert.deepEqual(after.slice(0, 2), before, 'the rides already there are not recomputed');
+    assert.equal(after.length, 3);
+    assert.deepEqual(read('SELECT id FROM routes'), routes, 'the routes stay, the new ride joins one');
+    assert.equal(read('SELECT COUNT(*) FROM activity_routes')[0][0], 3);
+    // A database the installed version has not rebuilt yet is rebuilt as a whole, by the caller.
+    const db = new SQL.Database(fs.readFileSync(dbPath));
+    db.run("UPDATE derived_state SET value = '1' WHERE key = 'features_version'");
+    fs.writeFileSync(dbPath, Buffer.from(db.export()));
+    db.close();
+    const third = await internals.indexFitUris([{ fsPath: path.join(directory, '16.fit') }], dbPath, 'one', { derive: true });
+    assert.deepEqual(third, { saved: 1, failed: 0, rebuildNeeded: true });
+    assert.equal(read('SELECT COUNT(*) FROM activity_features')[0][0], 3);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });

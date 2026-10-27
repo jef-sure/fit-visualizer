@@ -81,7 +81,7 @@ const {
 let extensionContextRef;
 let sqlJsInitPromise = null;
 const LAST_DB_PATH_KEY = 'fitVisualizer.lastDatabasePath';
-const ANALYSIS_VERSION = 46;
+const ANALYSIS_VERSION = 47;
 const ANALYSIS_CHAT_HISTORY_LIMIT = 24;
 const ROUTE_FILTER_STATE_KEY = 'fitVisualizer.routeFilter';
 const COMPARABLE_DISTANCE_MIN_RATIO = 0.75;
@@ -854,12 +854,14 @@ async function indexFitFolder(onlyNew) {
   const result = await indexFitUris(
     fitUris,
     dbPath,
-    `Indexing ${fitUris.length} ${onlyNew ? 'new ' : ''}FIT file(s)...`
+    `Indexing ${fitUris.length} ${onlyNew ? 'new ' : ''}FIT file(s)...`,
+    { derive: onlyNew }
   );
-  // Indexing is required whenever the stored schema changes anyway, so it refreshes the
-  // derived-feature cache and routes in the same run: one action covers both. The background
-  // version-triggered rebuild still covers format changes after extension updates.
-  await rebuildDerivedFeatures({ silent: false, skipStaleCheck: true, reason: 'indexing', dbPath });
+  // New files join their routes as they are read. Indexing every file re-reads the whole
+  // history, and its routes are derived again from it, oldest ride first.
+  if (!onlyNew || result.rebuildNeeded) {
+    await rebuildDerivedFeatures({ silent: false, skipStaleCheck: true, reason: 'indexing', dbPath });
+  }
   vscode.window.showInformationMessage(vscode.l10n.t('FIT DB index complete: {0} indexed, {1} failed.', result.saved, result.failed));
 }
 
@@ -903,6 +905,8 @@ async function indexFitUris(fitUris, dbPath, heading, options = {}) {
 
   let saved = 0;
   let failed = 0;
+  let rebuildNeeded = false;
+  const savedIds = [];
   await vscode.window.withProgress({
     location: vscode.ProgressLocation.Notification,
     title: vscode.l10n.t('Indexing FIT files'),
@@ -917,7 +921,7 @@ async function indexFitUris(fitUris, dbPath, heading, options = {}) {
       for (const fitUri of fitUris) {
         progress.report({ message: vscode.l10n.t('{0}/{1}: {2}', saved + failed + 1, fitUris.length, path.basename(fitUri.fsPath)) });
         try {
-          upsertActivityOrRollBack(db, fitUri.fsPath, await parseFitFile(fitUri.fsPath));
+          savedIds.push(upsertActivityOrRollBack(db, fitUri.fsPath, await parseFitFile(fitUri.fsPath)));
           saved += 1;
           output.appendLine(`Indexed: ${fitUri.fsPath}`);
         } catch (error) {
@@ -926,13 +930,31 @@ async function indexFitUris(fitUris, dbPath, heading, options = {}) {
         }
         progress.report({ increment: 100 / fitUris.length });
       }
+      // The rides just read join their routes one at a time, oldest first, as when their page
+      // opens: a whole rebuild would redo every ride of the history for each new file. Only a
+      // database the installed version still has to rebuild is left to the caller for that.
+      if (options.derive && savedIds.length) {
+        if (needsDerivedFeatureRebuild(db)) {
+          rebuildNeeded = true;
+        } else {
+          const ordered = db.exec(`SELECT id FROM activities WHERE id IN (${savedIds.map(() => '?').join(',')}) ORDER BY datetime(start_time), id`, savedIds)[0]?.values.map((value) => Number(value[0])) || [];
+          for (const [index, id] of ordered.entries()) {
+            progress.report({ message: vscode.l10n.t('Routes and segments: {0}/{1}', index + 1, ordered.length) });
+            try {
+              ensureFeaturesForActivity(db, id);
+            } catch (error) {
+              output.appendLine(`Derived data failed for activity ${id}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+        }
+      }
       if (saved > 0) await persistDatabase(db, dbPath);
     } finally {
       db.close();
     }
   }));
   output.appendLine(vscode.l10n.t('FIT DB index complete: {0} indexed, {1} failed.', saved, failed));
-  return { saved, failed };
+  return options.derive ? { saved, failed, rebuildNeeded } : { saved, failed };
 }
 
 async function resolveFitUri(resource) {
@@ -1975,8 +1997,9 @@ async function loadFitDataFromDb(dbPath, activityId) {
 function upsertActivityOrRollBack(db, filePath, fitData) {
   db.run('SAVEPOINT fit_file');
   try {
-    upsertActivity(db, filePath, fitData);
+    const activityId = upsertActivity(db, filePath, fitData);
     db.run('RELEASE fit_file');
+    return activityId;
   } catch (error) {
     db.run('ROLLBACK TO fit_file');
     db.run('RELEASE fit_file');
@@ -2279,6 +2302,7 @@ function upsertActivity(db, filePath, fitData) {
         trusted_distance_km = excluded.trusted_distance_km
     `, [activityId, new Date().toISOString(), calibration.ratio, calibration.trustedDistanceKm]);
   }
+  return activityId;
 }
 
 function parseStoredLaps(raw) {

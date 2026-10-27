@@ -24,6 +24,7 @@ const UI_STRINGS = {
   reanalyzeSelectedNoMatch: 'No activity matches: {0}',
   confirmReanalyzeSelected: 'Re-analyze {0} selected activities? This replaces their saved analyses and uses one Copilot request per activity.',
   indexingFitFiles: 'Indexing FIT files',
+  routesAndSegmentsProgress: 'Routes and segments: {0}/{1}',
   indexProgress: '{0}/{1}: {2}',
   indexComplete: 'FIT DB index complete: {0} indexed, {1} failed.',
   activity: 'Activity',

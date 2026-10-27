@@ -445,8 +445,8 @@ Before using AI features with activities that contain sensitive data, check your
 - FIT: Visualize File — open a file
 - FIT: Browse Loaded Data — browse the loaded activities
 - FIT: Index All Files — re-index every `.fit` file of the folder; it also rebuilds the derived data (segments, zones, classes, routes) and refreshes the device altitude figures
-- FIT: Index New Files — index only the new ones
-- FIT: Index This File — re-read one file and refresh the derived data (segments, zones, routes) in the same run
+- FIT: Index New Files — index only the new ones; their derived data are computed and they join their routes in the same run, the rides already there are left as they are
+- FIT: Index This File — re-read one file and refresh its derived data (segments, zones, route) in the same run, on the route it already has
 - FIT: Add Manual Activity — enter a workout by hand when there is no FIT file (say, the bike computer stayed at home), so that it still counts in the history and the analysis
 - FIT: Select Analysis Model — choose the analysis model from all those the editor offers
 - FIT: Re-analyze Outdated Analyses — process all activities with an outdated or missing analysis in one batch in chronological order, after confirming the total number of requests to the AI; current analyses are not changed
