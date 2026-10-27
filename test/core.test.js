@@ -14,8 +14,10 @@ const {
   generateAnalysisPromptParts,
   generateAnalysisChatPrompt,
   generateComparisonPrompt,
+  classifyLimitError,
   requestCopilotAnalysis,
   responseLanguageInstruction,
+  retryAfterMs,
   selectPreferredModel,
   summarizePromptBlocks,
 } = require('../analysis');
@@ -193,7 +195,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { updateActivityHeartRate, prepareGuestDatabase, saveFitToLocalDb, derivedRebuildPending, runUpgradeSteps, offerReanalysis, loadFitDataFromDb, promptHistoryRows, rereadOutdatedRides, getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, autoCalculateHeartRateProfileFromDbNow, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { updateActivityHeartRate, prepareGuestDatabase, saveFitToLocalDb, derivedRebuildPending, runUpgradeSteps, offerReanalysis, loadFitDataFromDb, promptHistoryRows, rereadOutdatedRides, getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, autoCalculateHeartRateProfileFromDbNow, withShortenedHistory, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -3372,7 +3374,7 @@ test('empty fields are dropped from the prompt instead of becoming N/A', () => {
   assert.doesNotMatch(chat, /N\/A/);
 });
 
-test('SQL training context keeps older user reports, excludes later activities and uses dated profiles', async () => {
+test('SQL training context takes the conversations of its history rides only, excludes later activities and uses dated profiles', async () => {
   const SQL = await initSqlJs({ locateFile: (file) => path.join(__dirname, '..', 'vendor', 'sql-wasm', file) });
   const db = new SQL.Database();
   const internals = loadExtensionInternalsForTest();
@@ -3386,14 +3388,17 @@ test('SQL training context keeps older user reports, excludes later activities a
     db.run(`INSERT INTO heart_rate_profiles (effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start) VALUES
       ('2026-08-01', 180, 120, 130, 150, 160), ('2026-08-30', 210, 140, 160, 180, 200)`);
     db.run('INSERT INTO activity_analysis_chat (activity_id, chat_json) VALUES (?, ?)',
-      [4, JSON.stringify([{ role: 'user', ts: '2026-04-02', content: 'Several goals; endurance and enjoying the ride.' }])]);
+      [2, JSON.stringify([{ role: 'user', ts: '2026-08-21', content: 'Several goals; endurance and enjoying the ride.' },
+        { role: 'assistant', ts: '2026-08-21', content: 'Noted.' }])]);
+    db.run('INSERT INTO activity_analysis_chat (activity_id, chat_json) VALUES (?, ?)',
+      [4, JSON.stringify([{ role: 'user', ts: '2026-04-02', content: 'Older than the history window.' }])]);
     db.run('INSERT INTO activity_analysis_chat (activity_id, chat_json) VALUES (?, ?)',
       [3, JSON.stringify([{ role: 'user', content: 'Future activity must not appear.' }])]);
     const context = internals.getTrainingContextFromDb(db, 1, { segments: [] });
     assert.equal(context.volume[0].sports[0].durationS, 600);
     assert.equal(context.volume[0].sports[0].distanceKm, 40);
     assert.equal(context.recentHistory.length, 1);
-    assert.equal(context.userReports.length, 1);
+    assert.deepEqual(context.userReports.map((report) => report.role), ['user', 'assistant']);
     assert.match(context.userReports[0].content, /Several goals/);
     assert.equal(internals.getProfileHeartRateConfig(db, '2026-08-20').maxHeartRate, 180);
     assert.equal(internals.getProfileHeartRateConfig(db, '2026-07-01').maxHeartRate, null);
@@ -7552,4 +7557,87 @@ test('the FTP suggestion estimates power from the stored rides when none has a p
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('a limit error is told apart: a rate passes with time, a prompt too long needs a shorter one', () => {
+  assert.equal(classifyLimitError('Request Failed: 400 {"error":{"message":"prompt token count of 142935 exceeds the limit of 128000","code":"model_max_prompt_tokens_exceeded"}}'), 'tokens');
+  assert.equal(classifyLimitError('prompt is too long: 210000 tokens > 200000 maximum'), 'tokens');
+  assert.equal(classifyLimitError('Upstream provider rate limit hit'), 'rate');
+  assert.equal(classifyLimitError('Rate limit reached for gpt-x on tokens per min (TPM)'), 'rate');
+  assert.equal(classifyLimitError('429 Too Many Requests'), 'rate');
+  assert.equal(classifyLimitError('HTTP 429'), 'rate');
+  assert.equal(classifyLimitError('Request timed out'), null);
+  assert.equal(retryAfterMs('Sorry, you have been rate-limited. Please wait 42 seconds before trying again.'), 42000);
+  assert.equal(retryAfterMs('rate limit; try again in 2 minutes'), 120000);
+  assert.equal(retryAfterMs('rate limit hit'), null);
+});
+
+test('a rate-limited request waits as long as the provider says, otherwise twice as long each time', async () => {
+  const waits = [];
+  let calls = 0;
+  const limited = (message, failures) => ({
+    lm: { selectChatModels: async () => [{ id: 'm', sendRequest: async () => {
+      calls += 1;
+      if (calls <= failures) throw new Error(message);
+      return { text: asyncChunks(['Answer']) };
+    } }] },
+    LanguageModelChatMessage: { User: (content) => content },
+  });
+  const delay = async (ms) => { waits.push(ms); };
+  assert.equal(await requestCopilotAnalysis(limited('rate limited, retry after 7 seconds', 1), 'p', { delay }), 'Answer');
+  assert.deepEqual(waits, [7000]);
+  calls = 0;
+  waits.length = 0;
+  assert.equal(await requestCopilotAnalysis(limited('rate limit hit', 3), 'p', { delay, rateLimitDelayMs: 1000 }), 'Answer');
+  assert.deepEqual(waits, [1000, 2000, 4000]);
+  calls = 0;
+  waits.length = 0;
+  await assert.rejects(() => requestCopilotAnalysis(limited('rate limit hit', 9), 'p', { delay, rateLimitDelayMs: 1000 }), /Copilot rate limit reached/);
+  assert.equal(calls, 4);
+});
+
+test('a prompt over the model input limit is shortened by the caller, before sending or after the error', async () => {
+  const sent = [];
+  const logged = [];
+  const tooLong = 'prompt token count of 142935 exceeds the limit of 128000';
+  const model = (options = {}) => ({
+    lm: { selectChatModels: async () => [{ id: 'm', ...options, sendRequest: async (messages) => {
+      sent.push(messages.join('|'));
+      if (messages.join('').length > 5) throw new Error(tooLong);
+      return { text: asyncChunks(['Answer']) };
+    } }] },
+    LanguageModelChatMessage: { User: (content) => content },
+  });
+  const shortenPrompt = (step) => [['abcd', 'ef'], ['ab', 'c'], ['a', '']][step - 1] || null;
+  assert.equal(await requestCopilotAnalysis(model(), ['abcdef', 'ghij'], { shortenPrompt, onCompleted: (result) => logged.push(result.prompt) }), 'Answer');
+  assert.deepEqual(sent, ['abcdef|ghij', 'abcd|ef', 'ab|c']);
+  assert.deepEqual(logged, ['ab\n\nc'], 'the log keeps the prompt that was answered');
+  // With a known input limit the prompt is shortened before the first request.
+  sent.length = 0;
+  const counted = model({ maxInputTokens: 3, countTokens: async (text) => text.length });
+  assert.equal(await requestCopilotAnalysis(counted, ['abcdef', 'ghij'], { shortenPrompt }), 'Answer');
+  assert.deepEqual(sent, ['ab|c']);
+  // Nothing left to shorten: a plain message, not a rate limit.
+  sent.length = 0;
+  await assert.rejects(() => requestCopilotAnalysis(model(), ['abcdef'], {}), /longer than model m accepts.*142935/);
+  assert.equal(sent.length, 1);
+});
+
+test('a shortened history keeps the latest rides with their conversations and says so in the prompt', () => {
+  const internals = loadExtensionInternalsForTest();
+  const history = Array.from({ length: 12 }, (_, index) => ({ activityId: index + 1, startTime: `2026-08-${String(index + 1).padStart(2, '0')}` }));
+  const summary = { trainingContext: { recentHistory: history, volume: [], comparisons: [], interruptions: [], intensityNote: '', coverageNote: '',
+    userReports: [{ activityId: 2, startTime: '2026-08-02', role: 'user', content: 'old' }, { activityId: 12, startTime: '2026-08-12', role: 'user', content: 'recent' }] } };
+  const steps = [1, 2, 3, 4].map((step) => internals.withShortenedHistory(summary, step));
+  assert.deepEqual(steps.slice(0, 3).map((short) => short.trainingContext.recentHistory.map((ride) => ride.activityId)),
+    [[7, 8, 9, 10, 11, 12], [10, 11, 12], []]);
+  assert.equal(steps[3], null);
+  assert.deepEqual(steps[0].trainingContext.userReports.map((report) => report.content), ['recent']);
+  assert.deepEqual(steps[2].trainingContext.userReports, []);
+  assert.equal(summary.trainingContext.recentHistory.length, 12, 'the full summary is left as it was');
+  // Fewer rides than a step: the steps that would keep them all are skipped.
+  const five = { trainingContext: { ...summary.trainingContext, recentHistory: history.slice(-5) } };
+  assert.deepEqual([1, 2, 3].map((step) => internals.withShortenedHistory(five, step)?.trainingContext.recentHistory.length ?? null), [3, 0, null]);
+  const chat = generateAnalysisChatPrompt({ sessions: [{ total_distance_km: 20 }] }, steps[1], {}, '', [], 'why?');
+  assert.match(chat, /History Shortened:\*\* .*latest 3 of 12 history rides/);
 });

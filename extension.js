@@ -2580,11 +2580,40 @@ async function buildAnalysisPromptForActivity(dbPath, numId) {
   const followUpHistory = previousResult?.version >= ANALYSIS_VERSION
     ? storedChat
     : storedChat.filter((entry) => entry?.role === 'user');
-  const recentHistory = summary.trainingContext?.recentHistory || [];
-  const { instructions, data } = generateAnalysisPromptParts(
-    analysisData, summary, hrConfig, previousAnalysis, followUpHistory, recentHistory, vscode.env.language
-  );
-  return { prompt: [instructions, data], analysisData };
+  const build = (shortSummary) => {
+    const { instructions, data } = generateAnalysisPromptParts(
+      analysisData, shortSummary, hrConfig, previousAnalysis, followUpHistory, shortSummary.trainingContext?.recentHistory || [], vscode.env.language
+    );
+    return [instructions, data];
+  };
+  return {
+    prompt: build(summary),
+    shortenPrompt: (step) => {
+      const shorter = withShortenedHistory(summary, step);
+      return shorter ? build(shorter) : null;
+    },
+    analysisData,
+  };
+}
+
+// A prompt over the model's input limit is rebuilt with fewer history rides, the latest kept,
+// and only their conversations. The ride itself and the totals are never cut.
+const SHORTENED_HISTORY_RIDES = [6, 3, 0];
+
+function withShortenedHistory(summary, step) {
+  const context = summary?.trainingContext;
+  const history = context?.recentHistory || [];
+  const keep = SHORTENED_HISTORY_RIDES.filter((count) => count < history.length)[step - 1];
+  if (!context || keep == null) return null;
+  const kept = keep ? history.slice(-keep) : [];
+  const ids = new Set(kept.map((activity) => activity.activityId));
+  return { ...summary, trainingContext: { ...context, recentHistory: kept,
+    userReports: (context.userReports || []).filter((report) => ids.has(report.activityId)),
+    historyShortened: { kept: kept.length, total: history.length } } };
+}
+
+function logRateLimitWait(kind, activityId, waitMs, retry) {
+  reportAnalysisWarning(`Activity ${activityId}: ${kind} request rate-limited; waiting ${Math.round(waitMs / 1000)} s before retry ${retry}.`);
 }
 
 async function runActivityAnalysis(dbPath, activityId, force, modelOverride = null) {
@@ -2600,9 +2629,11 @@ async function runActivityAnalysis(dbPath, activityId, force, modelOverride = nu
     }
   }
 
-  const { prompt, analysisData } = await buildAnalysisPromptForActivity(dbPath, numId);
+  const { prompt, shortenPrompt, analysisData } = await buildAnalysisPromptForActivity(dbPath, numId);
   let usedModelId;
   const rawAnalysis = await requestCopilotAnalysis(vscode, prompt, {
+    shortenPrompt,
+    onRateLimitWait: (waitMs, retry) => logRateLimitWait('analysis', numId, waitMs, retry),
     vendor: getLanguageModelVendor(),
     preferCheapModel: getPreferCheapAnalysisModel(),
     modelId: modelOverride || getAnalysisModelId(),
@@ -2794,6 +2825,10 @@ async function reanalyzeSelectedActivities(selectionText) {
     vscode.l10n.t('Re-analyze {0} selected activities? This replaces their saved analyses and uses one Copilot request per activity.', targets.length));
 }
 
+// After a rate limit the request could not wait out by itself (see requestCopilotAnalysis), a
+// batch pauses before the same ride again: first for 5 minutes, then for 15.
+const BATCH_RATE_LIMIT_PAUSES_MS = [5 * 60 * 1000, 15 * 60 * 1000];
+
 async function runReanalysisBatch(dbPath, targets, confirmation) {
   // Without a confirmation text the caller has already asked.
   if (confirmation) {
@@ -2813,6 +2848,14 @@ async function runReanalysisBatch(dbPath, targets, confirmation) {
     let failed = 0;
     let stoppedReason = null;
     let lastError = '';
+    let rateLimitPauses = 0;
+    let retrying = false;
+    const pause = async (ms) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end && !token.isCancellationRequested) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(1000, end - Date.now())));
+      }
+    };
 
     for (let index = 0; index < targets.length; index += 1) {
       if (token.isCancellationRequested) {
@@ -2823,20 +2866,34 @@ async function runReanalysisBatch(dbPath, targets, confirmation) {
       const target = targets[index];
       progress.report({
         message: `${index + 1}/${targets.length}: ${target.fileName}`,
-        increment: index === 0 ? 0 : 100 / targets.length,
+        increment: index === 0 || retrying ? 0 : 100 / targets.length,
       });
+      retrying = false;
 
       try {
         await generateActivityAnalysis(dbPath, target.id, true);
         done += 1;
+        rateLimitPauses = 0;
       } catch (error) {
-        failed += 1;
         lastError = error instanceof Error ? error.message : String(error);
-        // Further requests would fail the same way until the quota window resets.
+        // The request has already waited out short rate limits. A longer one is waited out
+        // here, and the same ride is tried again; only when that keeps failing the batch stops.
         if (/rate limit/i.test(lastError)) {
+          if (rateLimitPauses < BATCH_RATE_LIMIT_PAUSES_MS.length) {
+            const ms = BATCH_RATE_LIMIT_PAUSES_MS[rateLimitPauses];
+            rateLimitPauses += 1;
+            progress.report({ message: `${index + 1}/${targets.length}: rate limit, waiting ${Math.round(ms / 60000)} min` });
+            reportAnalysisWarning(`Re-analysis: rate limit at ${target.fileName}; waiting ${Math.round(ms / 60000)} min before trying it again.`);
+            await pause(ms);
+            retrying = true;
+            index -= 1;
+            continue;
+          }
+          failed += 1;
           stoppedReason = 'rateLimited';
           break;
         }
+        failed += 1;
       }
     }
 
@@ -3765,22 +3822,23 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   // The workout fields read the settling window, so it must land on the analysis data after it
   // is computed here and before the prompt is built.
   if (context.altitudeQuality?.settlingWindow && currentData) currentData.altitudeSettlingWindow = context.altitudeQuality.settlingWindow;
-  // Earlier conversations go in whole, both sides and without a cap: a user message is often an
-  // answer to what the assistant said, and reads as nonsense without it.
-  const conversations = readRows(`SELECT a.start_time, aac.chat_json
+  // The conversations of the rides the prompt reads as history go in whole, both sides: a user
+  // message is often an answer to what the assistant said, and reads as nonsense without it.
+  const historyIds = (context.recentHistory || []).map((activity) => Number(activity.activityId)).filter(Number.isInteger);
+  const conversations = historyIds.length ? readRows(`SELECT a.id, a.start_time, aac.chat_json
     FROM activities a JOIN activity_analysis_chat aac ON aac.activity_id = a.id
-    WHERE datetime(a.start_time) < datetime(?) ORDER BY datetime(a.start_time)`, [selected.start_time]);
+    WHERE a.id IN (${historyIds.map(() => '?').join(',')}) ORDER BY datetime(a.start_time)`, historyIds) : [];
   context.userReports = conversations.flatMap((row) => {
     try {
       const parsed = JSON.parse(row.chat_json);
       return Array.isArray(parsed) ? parsed
         .filter((turn) => (turn?.role === 'user' || turn?.role === 'assistant') && String(turn.content || '').trim())
-        .map((turn) => ({ startTime: row.start_time, ts: turn.ts || null, role: turn.role, content: String(turn.content).trim() })) : [];
+        .map((turn) => ({ activityId: row.id, startTime: row.start_time, ts: turn.ts || null, role: turn.role, content: String(turn.content).trim() })) : [];
     } catch {
       return [];
     }
   });
-  context.coverageNote += ' Earlier activity conversations are supplied complete, both sides; they are not a complete medical or goal record.';
+  context.coverageNote += ' Conversations are supplied only for the history rides, both sides as saved; they are not a complete medical or goal record.';
   return context;
 }
 
@@ -4208,11 +4266,16 @@ async function runActivityChatReply(dbPath, activityId, history, userQuestion, m
   const safeHistory = hasCurrentAnalysis
     ? history
     : history.filter((entry) => entry?.role === 'user');
-  const prompt = generateAnalysisChatPrompt(
-    analysisData, summary, hrConfig, baseAnalysis, safeHistory, userQuestion, vscode.env.language
+  const build = (shortSummary) => generateAnalysisChatPrompt(
+    analysisData, shortSummary, hrConfig, baseAnalysis, safeHistory, userQuestion, vscode.env.language
   );
   // Chat defaults to the same middle tier as comparisons.
-  return requestCopilotAnalysis(vscode, prompt, {
+  return requestCopilotAnalysis(vscode, build(summary), {
+    shortenPrompt: (step) => {
+      const shorter = withShortenedHistory(summary, step);
+      return shorter ? build(shorter) : null;
+    },
+    onRateLimitWait: (waitMs, retry) => logRateLimitWait('chat', activityId, waitMs, retry),
     vendor: getLanguageModelVendor(),
     preferCheapModel: true,
     tier: 'middle',

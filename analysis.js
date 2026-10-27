@@ -489,7 +489,8 @@ function buildTrainingHistoryContext(context) {
     // Altitude consensus only: the data-quality flags are printed once, in the workout body, so
     // they are present even without history and never duplicated.
     buildAltitudeQualityBlock(context.altitudeQuality, []),
-    reports ? `**Dated User Context Across Activities:**\n${reports}\nThese are the complete earlier conversations, oldest first. User reports are the user's own words; assistant replies are earlier AI hypotheses, shown so that the user's answers can be understood, and are not evidence. Message date and activity date are different. Reports may describe another effective period; do not apply later circumstances retrospectively without support.` : null,
+    context.historyShortened ? `**History Shortened:** The full prompt did not fit this model's input limit, so only the latest ${context.historyShortened.kept} of ${context.historyShortened.total} history rides are listed, with their conversations. Totals above still count every ride; a ride left out of the list is unknown here, not missing, and is no sign of a break.` : null,
+    reports ? `**Dated User Context Across Activities:**\n${reports}\nThese are the saved conversations of the history rides above, oldest first. User reports are the user's own words; assistant replies are earlier AI hypotheses, shown so that the user's answers can be understood, and are not evidence. Message date and activity date are different. Reports may describe another effective period; do not apply later circumstances retrospectively without support.` : null,
   ], '\n\n');
 }
 
@@ -610,9 +611,14 @@ function buildPeakHeartRateContext(records, trainingContext, label = '') {
 
 async function requestCopilotAnalysis(vscode, prompt, options = {}) {
   const retryDelayMs = Number.isFinite(options.retryDelayMs) ? Number(options.retryDelayMs) : 1200;
+  // A rate limit is waited out: the same request goes through once the provider's window has
+  // passed. The wait doubles each time unless the error says how long to wait.
   const maxRetries = Number.isInteger(options.maxRetries) && options.maxRetries >= 0
     ? options.maxRetries
-    : 1;
+    : 3;
+  const rateLimitDelayMs = Number.isFinite(options.rateLimitDelayMs) ? Number(options.rateLimitDelayMs)
+    : Number.isFinite(options.retryDelayMs) ? Number(options.retryDelayMs) : 15000;
+  const wait = typeof options.delay === 'function' ? options.delay : delay;
   // An answer with no text in it is not a verdict on the request: the same prompt goes through on
   // the next try. It happened once or twice in every batch of 39, and each time the whole batch
   // ended "1 failed" and had to be started again by hand.
@@ -642,8 +648,29 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
   // Copilot may hand out different models over time, so the log has to record which one answered.
   const modelId = chosenModel.id || chosenModel.family || 'unknown';
   // A prompt may be several User messages (instructions first, data last); logs keep the joined text.
-  const messages = Array.isArray(prompt) ? prompt : [prompt];
-  const promptText = messages.join('\n\n');
+  let messages = Array.isArray(prompt) ? prompt : [prompt];
+  let promptText = messages.join('\n\n');
+  // A prompt longer than the model takes is rebuilt shorter by the caller, step by step; the
+  // caller decides what may go (history), never the ride itself.
+  let shortenings = 0;
+  const shorten = async () => {
+    if (typeof options.shortenPrompt !== 'function') return false;
+    const shorter = await options.shortenPrompt(shortenings + 1);
+    if (!shorter) return false;
+    shortenings += 1;
+    messages = Array.isArray(shorter) ? shorter : [shorter];
+    promptText = messages.join('\n\n');
+    return true;
+  };
+  const maxInputTokens = Number(chosenModel.maxInputTokens);
+  if (typeof chosenModel.countTokens === 'function' && maxInputTokens > 0) {
+    try {
+      const countPrompt = async () => (await Promise.all(messages.map((message) => chosenModel.countTokens(message)))).reduce((sum, count) => sum + count, 0);
+      while (await countPrompt() > maxInputTokens && await shorten()) { /* shortened, count again */ }
+    } catch {
+      // A count is an estimate; when it fails, the request itself says whether the prompt fits.
+    }
+  }
   const report = async (result) => {
     try {
       await options.onCompleted?.({ modelId, prompt: promptText, durationMs: Date.now() - startedAt, emptyAnswers, ...result });
@@ -676,14 +703,24 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
       return analysis.trim();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const isRetryableRateLimit = isRateLimitError(message) && attempt < maxRetries;
-      if (isRetryableRateLimit) {
-        await delay(retryDelayMs);
+      if (isRateLimitError(message) && attempt < maxRetries) {
+        const waitMs = Math.min(retryAfterMs(message) ?? rateLimitDelayMs * 2 ** attempt, MAX_RATE_LIMIT_WAIT_MS);
+        options.onRateLimitWait?.(waitMs, attempt + 1);
+        await wait(waitMs);
+        continue;
+      }
+      const limit = classifyLimitError(message);
+      if (limit === 'tokens' && await shorten()) {
+        // The shorter prompt is a new request, not a retry of the same one.
+        attempt -= 1;
         continue;
       }
       await report({ error: message });
-      if (isRateLimitError(message)) {
+      if (limit === 'rate') {
         throw new Error('Copilot rate limit reached. Please wait a bit and try Analyze again.');
+      }
+      if (limit === 'tokens') {
+        throw new Error(`The prompt is longer than model ${modelId} accepts${shortenings ? ', even with the history shortened' : ''}. Pick a model with a larger context. (${message})`);
       }
       const lmErrorMessage = describeLanguageModelError(vscode, error);
       if (lmErrorMessage) {
@@ -817,9 +854,32 @@ function summarizePromptBlocks(prompt) {
   return { totalChars: text.length, blocks: sized, overBudget };
 }
 
-function isRateLimitError(message) {
+// Which limit an error from the model is about. A rate limit passes with time; a prompt over the
+// model's input size does not, and needs a shorter prompt. Provider wording varies, so this reads
+// the message: "rate limit" wins (a tokens-per-minute limit is still a rate), then the size
+// wordings, then a bare HTTP 429 (as a number of its own, not inside a token count).
+function classifyLimitError(message) {
   const text = String(message || '').toLowerCase();
-  return text.includes('rate limit') || text.includes('too many requests') || text.includes('429');
+  if (/rate.?limit|too many requests|per minute/.test(text)) return 'rate';
+  if (/max_prompt_tokens|token count|tokens? exceed|too many tokens|exceeds? the limit|context (length|window)|maximum context|(prompt|input|request|message)s? (is |are )?too (long|large)/.test(text)) return 'tokens';
+  if (/(^|[^0-9])429([^0-9]|$)/.test(text)) return 'rate';
+  return null;
+}
+
+function isRateLimitError(message) {
+  return classifyLimitError(message) === 'rate';
+}
+
+const MAX_RATE_LIMIT_WAIT_MS = 5 * 60 * 1000;
+
+// "retry after 20 seconds", "try again in 2 minutes", "Please wait 30s": the provider's own wait.
+function retryAfterMs(message) {
+  const match = /(?:retry|try again|wait)\D{0,20}?(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?)\b/i.exec(String(message || ''));
+  if (!match) return null;
+  const value = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  const ms = unit.startsWith('ms') || unit.startsWith('milli') ? value : unit.startsWith('m') ? value * 60000 : value * 1000;
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
 function delay(ms) {
@@ -1403,7 +1463,9 @@ module.exports = {
   generateAnalysisPromptParts,
   generateAnalysisChatPrompt,
   generateComparisonPrompt,
+  classifyLimitError,
   requestCopilotAnalysis,
+  retryAfterMs,
   responseLanguageInstruction,
   selectPreferredModel,
   summarizePromptBlocks,

@@ -240,7 +240,7 @@ For a ride without such a route the model receives segments and, if the route is
 
 **Load and history.** Volume and covered intensity for the preceding 7 and 28 days and the equal periods before them; the ratio of the load of the last seven days to a usual week; up to 12 earlier sessions of the same sport with summaries of their analyses. Each earlier session carries its weekday and start hour: an evening ride on a weekday and a long one at the weekend are different cases, and a ride should be compared with its own kind.
 
-**Your conversations.** Earlier discussions of activities are passed in full, with the lines of both sides and with no limit on their number: a user's reply is often unintelligible without what it replies to. The assistant's lines are marked as earlier AI hypotheses, not evidence.
+**Your conversations.** The discussions of the rides passed as history (the latest 12 of the sport within 90 days) are passed in full, with the lines of both sides: a user's reply is often unintelligible without what it replies to. The assistant's lines are marked as earlier AI hypotheses, not evidence.
 
 <details>
 <summary>In detail: the contents of the prompt and the rules</summary>
@@ -490,7 +490,7 @@ The screenshots show a public cycling ride from the [kuperov/fit](https://github
 - **The map has no background or is empty.** Tiles are loaded from the network; with `fitVisualizer.map.tiles` = `none` the route is drawn on a neutral background. If the file has no GPS, the map says so.
 - **The analysis is marked as made by an earlier version.** Run **FIT: Re-analyze Outdated Analyses**.
 - **"Copilot Chat is not installed or you are not signed in".** The AI features need GitHub Copilot Chat installed and signed in.
-- **A message about the Copilot limit.** Wait and start the analysis again; bulk re-analysis stops at the limit and continues from the next run.
+- **A message about the Copilot limit.** A request waits out a rate limit by itself: up to three retries, as long as the error says or 15, 30 and 60 seconds; the waits are noted in the "FIT Visualizer: Analysis" output. Bulk re-analysis then pauses for 5 and 15 minutes before the same ride and stops only if the limit is still there; it continues from the next run. A prompt longer than the model accepts is rebuilt with fewer history rides (6, 3, none) and says so to the model; if it still does not fit, pick a model with a larger context.
 - **After an update the page does not open at once.** Derived data is being recomputed — wait for the "rebuilding derived features" notification to finish.
 - **Opening a file asks about a database.** The file lies outside the folder where you already have a database; choose **View only** if you do not want to start a separate history.
 - **I ticked a goal and the analysis ignored it.** Ticking a goal is saved at once; after it the analysis has to be started again.

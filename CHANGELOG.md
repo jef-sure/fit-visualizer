@@ -6,8 +6,13 @@
 
 - **FTP suggestion without a power meter.** With no ride carrying measured power, the profile form estimates power from speed and grade over the stored rides, but it read their altitude in metres where kilometres are expected: grades came out in the thousands of percent, nearly every estimate was discarded, and the suggested FTP was 0. On a database of 39 rides without a power meter it is now 121 W.
 
+- **A limit error is told apart from another.** An error was taken for a rate limit whenever its text contained "429", so "prompt token count of 142935 exceeds the limit of 128000" was retried and reported as "Copilot rate limit reached". A rate limit and a prompt too long for the model are now recognised separately, and each is handled its own way (below).
+
 ### Changed
 
+- **Rate limits are waited out.** A request retries up to three times, waiting as long as the error says or 15, 30 and 60 seconds; each wait is noted in the "FIT Visualizer: Analysis" output. Bulk re-analysis no longer stops at the first rate limit: it pauses for 5 minutes, then 15, before the same ride, and stops only if the limit is still there.
+- **A prompt too long for the model is shortened.** Analysis and chat rebuild the prompt with fewer history rides, the latest kept (6, 3, none), together with only their conversations, and tell the model the list was shortened. When the model reports its input limit, this happens before the request; otherwise after the error. The ride itself and the history totals are never cut.
+- **Conversations in a prompt are those of its history rides.** Every earlier conversation in the database went into each analysis and chat prompt, whatever its sport or age, so the prompt grew with every chat. Now only the conversations of the rides passed as history go in: the latest 12 of the sport within 90 days.
 - The package is about a tenth of its former size (1 MB instead of 10 MB): the README pictures, which the Marketplace page loads from GitHub, and the sources, maps, type files and browser builds of the dependencies are left out.
 
 ## 0.30.2 - 2026-10-20
