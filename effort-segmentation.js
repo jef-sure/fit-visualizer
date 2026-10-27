@@ -18,7 +18,10 @@ const DEFAULTS = {
   minSeconds: 60,
 };
 
+// Records read from the database carry null for a channel the device did not record; Number(null)
+// is 0, which would make a ride without a power meter one at 0 W.
 function finiteNumber(value) {
+  if (value == null || value === '') return Number.NaN;
   const number = Number(value);
   return Number.isFinite(number) ? number : Number.NaN;
 }

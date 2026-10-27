@@ -36,7 +36,11 @@ async function pruneLlmLogs(logDir, analysisRetentionDays, chatRetentionDays) {
         continue;
       }
       const filePath = path.join(logDir, name);
-      const stats = await fs.stat(filePath);
+      // Only plain files: rewriting through a link would change the file it points to.
+      const stats = await fs.lstat(filePath);
+      if (!stats.isFile()) {
+        continue;
+      }
       if (stats.mtimeMs >= cutoff) {
         continue;
       }

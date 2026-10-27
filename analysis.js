@@ -540,7 +540,8 @@ function buildLapContext(fitData) {
   const rows = laps.slice(0, 40).map((lap, index) => `${index + 1}. ${joinNonEmpty([
     lap.total_timer_time > 0 ? formatHms(Math.round(lap.total_timer_time)) : null,
     lap.total_distance > 0 ? `${Number(lap.total_distance).toFixed(2)} km` : null,
-    lap.avg_hr > 0 ? `HR ${Number(lap.avg_hr).toFixed(0)} bpm` : null,
+    // Laps are stored as the parser reads them, where the field is avg_heart_rate.
+    (lap.avg_heart_rate ?? lap.avg_hr) > 0 ? `HR ${Number(lap.avg_heart_rate ?? lap.avg_hr).toFixed(0)} bpm` : null,
     measuredPower && lap.avg_power > 0 ? `device avg power ${Number(lap.avg_power).toFixed(0)} W` : null,
     lap.avg_cadence > 0 ? `cadence ${Number(lap.avg_cadence).toFixed(0)}` : null,
     lap.lap_trigger ? `trigger ${lap.lap_trigger}` : null,
@@ -736,6 +737,13 @@ async function requestCopilotAnalysis(vscode, prompt, options = {}) {
 // Bare model names for widely known budget/small tiers; not tied to any one vendor's naming scheme.
 const DEFAULT_CHEAP_MODEL_MARKERS = ['haiku', 'mini', 'flash', 'nano', 'lite', 'small', 'luna'];
 
+// A marker is a word of the model name, not any part of it: "mini" is not in "gemini", and
+// "gpt-5" is not "gpt-5.5".
+function nameHasMarker(name, marker) {
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9.]|$)`).test(name);
+}
+
 // Cheapest model by published price; Auto and name markers cover models missing from the price table.
 // A fixed model id wins when set, so prompt experiments stay reproducible.
 async function selectPreferredModel(vscode, vendor, models, options) {
@@ -761,8 +769,8 @@ async function selectPreferredModel(vscode, vendor, models, options) {
     const cheapOrFlagshipMarkers = [...DEFAULT_CHEAP_MODEL_MARKERS, 'ultra', 'opus'];
     const mid = models.find((model) => {
       const name = `${model.id || ''} ${model.family || ''} ${model.name || ''}`.toLowerCase();
-      return MIDDLE_MARKERS.some((marker) => name.includes(marker))
-        && !cheapOrFlagshipMarkers.some((marker) => name.includes(marker));
+      return MIDDLE_MARKERS.some((marker) => nameHasMarker(name, marker))
+        && !cheapOrFlagshipMarkers.some((marker) => nameHasMarker(name, marker));
     });
     if (mid) return mid;
     const rankedAll = rankModelsByCost(models);
@@ -793,7 +801,7 @@ async function selectPreferredModel(vscode, vendor, models, options) {
     .filter(Boolean);
   const match = models.find((model) => {
     const name = `${model.id || ''} ${model.family || ''} ${model.name || ''}`.toLowerCase();
-    return markers.some((marker) => name.includes(marker));
+    return markers.some((marker) => nameHasMarker(name, marker));
   });
   return match || models[0];
 }

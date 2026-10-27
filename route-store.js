@@ -165,8 +165,11 @@ function computeCheckpoints(records, segments = [], { spacingKm = CHECKPOINT_SPA
     if (dt > 0 && dd >= 0) {
       spanTime += dt;
       spanDistance += dd;
-      const hr = Number(record.heart_rate);
-      if (Number.isFinite(hr) && hr > 0) {
+      const hr = record.heart_rate == null ? NaN : Number(record.heart_rate);
+      // An auto-pause leaves a gap with no ground covered; the first sample after it is not the
+      // heart rate of the whole pause.
+      const pausedGap = dt > 30 && dd < 0.03;
+      if (Number.isFinite(hr) && hr > 0 && !pausedGap) {
         hrSum += hr * dt;
         hrCount += dt;
         cumulativeHrSum += hr * dt;

@@ -1401,15 +1401,21 @@ function windowedGradePct(records, altitudesM, windowM = 300) {
   const count = records.length;
   const distanceM = records.map((record) => asNumber(record?.distance) * 1000);
   const grades = new Array(count).fill(Number.NaN);
+  // A record without a distance (before the first fix, a dropout) has no place on the road. The
+  // window runs over the records that have one: an edge stopped on a gap would never move again.
+  const placed = [];
+  for (let index = 0; index < count; index += 1) {
+    if (Number.isFinite(distanceM[index])) placed.push(index);
+  }
   let low = 0;
   let high = 0;
-  for (let index = 0; index < count; index += 1) {
-    if (!Number.isFinite(distanceM[index])) continue;
-    while (low < index && distanceM[index] - distanceM[low] > windowM / 2) low += 1;
-    if (high < index) high = index;
-    while (high < count - 1 && distanceM[high] - distanceM[index] < windowM / 2) high += 1;
-    const runM = distanceM[high] - distanceM[low];
-    const rise = asNumber(altitudesM[high]) - asNumber(altitudesM[low]);
+  for (let position = 0; position < placed.length; position += 1) {
+    const index = placed[position];
+    while (low < position && distanceM[index] - distanceM[placed[low]] > windowM / 2) low += 1;
+    if (high < position) high = position;
+    while (high < placed.length - 1 && distanceM[placed[high]] - distanceM[index] < windowM / 2) high += 1;
+    const runM = distanceM[placed[high]] - distanceM[placed[low]];
+    const rise = asNumber(altitudesM[placed[high]]) - asNumber(altitudesM[placed[low]]);
     if (runM >= windowM / 3 && Number.isFinite(rise)) grades[index] = (100 * rise) / runM;
   }
   return grades;
@@ -1636,8 +1642,9 @@ function collapseShortStops(segments, options = {}) {
   }
 
   const maxPauseSeconds = optionNumber(options, 'notableStopSeconds', 300);
+  // A side without the value (no cadence sensor before the stop) is left out, not taken as 0.
   const weightedAverage = (a, b, weightA, weightB) => {
-    if (a == null && b == null) return null;
+    if (a == null || b == null) return a ?? b ?? null;
     const totalWeight = (weightA || 0) + (weightB || 0);
     if (!totalWeight) return a ?? b;
     return roundTo(((a ?? 0) * weightA + (b ?? 0) * weightB) / totalWeight, 1);
@@ -1658,9 +1665,10 @@ function collapseShortStops(segments, options = {}) {
     if (canMerge) {
       const weightBefore = before.durationS || 0;
       const weightAfter = after.durationS || 0;
-      const combinedDuration = weightBefore + pause.durationS + weightAfter;
-      const combinedCoverage = (field) => before[field] == null || after[field] == null ? null
-        : roundTo((before[field] * weightBefore + after[field] * weightAfter) / combinedDuration, 1);
+      // Coverage of the ridden parts: the stop between them has no samples to cover.
+      const riddenDuration = weightBefore + weightAfter;
+      const combinedCoverage = (field) => before[field] == null || after[field] == null || !riddenDuration ? null
+        : roundTo((before[field] * weightBefore + after[field] * weightAfter) / riddenDuration, 1);
       result.push({
         ...before,
         endIndex: after.endIndex,
@@ -2174,6 +2182,7 @@ function escapeHtml(value) {
 }
 
 module.exports = {
+  windowedGradePct,
   addEstimatedPowerWhenMissing,
   asNumber,
   average,

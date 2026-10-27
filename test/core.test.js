@@ -195,7 +195,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { updateActivityHeartRate, prepareGuestDatabase, saveFitToLocalDb, derivedRebuildPending, runUpgradeSteps, offerReanalysis, loadFitDataFromDb, promptHistoryRows, rereadOutdatedRides, getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, autoCalculateHeartRateProfileFromDbNow, withShortenedHistory, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { updateActivityHeartRate, prepareGuestDatabase, saveFitToLocalDb, derivedRebuildPending, runUpgradeSteps, offerReanalysis, loadFitDataFromDb, promptHistoryRows, rereadOutdatedRides, getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, autoCalculateHeartRateProfileFromDbNow, withShortenedHistory, buildSessionClassForActivity, logLlmRequest, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -740,6 +740,11 @@ test('device laps reach the prompt only when the rider or a workout programme se
 
   const workout = buildLapContext({ laps: [lap({ lap_trigger: 'time', wkt_step_index: 0 }), lap({ lap_trigger: 'time', wkt_step_index: 1 })] });
   assert.match(workout, /trigger time, workout step/);
+
+  // A lap as fit-file-parser reads it carries avg_heart_rate.
+  const withHr = buildLapContext({ laps: [lap({ lap_trigger: 'manual', avg_heart_rate: 170 }), lap({ lap_trigger: 'session_end', avg_heart_rate: 151.6 })] });
+  assert.match(withHr, /1\. 00:10:00, 5\.00 km, HR 170 bpm, trigger manual/);
+  assert.match(withHr, /2\. .*HR 152 bpm/);
 });
 
 test('batch re-analysis includes stale and missing analyses together and respects confirmation', async () => {
@@ -3564,14 +3569,20 @@ test('collapseShortStops merges a same-type segment interrupted by a short stop'
     routePoints: [{ lat: 1, lon: 2 }], gradeSensitivityWPerPct: 20,
   }));
   const merged = collapseShortStops(withDiagnostics)[0];
-  assert.equal(merged.hrCoveragePct, 95.2);
+  assert.equal(merged.hrCoveragePct, 100, 'coverage of the ridden parts: the stop has nothing to cover');
   assert.equal(merged.vpowerUse, 'rough description only');
   assert.equal(merged.dynamics, null);
   assert.equal(merged.hrDriftPct, null);
   assert.equal(merged.gradeSensitivityWPerPct, null);
   assert.deepEqual(merged.routePoints, []);
   const interruptedConditional = withDiagnostics.map((segment) => ({ ...segment, vpowerUse: 'conditional relative comparison' }));
-  assert.equal(collapseShortStops(interruptedConditional)[0].vpowerUse, 'rough description only');
+  assert.equal(collapseShortStops(interruptedConditional)[0].vpowerUse, 'conditional relative comparison', 'a short stop does not dilute coverage');
+  const thinGrade = interruptedConditional.map((segment) => ({ ...segment, gradeCoveragePct: segment.index === 2 ? 60 : 80 }));
+  assert.equal(collapseShortStops(thinGrade)[0].vpowerUse, 'rough description only');
+  // A side without cadence or heart rate is left out of the average, not counted as 0.
+  const oneSided = collapseShortStops([{ ...segments[0], avgCadence: null, avgHr: null }, segments[1], { ...segments[2], avgCadence: 80 }])[0];
+  assert.equal(oneSided.avgCadence, 80);
+  assert.equal(oneSided.avgHr, 150);
   assert.equal(collapseShortStops([segments[0], segments[1], { ...segments[2], effortBasis: 'power' }]).length, 3);
 });
 
@@ -4965,7 +4976,7 @@ test('lazy card features persist once and concurrent route saves cannot overwrit
     assert.equal(writes, 1, 'fresh cache read must not write again');
     const stored = new SQL.Database(fs.readFileSync(dbPath));
     const routeId = stored.exec('SELECT route_id FROM activity_routes WHERE activity_id = 1')[0].values[0][0];
-    assert.equal(stored.exec('SELECT features_version FROM activity_features')[0].values[0][0], 12);
+    assert.equal(stored.exec('SELECT features_version FROM activity_features')[0].values[0][0], 13);
     stored.close();
     pause = true;
     const writeStarted = new Promise((resolve) => { started = resolve; });
@@ -5594,7 +5605,7 @@ test('a stale derived-feature version triggers one background rebuild with progr
   assert.match(source, /if \(\(silent \|\| background\) && !skipStaleCheck && !needsDerivedFeatureRebuild\(db\)\) \{\s*\n\s*return;/);
   assert.match(source, /reason: 'auto'/);
   assert.match(source, /WHERE features_version != \$\{FEATURES_VERSION\}/);
-  assert.equal(require('../activity-features').FEATURES_VERSION, 12, 'the version bump is what makes existing caches stale');
+  assert.equal(require('../activity-features').FEATURES_VERSION, 13, 'the version bump is what makes existing caches stale');
 
   const { needsDerivedFeatureRebuild } = loadExtensionInternalsForTest();
   const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
@@ -7640,4 +7651,100 @@ test('a shortened history keeps the latest rides with their conversations and sa
   assert.deepEqual([1, 2, 3].map((step) => internals.withShortenedHistory(five, step)?.trainingContext.recentHistory.length ?? null), [3, 0, null]);
   const chat = generateAnalysisChatPrompt({ sessions: [{ total_distance_km: 20 }] }, steps[1], {}, '', [], 'why?');
   assert.match(chat, /History Shortened:\*\* .*latest 3 of 12 history rides/);
+});
+
+test('a record without a distance does not stop the grade window for the rest of the ride', () => {
+  const records = Array.from({ length: 400 }, (_, index) => ({ distance: index * 0.005 }));
+  const altitudes = records.map((record) => 100 + record.distance * 1000 * 0.04);
+  const { windowedGradePct } = require('../utils');
+  const whole = windowedGradePct(records, altitudes);
+  for (const gap of [0, 100]) {
+    const holed = records.map((record, index) => (index === gap ? { distance: null } : record));
+    const grades = windowedGradePct(holed, altitudes);
+    assert.ok(Number.isNaN(grades[gap]), 'no grade where there is no distance');
+    const finite = grades.filter(Number.isFinite);
+    assert.ok(finite.length >= whole.filter(Number.isFinite).length - 1, `gap at ${gap}: ${finite.length} grades`);
+    assert.ok(finite.every((grade) => Math.abs(grade - 4) < 1e-6));
+  }
+});
+
+test('a channel the database stores as null is missing, not zero', () => {
+  const { usableChannels } = require('../effort-segmentation');
+  const { computeDataQualityFlags } = require('../data-quality');
+  // A ride without a power meter, read back from the database: power is null on every record.
+  const fromDb = Array.from({ length: 600 }, (_, t) => ({ elapsed_time: t, heart_rate: 140, power: null, temperature_c: t % 2 ? null : 20 }));
+  assert.deepEqual(usableChannels(fromDb, () => true), { hr: true, power: false });
+  // Three missing heart-rate samples are gaps, not jumps to 0 bpm and back.
+  const ride = Array.from({ length: 1800 }, (_, t) => ({ elapsed_time: t, heart_rate: [300, 900, 1500].includes(t) ? null : 150, temperature_c: t % 2 ? null : 20 }));
+  const codes = computeDataQualityFlags({ records: ride }).map((flag) => flag.code);
+  assert.ok(!codes.includes('HR_CONTACT_LOSS'), codes.join());
+  assert.ok(!codes.includes('TEMP_DEVICE_HOT'), 'a missing temperature is not 0 C');
+});
+
+test('an easy ride below the zone floor is covered by heart rate and gets a class', () => {
+  const { buildSessionClassForActivity } = loadExtensionInternalsForTest();
+  const records = Array.from({ length: 3601 }, (_, t) => ({ elapsed_time: t, heart_rate: 112, speed: 22 }));
+  const hrConfig = { maxHeartRate: 190, thresholds: [134, 148, 162, 176] };
+  const sessionClass = buildSessionClassForActivity(records, { total_timer_s: 3600 }, hrConfig, { restingHeartRate: 50 }, []);
+  assert.notEqual(sessionClass.label, 'undetermined', sessionClass.reasons.join('; '));
+  assert.match(sessionClass.reasons[0], /Z1-Z2 100%/);
+  const zones = computeHeartRateZones(records, 190, [134, 148, 162, 176], { restingHeartRate: 50 });
+  assert.equal(zones.totalSeconds, 0, 'no time in the zones: 112 bpm is under the floor');
+  assert.ok(Math.abs(zones.recordedSeconds - 3600) <= 1, String(zones.recordedSeconds));
+});
+
+test('the first sample after an auto-pause does not stand for the heart rate of the whole pause', () => {
+  const { computeCheckpoints } = require('../route-store');
+  const { layRideOnRoad, referenceTrack } = require('../route-sections');
+  // 15 km at 30 km/h and 150 bpm; at km 7 a 10-minute auto-pause, resumed at 90 bpm.
+  const records = straightGpsRecords(1800, 30).map((record, index) => ({ ...record,
+    elapsed_time: record.elapsed_time + (index >= 840 ? 600 : 0), heart_rate: index === 840 ? 90 : 150 }));
+  const checkpoints = computeCheckpoints(records);
+  assert.ok(checkpoints.length > 3);
+  for (const mark of checkpoints) {
+    assert.equal(mark.avgHr, 150, `km ${mark.km}`);
+    assert.equal(mark.cumulativeAvgHr, 150, `km ${mark.km}`);
+  }
+  const lay = layRideOnRoad(records, referenceTrack(straightGpsRecords(1800, 30), 50), { toleranceM: 30 });
+  const binHr = Array.from(lay.hrSum, (sum, bin) => (lay.hrTime[bin] > 0 ? sum / lay.hrTime[bin] : null)).filter((hr) => hr != null);
+  assert.ok(binHr.every((hr) => Math.abs(hr - 150) < 0.5), `lowest bin HR ${Math.min(...binHr)}`);
+});
+
+test('model name markers are words: mini is not in gemini, gpt-5 is not gpt-5.5', async () => {
+  const vscode = { lm: { selectChatModels: async () => [] } };
+  const models = [{ id: 'gpt-5.5', name: 'GPT-5.5' }, { id: 'gpt-5-mini', name: 'GPT-5 mini' }, { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' }];
+  assert.equal((await selectPreferredModel(vscode, 'copilot', models, { preferCheapModel: true, tier: 'middle' })).id, 'gemini-3.1-pro');
+  // Without prices the cheap model is found by name, and Gemini is not taken for a mini.
+  const unpriced = [{ id: 'x-gemini-pro' }, { id: 'x-small' }];
+  assert.equal((await selectPreferredModel(vscode, 'other', unpriced, { preferCheapModel: true })).id, 'x-small');
+});
+
+test('AI logs are not written or pruned through a link in place of the logs folder or a log file', async () => {
+  const { pruneLlmLogs } = require('../llm-log');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fitviz-log-link-'));
+  const day = 24 * 60 * 60 * 1000;
+  try {
+    const elsewhere = path.join(root, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    const precious = path.join(elsewhere, 'settings.json');
+    fs.writeFileSync(precious, JSON.stringify({ prompt: 'keep me', other: 2 }));
+    fs.utimesSync(precious, new Date(Date.now() - 400 * day), new Date(Date.now() - 400 * day));
+    // A log file that is a link: pruning neither follows nor removes it.
+    const logs = path.join(root, 'logs');
+    fs.mkdirSync(logs);
+    fs.symlinkSync(precious, path.join(logs, 'linked.json'));
+    await pruneLlmLogs(logs, 5, 180);
+    assert.deepEqual(JSON.parse(fs.readFileSync(precious, 'utf8')), { prompt: 'keep me', other: 2 });
+    // A logs folder that is a link: nothing is written where it points.
+    const dbFolder = path.join(root, '.fit-visualizer');
+    fs.mkdirSync(dbFolder);
+    fs.symlinkSync(elsewhere, path.join(dbFolder, 'logs'));
+    const warnings = [];
+    const internals = loadExtensionInternalsForTest({ window: { createOutputChannel: () => ({ appendLine: (line) => warnings.push(line) }), showWarningMessage: async () => undefined } });
+    await internals.logLlmRequest(path.join(dbFolder, 'fit-data.sqlite'), { activityId: 1, kind: 'analysis', prompt: 'p', response: 'r' });
+    assert.deepEqual(fs.readdirSync(elsewhere), ['settings.json']);
+    assert.match(warnings.join('\n'), /not a plain folder/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

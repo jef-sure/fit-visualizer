@@ -5,6 +5,12 @@
 
 const { calculatePeakHeartRates } = require('./heart-rate');
 
+// A missing value: records read from the database carry null where the parser left the field
+// out, and Number(null) is 0, a value that was never recorded.
+function recorded(value) {
+  return value == null || value === '' ? Number.NaN : Number(value);
+}
+
 const DQ = Object.freeze({
   profileLowHourRatio: 1.03,     // an hour held this far above the assumed threshold
   profileLowTwentyRatio: 1.08,   // or 20 minutes this far above it
@@ -91,8 +97,8 @@ function computeDataQualityFlags({ records, session = {}, wheelRatio, elapsedMis
     // Contact loss: sharp jumps that recover quickly.
     const jumps = [];
     for (let index = 1; index < list.length; index += 1) {
-      const a = Number(list[index - 1]?.heart_rate);
-      const b = Number(list[index]?.heart_rate);
+      const a = recorded(list[index - 1]?.heart_rate);
+      const b = recorded(list[index]?.heart_rate);
       const dt = Number(list[index]?.elapsed_time) - Number(list[index - 1]?.elapsed_time);
       if (!Number.isFinite(a) || !Number.isFinite(b) || !(dt > 0)) continue;
       if (Math.abs(b - a) / dt > DQ.contactLossJumpBpm) {
@@ -134,7 +140,7 @@ function computeDataQualityFlags({ records, session = {}, wheelRatio, elapsedMis
 
   // --- Temperature ---
   // The DB record shape uses temperature_c; loaded-activity records use temperature.
-  const temps = list.map((record) => Number(record?.temperature_c ?? record?.temperature)).filter((value) => Number.isFinite(value));
+  const temps = list.map((record) => recorded(record?.temperature_c ?? record?.temperature)).filter((value) => Number.isFinite(value));
   if (temps.length > DQ.tempMinSamples / 10) {
     const avg = temps.reduce((sum, value) => sum + value, 0) / temps.length;
     const max = temps.reduce((highest, value) => (value > highest ? value : highest), -Infinity);

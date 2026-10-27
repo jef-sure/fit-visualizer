@@ -166,7 +166,8 @@ function layRideOnRoad(records, ref, { toleranceM = SKELETON.roadToleranceM, sto
       if (Number.isNaN(lay.reachedS[index])) lay.reachedS[index] = time;
     }
     const hr = record.heart_rate == null ? NaN : Number(record.heart_rate);
-    if (hr > 0 && step > 0) { lay.hrSum[bin] += hr * step; lay.hrTime[bin] += step; }
+    // The first sample after an auto-pause is not the heart rate of the whole pause.
+    if (hr > 0 && step > 0 && !pausedHere) { lay.hrSum[bin] += hr * step; lay.hrTime[bin] += step; }
     const altitude = record.altitude == null ? NaN : Number(record.altitude);
     if (Number.isFinite(altitude)) { lay.altSum[bin] += altitude; lay.altCount[bin] += 1; }
     if (kmh != null && Number.isFinite(kmh) && kmh < lay.minKmh[bin]) lay.minKmh[bin] = kmh;

@@ -29,6 +29,9 @@ function computeHeartRateZones(records, maxHeartRate, customThresholds, options 
   // "127-115 bpm" and could hold no time at all. The floor falls back to the share of the maximum.
   const zoneFloorBpm = reserveFloorBpm < thresholds[0] ? reserveFloorBpm : Math.round(HEART_RATE_ZONES[0].low * maxHeartRate);
   let totalSeconds = 0;
+  // Time with any heart rate, below the zone floor included: the coverage of the recording.
+  // totalSeconds, the time in the zones, leaves out an easy spin under the floor.
+  let recordedSeconds = 0;
 
   for (let index = 0; index < records.length; index += 1) {
     const heartRate = Number(records[index].heart_rate);
@@ -36,6 +39,7 @@ function computeHeartRateZones(records, maxHeartRate, customThresholds, options 
     if (!Number.isFinite(heartRate) || heartRate <= 0 || seconds <= 0) {
       continue;
     }
+    recordedSeconds += seconds;
 
     const zoneIndex = getHeartRateZoneIndex(heartRate, thresholds);
     if (heartRate >= zoneFloorBpm) {
@@ -64,6 +68,7 @@ function computeHeartRateZones(records, maxHeartRate, customThresholds, options 
     customThresholds: Array.isArray(customThresholds),
     zones,
     totalSeconds,
+    recordedSeconds,
   };
 }
 

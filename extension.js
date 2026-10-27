@@ -715,7 +715,7 @@ function ensureFeaturesForActivity(db, activityId) {
     JSON.stringify(segments),
     JSON.stringify(zones), JSON.stringify(peakHr), JSON.stringify(sessionClass), JSON.stringify(checkpoints),
     summary.trimp ?? null, summary.hrTss ?? null,
-    zones?.enabled && timerS > 0 ? 100 * zones.totalSeconds / timerS : null]);
+    zones?.enabled && timerS > 0 ? 100 * zones.recordedSeconds / timerS : null]);
   db.run('UPDATE activity_features SET route_frame_json = ? WHERE activity_id = ?', [routeFrame ? JSON.stringify(routeFrame) : null, row.id]);
 }
 
@@ -2365,7 +2365,7 @@ function buildSessionClassForActivity(records, session, hrConfig, athleteProfile
   }
   const zones = computeHeartRateZones(records, hrConfig.maxHeartRate, hrConfig.thresholds,
     { restingHeartRate: asNumber(athleteProfile?.restingHeartRate) });
-  if (!zones.enabled || !(zones.totalSeconds > 0)) {
+  if (!zones.enabled || !(zones.recordedSeconds > 0)) {
     return { label: 'undetermined', confidence: 'low', reasons: ['no usable heart-rate samples'], alternatives: [] };
   }
   const timerS = asNumber(session.total_timer_s);
@@ -2382,8 +2382,9 @@ function buildSessionClassForActivity(records, session, hrConfig, athleteProfile
     atOrAboveZ5: asNumber(record.heart_rate) >= z5Floor,
   }));
   return classifySession({
-    zoneSeconds: zones.zones.map((zone) => zone.seconds),
-    hrCoveragePct: timerS > 0 ? 100 * zones.totalSeconds / timerS : null,
+    // Below the zone floor is easier than zone 1, so for the class it counts with the low zones.
+    zoneSeconds: zones.zones.map((zone, index) => zone.seconds + (index === 0 ? zones.recordedSeconds - zones.totalSeconds : 0)),
+    hrCoveragePct: timerS > 0 ? 100 * zones.recordedSeconds / timerS : null,
     timerS,
     peak20VsLthr: peak20 && lthr ? peak20.bpm / lthr : null,
     sustainedZ4Seconds: longestSustainedZ4Seconds(samples),
@@ -2745,6 +2746,12 @@ async function logLlmRequest(dbPath, entry) {
 
   const logDir = path.join(path.dirname(dbPath), 'logs');
   await fs.mkdir(logDir, { recursive: true });
+  // The folder sits beside the rides and may come with them: a link in its place would have logs
+  // written, and old .json files pruned, wherever it points.
+  if (!(await fs.lstat(logDir)).isDirectory()) {
+    reportAnalysisWarning(`Not writing AI logs: ${logDir} is not a plain folder.`, 'warn');
+    return;
+  }
 
   const timestamp = new Date().toISOString();
   const fileName = `${entry.activityId}-${timestamp.replace(/[:.]/g, '-')}-${entry.kind}.json`;
@@ -3724,7 +3731,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       segments: detail.segments,
       zones, peakHr, sessionClass, checkpoints: detail.checkpoints,
       trimp: summary.trimp, hrTss: summary.hrTss,
-      elapsedCoveragePct: zones?.enabled && timerS > 0 ? 100 * zones.totalSeconds / timerS : null,
+      elapsedCoveragePct: zones?.enabled && timerS > 0 ? 100 * zones.recordedSeconds / timerS : null,
     };
     storeFeatureRow(row.id, payload);
     return { segments: payload.segments, zones, peakHr, sessionClass, checkpoints: detail.checkpoints,
