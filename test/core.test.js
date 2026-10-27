@@ -7833,7 +7833,8 @@ function axisRide(polyline, { wheelScale = 1, noiseM = 0, seed = 1, blindUntilM 
     total += length;
   }
   const at = (m) => {
-    const along = ((m % total) + total) % total;
+    // Round again only past the end (a loop entered part way); the last record is the end itself.
+    const along = m <= total ? m : m % total;
     const leg = legs.find((candidate) => along <= candidate.from + candidate.length) || legs[legs.length - 1];
     const t = leg.length ? (along - leg.from) / leg.length : 0;
     return { x: leg.ax + (leg.bx - leg.ax) * t, y: leg.ay + (leg.by - leg.ay) * t };
@@ -7964,4 +7965,113 @@ test('another road is told apart, and laying stops once the deviation passes the
   assert.ok(full.deviationM > 10000, `deviation ${full.deviationM}`);
   const stopped = layRideOnAxis(elsewhere, axis, { maxDeviationM: 1000 });
   assert.equal(stopped.aborted, true);
+});
+
+test('the axis of a habitual route is the middle line of three rides: it follows two of them and evens out the noise', () => {
+  const { buildRouteAxis, medianAxis } = require('../route-axis');
+  const route = [[0, 0], [6000, 0], [6000, 3000], [2000, 3000]];
+  // The second ride turns off for a 150 m loop at km 3 and comes back; the others ride straight on.
+  const withLoop = [[0, 0], [3000, 0], [3000, 150], [3150, 150], [3150, 0], [6000, 0], [6000, 3000], [2000, 3000]];
+  const rides = [axisRide(route, { noiseM: 4, seed: 21 }), axisRide(withLoop, { noiseM: 4, seed: 22 }), axisRide(route, { noiseM: 4, seed: 23, wheelScale: 1.03 })];
+  const axis = medianAxis(rides);
+  const lateral = (axisToCheck) => axisToCheck.points.map((point) => {
+    const p = axisToCheck.project(52 + point.y / 110540, 21 + point.x / (111320 * Math.cos((52 * Math.PI) / 180)));
+    const x = p.x;
+    const y = p.y;
+    // Distance to the true polyline.
+    let best = Infinity;
+    for (let index = 1; index < route.length; index += 1) {
+      const [ax, ay] = route[index - 1];
+      const [bx, by] = route[index];
+      const t = Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2)));
+      best = Math.min(best, Math.hypot(x - (ax + (bx - ax) * t), y - (ay + (by - ay) * t)));
+    }
+    return best;
+  });
+  const middle = lateral(axis);
+  assert.ok(Math.max(...middle) < 15, `the loop of one ride is not on the axis: ${Math.max(...middle).toFixed(1)} m`);
+  const rms = (values) => Math.sqrt(values.reduce((sum, value) => sum + value * value, 0) / values.length);
+  const single = lateral(buildRouteAxis(rides[0]));
+  assert.ok(rms(middle) < rms(single), `median ${rms(middle).toFixed(2)} m against one ride ${rms(single).toFixed(2)} m`);
+  // GPS noise lengthens a path a little; the middle line is the road's length within 2 %.
+  assert.ok(Math.abs(axis.lengthM - 13000) < 260, `length ${axis.lengthM}`);
+});
+
+test('a way becomes a habitual route on its third ride and then gets the middle line of the three as its axis', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { assignRoute, isHabitualRoute } = require('../route-store');
+    const { buildRouteSignature } = require('../route-match');
+    const route = [[0, 0], [5000, 0], [5000, 3000], [1000, 3000]];
+    const axisRows = () => db.exec('SELECT axis_rides, axis_json FROM routes')[0].values[0];
+    let before = null;
+    for (let id = 1; id <= 3; id += 1) {
+      const records = axisRide(route, { noiseM: 4, seed: 30 + id }).map((record) => ({ ...record, distance: record.distance }));
+      db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)', [id, `f${id}`, `f${id}`, `2026-08-0${id}T10:00:00Z`, 'fit']);
+      records.forEach((record, index) => db.run('INSERT INTO records (activity_id, record_index, elapsed_s, distance_km, latitude, longitude) VALUES (?, ?, ?, ?, ?, ?)',
+        [id, index, record.elapsed_time, record.distance, record.position_lat, record.position_long]));
+      const info = assignRoute(db, { activityId: id, signature: buildRouteSignature(records), createdAt: `2026-08-0${id}T10:00:00Z`, records });
+      assert.equal(info.rideCount, id);
+      assert.equal(isHabitualRoute(info), id >= 3);
+      if (id === 2) before = axisRows();
+    }
+    assert.equal(before[0], 1, 'until then the first ride is the axis');
+    const [axisRides, axisJson] = axisRows();
+    assert.equal(axisRides, 3);
+    assert.notEqual(axisJson, before[1], 'the third ride replaces it with the middle line');
+  } finally {
+    db.close();
+  }
+});
+
+test('a way ridden once or twice shows only how many times, with no route card', () => {
+  const { renderActivityContentHtml } = loadActivityWebviewForTest();
+  const records = [0, 1, 2].map((i) => ({ elapsed_time: i, distance: i * 0.01, speed: 20 }));
+  const html = renderActivityContentHtml({}, {}, { records, sessions: [{ start_time: '2026-08-01T17:00:00.000Z' }], laps: [] }, null, 'test-nonce', false, null, {}, null, [], null, UI_STRINGS, GLOSSARY, false,
+    'en', [], null, [], null, false, 'none', { candidate: true, routeId: 7, rideCount: 2 });
+  assert.match(html, /Rides on this way: 2/);
+  assert.doesNotMatch(html, /id="[^"]*RouteForm"/, 'no name and note form for a way that is not yet a route');
+  const ru = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'l10n', 'bundle.l10n.ru.json'), 'utf8'));
+  assert.equal(ru['Rides on this way: {0}'], 'Поездок по этому пути: {0}');
+});
+
+test('a way ridden once does not take a ride from a habitual route that the ride also fits', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { assignRoute } = require('../route-store');
+    const { buildRouteSignature } = require('../route-match');
+    const add = (id, polyline) => {
+      const records = axisRide(polyline, { noiseM: 2, seed: 40 + id });
+      db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)', [id, `f${id}`, `f${id}`, `2026-08-0${id}T10:00:00Z`, 'fit']);
+      records.forEach((record, index) => db.run('INSERT INTO records (activity_id, record_index, elapsed_s, distance_km, latitude, longitude) VALUES (?, ?, ?, ?, ?, ?)',
+        [id, index, record.elapsed_time, record.distance, record.position_lat, record.position_long]));
+      return assignRoute(db, { activityId: id, signature: buildRouteSignature(records), createdAt: `2026-08-0${id}T10:00:00Z`, records });
+    };
+    const road = [[0, 0], [10000, 0]];
+    const route = [1, 2, 3].map((id) => add(id, road))[2];
+    assert.equal(route.rideCount, 3);
+    // 600 m on a parallel lane 60 m away: past the limit of 500 m (5 % of 10 km), a way of its own.
+    const lane = add(4, [[0, 0], [2000, 0], [2000, 60], [2600, 60], [2600, 0], [10000, 0]]);
+    assert.notEqual(lane.routeId, route.routeId);
+    // 400 m on the lane: within the limit of both, and closer to the lane. The route keeps it.
+    const between = add(5, [[0, 0], [2000, 0], [2000, 60], [2400, 60], [2400, 0], [10000, 0]]);
+    assert.equal(between.routeId, route.routeId);
+  } finally {
+    db.close();
+  }
+});
+
+test('a limit just above the deviation does not stop the laying: the metres of coming back are not off the road', () => {
+  const { buildRouteAxis, layRideOnAxis } = require('../route-axis');
+  const axis = buildRouteAxis(axisRide([[0, 0], [10000, 0]]));
+  const ride = axisRide([[0, 0], [2000, 0], [2000, 60], [2400, 60], [2400, 0], [10000, 0]], { noiseM: 2, seed: 45 });
+  const free = layRideOnAxis(ride, axis);
+  const limited = layRideOnAxis(ride, axis, { maxDeviationM: free.deviationM + 5 });
+  assert.equal(limited.aborted, false);
+  assert.equal(Math.round(limited.deviationM), Math.round(free.deviationM));
+  assert.equal(layRideOnAxis(ride, axis, { maxDeviationM: free.deviationM - 50 }).aborted, true);
 });

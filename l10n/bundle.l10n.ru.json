@@ -311,6 +311,7 @@
   "Model": "Модель",
   "{0} rides on this route": "Заездов на этом маршруте: {0}",
   "The first ride on this route": "Первый заезд на этом маршруте",
+  "Rides on this way: {0}": "Поездок по этому пути: {0}",
   "same direction as the first ride": "в том же направлении, что первый заезд",
   "opposite direction": "в обратном направлении",
   "part of the route": "по части маршрута",

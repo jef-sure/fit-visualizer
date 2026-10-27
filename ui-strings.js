@@ -114,6 +114,7 @@ const UI_STRINGS = {
   saveRoute: 'Save route',
   routeRides: '{0} rides on this route',
   routeFirstRide: 'The first ride on this route',
+  routeCandidateRides: 'Rides on this way: {0}',
   routePartialLine: 'This ride: {0} km, a different and longer route of its own; {2}% of it follows this {1} km route. The facts below describe the {1} km route, not this ride.',
   routeProfilePending: 'Ascent, descent and climbs appear after {0} more rides on this route; the length is from its GPS signature.',
   trendEfficiencyLabel: 'Effort on this route',

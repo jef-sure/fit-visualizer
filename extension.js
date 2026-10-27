@@ -28,7 +28,7 @@ const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
 const { computeRouteTrends } = require('./trend-metrics');
 const PRIOR_RIDES_FOR_TRENDS = 5;
-const { assignRoute, routeMatchSettings, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readAssignment, readRouteCard, describeCheckpointVerdict, ensureRouteSkeleton, readSkeletonRecords, readRouteNote, setRouteName, setRouteNote, snapshotRouteLabels, restoreRouteLabels, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
+const { HABITUAL_ROUTE_RIDES, isHabitualRoute, assignRoute, routeMatchSettings, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readAssignment, readRouteCard, describeCheckpointVerdict, ensureRouteSkeleton, readSkeletonRecords, readRouteNote, setRouteName, setRouteNote, snapshotRouteLabels, restoreRouteLabels, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { CONDITIONS, FEELINGS, PURPOSES, inferNotesPreFill, readActivityNotes, readAllActivityNotes, saveActivityNotes, readKnownGoals } = require('./activity-notes');
 const { readRiderPlan, saveRiderPlanEntry } = require('./rider-plan');
@@ -556,6 +556,9 @@ async function getRouteCardNow(dbPath, activityId) {
   const SQL = await getSqlJs();
   const db = await openDatabase(SQL, dbPath);
   try {
+    // A way ridden once or twice has no card yet: the page shows only how many rides it has.
+    const assignment = readAssignment(db, activityId);
+    if (assignment?.routeId && !isHabitualRoute(assignment)) return { candidate: true, routeId: assignment.routeId, rideCount: assignment.rideCount };
     // A freshly formed route (for example after the longer-partial rule change) has no cached
     // profile yet; compute it here rather than showing an empty card until something else does.
     const changesBefore = totalChanges(db);
@@ -1404,7 +1407,7 @@ async function loadActivityListFromDb(dbPath) {
             r.name AS route_name
       FROM activities a
       LEFT JOIN activity_routes ar ON ar.activity_id = a.id
-      LEFT JOIN routes r ON r.id = ar.route_id
+      LEFT JOIN routes r ON r.id = ar.route_id AND r.ride_count >= ${HABITUAL_ROUTE_RIDES}
       ORDER BY a.start_time DESC, a.imported_at DESC
     `);
     const list = [];
@@ -3850,16 +3853,19 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   // Part I, indicator 2: acute:chronic load rhythm, from the same volume rows the prompt prints.
   context.rhythm = computeLoadRhythm(activities, selected.start_time, selected.sport);
   context.qualityFlags = qualityFlags;
-  context.routeContext = currentRouteInfo
-    ? buildRouteContext({ routeInfo: currentRouteInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected, readRouteNote(db, currentRouteInfo.routeId))
+  // A way ridden once or twice is not yet a route: nothing is compared along it. The count is read
+  // afresh, as the ride's own route info holds the count of when it joined.
+  const routeInfo = currentRouteInfo && isHabitualRoute(readAssignment(db, selected.id) || currentRouteInfo) ? currentRouteInfo : null;
+  context.routeContext = routeInfo
+    ? buildRouteContext({ routeInfo, checkpoints: currentCheckpoints, segments: currentSegments }, activities, selected, readRouteNote(db, routeInfo.routeId))
     : null;
   // The rhythm indicator is route-independent; it joins the trends block in the prompt.
   if (context.routeContext) context.routeContext.trends = { ...context.routeContext.trends, rhythm: context.rhythm };
   if (context.routeContext) {
-    context.routeContext.sections = buildRouteSections({ db, routeInfo: currentRouteInfo, records: currentRecords, segments: currentSegments, activities });
+    context.routeContext.sections = buildRouteSections({ db, routeInfo, records: currentRecords, segments: currentSegments, activities });
   }
-  const routeProfileForStretches = ['same', 'reversed'].includes(currentRouteInfo?.relation)
-    ? buildRouteProfile(db, currentRouteInfo) : null;
+  const routeProfileForStretches = ['same', 'reversed'].includes(routeInfo?.relation)
+    ? buildRouteProfile(db, routeInfo) : null;
   context.routeProfile = routeProfileForStretches;
   // C7: long flat segments get a route-stretch breakdown instead of temporal halves, so a
   // route-typical speed change is not presented as this ride's dynamics.
@@ -3869,7 +3875,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
     described: routeProfileForStretches?.described || null,
   });
   context.altitudeQuality = buildAltitudeQuality({
-    db, records: currentRecords, routeInfo: currentRouteInfo, activity: selected,
+    db, records: currentRecords, routeInfo, activity: selected,
   });
   // The workout fields read the settling window, so it must land on the analysis data after it
   // is computed here and before the prompt is built.

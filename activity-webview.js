@@ -863,6 +863,13 @@ function renderTrendCards(trends, ui) {
 }
 
 function renderRouteCard(route, ui, mapId) {
+  // A way ridden once or twice is not yet a route: no card, only how many times it was ridden.
+  if (route.candidate) {
+    return `<section class="chart manualData">
+      <h2>${escapeHtml(ui.routeSection)}</h2>
+      <div class="routeHead"><span class="routeRidesCount">${escapeHtml(formatUi(ui.routeCandidateRides, route.rideCount))}</span></div>
+    </section>`;
+  }
   const direction = route.relation === 'reversed' ? ui.routeDirectionReversed
     : route.relation === 'partial' ? ui.routeDirectionPartial : ui.routeDirectionSame;
   const known = Number.isFinite(route.lengthKm);

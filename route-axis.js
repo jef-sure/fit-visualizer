@@ -45,16 +45,23 @@ function buildRouteAxis(records, { stepM = AXIS.stepM } = {}) {
   const lat0 = Number(tracked[0].position_lat);
   const lon0 = Number(tracked[0].position_long);
   const project = projector(lat0, lon0);
-  const track = [project(lat0, lon0)];
+  return axisFromTrack(lat0, lon0, tracked.map((record) => project(record.position_lat, record.position_long)), stepM);
+}
+
+// An axis from a line of points in metres around (lat0, lon0).
+function axisFromTrack(lat0, lon0, line, stepM = AXIS.stepM) {
+  if (line.length < 2) return null;
+  const track = [line[0]];
   const along = [0];
-  for (let index = 1; index < tracked.length; index += 1) {
-    const point = project(tracked[index].position_lat, tracked[index].position_long);
+  for (let index = 1; index < line.length; index += 1) {
+    const point = line[index];
     const step = distance(track[track.length - 1], point);
     // GPS wandering while the rider stands is not road.
     if (step < 1) continue;
     track.push(point);
     along.push(along[along.length - 1] + step);
   }
+  if (track.length < 2) return null;
   const lengthM = along[along.length - 1];
   if (lengthM < 10 * stepM) return null;
   const points = [];
@@ -253,7 +260,8 @@ function layRideOnAxis(records, axis, { maxDeviationM = Infinity } = {}) {
   let lastIndex = -1;
   const startM = ridden.find(Number.isFinite);
 
-  const offNow = (index) => offM + (left ? ridden[index] - left.startM : 0);
+  // Off the road so far; while a return to it is being confirmed, the detour ended where it began.
+  const offNow = (index) => offM + (left ? (rejoin ? ridden[rejoin.places[0][0]] : ridden[index]) - left.startM : 0);
   const abortedResult = () => ({ aborted: true, axisKm, offStretches, offM, missedM: missedSoFarM, deviationM: Math.max(offM, missedSoFarM) });
 
   const confirmRejoin = (d) => {
@@ -381,6 +389,54 @@ function layRideOnAxis(records, axis, { maxDeviationM = Infinity } = {}) {
   return { aborted: false, axisKm, offStretches, offM, missedM, deviationM: Math.max(offM, missedM) };
 }
 
+// The axis of a habitual route: the middle line of its first rides. The ride the others stray from
+// least is the frame; each other ride is laid along it, and at every point of the frame the middle
+// (median) of the rides' positions is taken, east and north apart. Where two rides of three agree
+// the axis follows them, and the GPS noise of each is evened out. Where the frame ride alone took
+// a way the others did not, they have no position there and the frame's way stays: a variant of
+// the route is a matter of its later rides, not of the axis.
+function medianAxis(rides, { stepM = AXIS.stepM } = {}) {
+  const usable = (Array.isArray(rides) ? rides : []).filter((records) => Array.isArray(records) && records.length);
+  let frame = null;
+  for (const records of usable) {
+    const axis = buildRouteAxis(records, { stepM });
+    if (!axis) continue;
+    const others = usable.filter((other) => other !== records).map((other) => ({ records: other, laid: layRideOnAxis(other, axis) }));
+    const total = others.reduce((sum, other) => sum + other.laid.deviationM, 0);
+    if (!frame || total < frame.total) frame = { axis, others, total };
+  }
+  if (!frame) return null;
+  const { axis } = frame;
+  const columns = axis.points.map((point) => ({ xs: [point.x], ys: [point.y] }));
+  for (const { records, laid } of frame.others) {
+    let previous = null;
+    records.forEach((record, index) => {
+      const km = laid.axisKm[index];
+      if (km == null || !hasGpsFix(record?.position_lat, record?.position_long)) {
+        previous = null;
+        return;
+      }
+      const here = { s: km * 1000, point: axis.project(record.position_lat, record.position_long) };
+      // Between two consecutive fixes on the road, forward and close: their positions along the way.
+      if (previous && here.s > previous.s && here.s - previous.s < 10 * stepM) {
+        for (let k = Math.ceil(previous.s / stepM); k * stepM <= here.s && k < columns.length; k += 1) {
+          const t = (k * stepM - previous.s) / (here.s - previous.s);
+          columns[k].xs.push(previous.point.x + (here.point.x - previous.point.x) * t);
+          columns[k].ys.push(previous.point.y + (here.point.y - previous.point.y) * t);
+        }
+      }
+      previous = here;
+    });
+  }
+  const median = (values) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  };
+  const line = columns.map((column) => ({ x: median(column.xs), y: median(column.ys) }));
+  return axisFromTrack(axis.lat0, axis.lon0, line, stepM);
+}
+
 // Stored with the route: the points as metres east and north of its origin, to a decimetre.
 function serializeAxis(axis) {
   if (!axis) return null;
@@ -405,4 +461,4 @@ function reverseAxis(axis) {
   return indexAxis({ lat0: axis.lat0, lon0: axis.lon0, stepM: axis.stepM, closed: axis.closed, loopM: axis.loopM, points: [...axis.points].reverse() });
 }
 
-module.exports = { AXIS, buildRouteAxis, layRideOnAxis, parseAxis, reverseAxis, serializeAxis };
+module.exports = { AXIS, buildRouteAxis, layRideOnAxis, medianAxis, parseAxis, reverseAxis, serializeAxis };

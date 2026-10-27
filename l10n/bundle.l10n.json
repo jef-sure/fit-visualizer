@@ -311,6 +311,7 @@
   "Model": "Model",
   "{0} rides on this route": "{0} rides on this route",
   "The first ride on this route": "The first ride on this route",
+  "Rides on this way: {0}": "Rides on this way: {0}",
   "same direction as the first ride": "same direction as the first ride",
   "opposite direction": "opposite direction",
   "part of the route": "part of the route",

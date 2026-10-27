@@ -275,6 +275,7 @@ function ensureDatabaseSchema(db) {
   db.run('CREATE TABLE IF NOT EXISTS derived_state (key TEXT PRIMARY KEY, value TEXT)');
   addColumnIfMissing(db, 'routes', 'skeleton_json', 'TEXT');
   addColumnIfMissing(db, 'routes', 'axis_json', 'TEXT');
+  addColumnIfMissing(db, 'routes', 'axis_rides', 'INTEGER');
   // A saved comparison is a model answer like an analysis: it needs to say which format wrote it.
   addColumnIfMissing(db, 'activity_comparisons', 'analysis_version', 'INTEGER');
   addColumnIfMissing(db, 'activity_features', 'route_frame_json', 'TEXT');

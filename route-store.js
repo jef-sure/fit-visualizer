@@ -7,7 +7,7 @@
 // earliest ride. The signature still pairs saved names and notes with re-derived routes.
 
 const { buildRouteSignature, matchRoutes, haversineM } = require('./route-match');
-const { buildRouteAxis, layRideOnAxis, parseAxis, reverseAxis, serializeAxis } = require('./route-axis');
+const { buildRouteAxis, layRideOnAxis, medianAxis, parseAxis, reverseAxis, serializeAxis } = require('./route-axis');
 const { buildAltitudeRide, computeConsensusProfile, mirrorAltitudeRide } = require('./altitude-quality');
 const { computeRouteFeatures, sectionCount, sectionSpeeds } = require('./route-features');
 const { SKELETON, buildRouteSkeleton } = require('./route-sections');
@@ -21,6 +21,14 @@ const CHECKPOINT_MATCH_RADIUS_M = 150;
 const ROUTE_MATCH_DEFAULTS = Object.freeze({ maxDeviationPct: 5, maxDeviationKm: 1 });
 // The wheel and the GPS measure the same road a few per cent apart (3-5 % on that route).
 const LENGTH_SCALE_TOLERANCE = 0.05;
+// A way ridden once or twice is not yet a route: it has no card and no route comparisons, and
+// its rides only count towards it. The third ride makes it habitual, and the axis then becomes the
+// middle line of the first three rides instead of the first ride's track.
+const HABITUAL_ROUTE_RIDES = 3;
+
+function isHabitualRoute(routeInfo) {
+  return Number(routeInfo?.rideCount) >= HABITUAL_ROUTE_RIDES;
+}
 
 function routeMatchSettings(options = {}) {
   const pick = (value, fallback) => (Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : fallback);
@@ -34,10 +42,10 @@ function routeMatchSettings(options = {}) {
 // it, so repeated context builds do not recount. Returns { routeId, relation, routeName, rideCount }.
 //
 // Every route within the limit is a candidate, and the one the ride strays from least wins (two
-// roads 70 m apart can both be near). The difference in length, beyond what the wheel gets wrong,
-// is road one has and the other has not, so it is a floor of the deviation: a route whose floor is
-// past the limit is not laid at all, the rest are laid in order of it, and laying stops as soon as
-// the ride strays more than the limit or than the best route so far.
+// roads 70 m apart can both be near), a habitual route before a way ridden once or twice. The
+// difference in length, beyond what the wheel gets wrong, is road one has and the other has not,
+// so it is a floor of the deviation: a route whose floor is past the limit is not laid at all, and
+// laying stops as soon as the ride strays more than the limit or than the best route so far.
 function assignRoute(db, { activityId, signature, createdAt, records, options = {} }) {
   if (!signature) return { routeId: null, relation: null };
   const existing = readAssignment(db, activityId);
@@ -53,15 +61,21 @@ function assignRoute(db, { activityId, signature, createdAt, records, options = 
     if (floorM <= limitM) candidates.push({ route, axis, limitM, floorM });
   }
   candidates.sort((a, b) => a.floorM - b.floorM);
+  // A way ridden once or twice does not take a ride from a habitual route the ride fits: a ride
+  // just past the limit starts one, and the next rides, often closer to it than to the route, would
+  // otherwise follow it off and split the route in two.
   let best = null;
   for (const candidate of candidates) {
-    if (best && candidate.floorM >= best.laid.deviationM) break;
+    const habitual = Number(candidate.route.ride_count) >= HABITUAL_ROUTE_RIDES;
+    if (best?.habitual && !habitual) continue;
     // An out-and-back fits both ways equally; the same direction is tried first and kept.
     for (const [relation, axis] of [['same', candidate.axis], ['reversed', reverseAxis(candidate.axis)]]) {
-      const limitM = Math.min(candidate.limitM, best ? best.laid.deviationM : Infinity);
+      const toBeat = best && best.habitual === habitual ? best.laid.deviationM : Infinity;
+      const limitM = Math.min(candidate.limitM, toBeat);
+      if (candidate.floorM >= limitM) continue;
       const laid = layRideOnAxis(records, axis, { maxDeviationM: limitM });
-      if (laid.aborted || laid.deviationM > candidate.limitM) continue;
-      if (!best || laid.deviationM < best.laid.deviationM) best = { route: candidate.route, relation, laid };
+      if (laid.aborted || laid.deviationM > candidate.limitM || !(laid.deviationM < toBeat)) continue;
+      best = { route: candidate.route, relation, laid, habitual };
     }
   }
   if (best) {
@@ -70,10 +84,14 @@ function assignRoute(db, { activityId, signature, createdAt, records, options = 
       [activityId, route.id, `${relation} (${Math.round(laid.offM)} m off the route, ${Math.round(laid.missedM)} m of it not ridden)`]);
     db.run('UPDATE routes SET ride_count = ride_count + 1, first_seen = MIN(COALESCE(first_seen, ?), ?), last_seen = MAX(COALESCE(last_seen, ?), ?) WHERE id = ?',
       [createdAt, createdAt, createdAt, createdAt, route.id]);
-    return { routeId: route.id, relation, routeName: route.name, rideCount: route.ride_count + 1 };
+    const rideCount = route.ride_count + 1;
+    if (rideCount >= HABITUAL_ROUTE_RIDES && !(Number(route.axis_rides) >= HABITUAL_ROUTE_RIDES)) {
+      settleRouteAxis(db, route.id, { activityId, records });
+    }
+    return { routeId: route.id, relation, routeName: route.name, rideCount };
   }
   const name = `Route ${Math.round(signature.distanceKm * 10) / 10} km`;
-  db.run('INSERT INTO routes (name, canonical_signature, axis_json, ride_count, first_seen, last_seen) VALUES (?, ?, ?, 1, ?, ?)',
+  db.run('INSERT INTO routes (name, canonical_signature, axis_json, axis_rides, ride_count, first_seen, last_seen) VALUES (?, ?, ?, 1, 1, ?, ?)',
     [name, JSON.stringify(signature), serializeAxis(buildRouteAxis(records)), createdAt, createdAt]);
   const id = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
   db.run('INSERT OR REPLACE INTO activity_routes (activity_id, route_id, relation) VALUES (?, ?, ?)',
@@ -110,6 +128,32 @@ function readRouteAssignments(db) {
   }
 }
 
+// The axis of a route that has become habitual: the middle line of its first rides, each ridden
+// the way the route goes (a ride on it in reverse is turned round first). The ride just assigned
+// may not be stored yet; its records come with it. Without the records of all of them the first
+// ride's axis stays, and the next ride tries again.
+function settleRouteAxis(db, routeId, { activityId, records }) {
+  const members = [];
+  const stmt = db.prepare(`SELECT ar.activity_id, ar.relation FROM activity_routes ar JOIN activities a ON a.id = ar.activity_id
+    WHERE ar.route_id = ? ORDER BY datetime(a.start_time), a.id LIMIT ?`);
+  try {
+    stmt.bind([routeId, HABITUAL_ROUTE_RIDES]);
+    while (stmt.step()) members.push(stmt.getAsObject());
+  } finally {
+    stmt.free();
+  }
+  const rides = members.map((member) => {
+    const own = member.activity_id === activityId && Array.isArray(records) ? records : readSkeletonRecords(db, member.activity_id);
+    return String(member.relation || '').startsWith('reversed') ? [...own].reverse().map((record, index, all) => ({
+      ...record, distance: Number(all[0].distance) - Number(record.distance) })) : own;
+  });
+  if (rides.length < HABITUAL_ROUTE_RIDES || rides.some((ride) => ride.length < 10)) return false;
+  const axis = medianAxis(rides);
+  if (!axis) return false;
+  db.run('UPDATE routes SET axis_json = ?, axis_rides = ? WHERE id = ?', [serializeAxis(axis), HABITUAL_ROUTE_RIDES, routeId]);
+  return true;
+}
+
 // The axis of a route; one created before routes had an axis gets it from its earliest ride.
 function routeAxis(db, route) {
   const stored = route.axis_json ? parseAxis(route.axis_json) : null;
@@ -123,7 +167,7 @@ function routeAxis(db, route) {
 }
 
 function readRoutes(db) {
-  const stmt = db.prepare('SELECT id, name, canonical_signature, axis_json, ride_count, first_seen, last_seen, note FROM routes ORDER BY id');
+  const stmt = db.prepare('SELECT id, name, canonical_signature, axis_json, axis_rides, ride_count, first_seen, last_seen, note FROM routes ORDER BY id');
   try {
     const rows = [];
     while (stmt.step()) rows.push(stmt.getAsObject());
@@ -630,6 +674,8 @@ function safeJson(text) {
 }
 
 module.exports = {
+  HABITUAL_ROUTE_RIDES,
+  isHabitualRoute,
   ROUTE_MATCH_DEFAULTS,
   routeMatchSettings,
   CHECKPOINT_SPACING_KM,
