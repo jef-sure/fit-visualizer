@@ -7791,3 +7791,157 @@ test('indexing new files derives only the new rides and keeps the routes; a pend
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+// Synthetic rides for the route axis: a polyline in metres around 52° N, ridden at 25 km/h with
+// one record a second. GPS error is correlated in time as a receiver's is (white noise per record
+// would lengthen the GPS path, which real tracks do not show); the wheel may be off by a factor.
+function axisRide(polyline, { wheelScale = 1, noiseM = 0, seed = 1, blindUntilM = 0, glitchUntilM = 0, startAtM = 0 } = {}) {
+  const lat0 = 52;
+  const lon0 = 21;
+  const kx = 111320 * Math.cos((lat0 * Math.PI) / 180);
+  const ky = 110540;
+  let state = seed >>> 0;
+  const random = () => { state = (state + 0x6d2b79f5) >>> 0; let t = state; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const gauss = () => Math.sqrt(-2 * Math.log(1 - random())) * Math.cos(2 * Math.PI * random());
+  const legs = [];
+  let total = 0;
+  for (let index = 1; index < polyline.length; index += 1) {
+    const [ax, ay] = polyline[index - 1];
+    const [bx, by] = polyline[index];
+    const length = Math.hypot(bx - ax, by - ay);
+    legs.push({ ax, ay, bx, by, from: total, length });
+    total += length;
+  }
+  const at = (m) => {
+    const along = ((m % total) + total) % total;
+    const leg = legs.find((candidate) => along <= candidate.from + candidate.length) || legs[legs.length - 1];
+    const t = leg.length ? (along - leg.from) / leg.length : 0;
+    return { x: leg.ax + (leg.bx - leg.ax) * t, y: leg.ay + (leg.by - leg.ay) * t };
+  };
+  const step = 25 / 3.6;
+  const records = [];
+  let ex = 0;
+  let ey = 0;
+  const keep = 0.95;
+  for (let second = 0; second * step <= total; second += 1) {
+    const ridden = second * step;
+    const truth = at(startAtM + ridden);
+    ex = keep * ex + Math.sqrt(1 - keep * keep) * noiseM * gauss();
+    ey = keep * ey + Math.sqrt(1 - keep * keep) * noiseM * gauss();
+    // Before the fix settles the position wanders far from the rider.
+    const glitch = ridden < glitchUntilM ? { x: 300 * Math.sin(second / 4), y: 300 + 150 * Math.cos(second / 3) } : { x: 0, y: 0 };
+    const x = truth.x + ex + glitch.x;
+    const y = truth.y + ey + glitch.y;
+    records.push({
+      elapsed_time: second, speed: 25, distance: (ridden * wheelScale) / 1000,
+      position_lat: ridden < blindUntilM ? null : lat0 + y / ky,
+      position_long: ridden < blindUntilM ? null : lon0 + x / kx,
+      truthM: startAtM + ridden, truthX: truth.x, truthY: truth.y,
+    });
+  }
+  return records;
+}
+
+// Where along the route each landmark lies on the axis, against where it truly is.
+function landmarkErrors(records, laid, landmarksM, { loopM = null } = {}) {
+  return landmarksM.map((landmark) => {
+    const index = records.reduce((best, record, i) => {
+      const gap = (m) => (loopM ? Math.min(Math.abs(m - landmark) % loopM, loopM - (Math.abs(m - landmark) % loopM)) : Math.abs(m - landmark));
+      return gap(record.truthM) < gap(records[best].truthM) ? i : best;
+    }, 0);
+    const km = laid.axisKm[index];
+    if (km == null) return { landmark, error: Infinity };
+    const truth = loopM ? records[index].truthM % loopM : records[index].truthM;
+    let error = Math.abs(km * 1000 - truth);
+    if (loopM) error = Math.min(error, loopM - error);
+    return { landmark, error, odometerError: Math.abs(records[index].distance * 1000 - records[index].truthM) };
+  });
+}
+
+test('a ride laid onto the route axis by its distance does not drift with a wheel 5 % off', () => {
+  const { buildRouteAxis, layRideOnAxis } = require('../route-axis');
+  const route = [[0, 0], [6000, 0], [6000, 4000], [0, 4000], [0, 200]];
+  const axis = buildRouteAxis(axisRide(route));
+  assert.ok(Math.abs(axis.lengthM - 19800) < 20, `axis ${axis.lengthM} m`);
+  const landmarks = Array.from({ length: 39 }, (_, index) => 250 + index * 500);
+  for (const [wheelScale, noiseM] of [[1.05, 3], [0.95, 3], [1.04, 15]]) {
+    const ride = axisRide(route, { wheelScale, noiseM, seed: Math.round(wheelScale * 100) + noiseM });
+    const laid = layRideOnAxis(ride, axis);
+    const errors = landmarkErrors(ride, laid, landmarks);
+    const worst = Math.max(...errors.map((row) => row.error));
+    // The GPS itself is the limit: within three of its deviations, never under 30 m.
+    assert.ok(worst <= Math.max(30, 3 * noiseM), `wheel ${wheelScale}, noise ${noiseM} m: worst landmark ${worst.toFixed(1)} m`);
+    // The wheel alone would be this far off by the end; laid by distance and pulled by GPS, it is not.
+    assert.ok(errors.at(-1).odometerError > 700, `odometer ${errors.at(-1).odometerError.toFixed(0)} m`);
+    assert.ok(Math.max(...errors.slice(-5).map((row) => row.error)) <= Math.max(...errors.slice(0, 5).map((row) => row.error)) + 15, 'the error does not grow along the ride');
+    assert.equal(laid.offM, 0);
+    assert.ok(laid.missedM <= 50, `missed ${laid.missedM} m`);
+  }
+});
+
+test('a shortcut and a detour are local: the axis is found again right after them', () => {
+  const { buildRouteAxis, layRideOnAxis } = require('../route-axis');
+  // The route goes round a 50 m bulge at km 5; the ride cuts straight across it (100 m shorter).
+  const route = [[0, 0], [5000, 0], [5000, 50], [5100, 50], [5100, 0], [6000, 0], [6000, 4000], [0, 4000], [0, 200]];
+  const axis = buildRouteAxis(axisRide(route));
+  // At km 12 of the route the ride turns off for 100 m and comes back the same way (+200 m).
+  const ridden = [[0, 0], [6000, 0], [6000, 4000], [4100, 4000], [4100, 4100], [4100, 4000], [0, 4000], [0, 200]];
+  const ride = axisRide(ridden, { wheelScale: 1.04, noiseM: 3, seed: 7 });
+  const laid = layRideOnAxis(ride, axis);
+  // Landmarks on the road both share, in route metres (the bulge adds 100 m from km 5).
+  const routeM = (rideM) => (rideM < 5000 ? rideM : rideM + 100);
+  const onBoth = [1000, 3000, 4800, 5300, 7000, 9000, 11500, 12400, 14000, 17000, 19000];
+  const errors = onBoth.map((m) => {
+    const rideM = m < 5000 ? m : m - 100;
+    const shifted = rideM <= 11900 ? rideM : rideM + 200;
+    const index = ride.findIndex((record) => record.truthM >= shifted);
+    return Math.abs(laid.axisKm[index] * 1000 - routeM(rideM));
+  });
+  assert.ok(Math.max(...errors) <= 30, `landmark errors ${errors.map((error) => error.toFixed(0)).join(', ')}`);
+  assert.ok(laid.offM >= 100 && laid.offM <= 300, `off ${laid.offM} m`);
+  assert.ok(laid.missedM >= 100 && laid.missedM <= 250, `missed ${laid.missedM} m`);
+  assert.equal(laid.offStretches.length, 2);
+});
+
+test('an out-and-back is laid leg by leg: the return leg 4 m away is never taken on the way out', () => {
+  const { buildRouteAxis, layRideOnAxis } = require('../route-axis');
+  const route = [[0, 0], [5000, 0], [5000, 4], [0, 4]];
+  const axis = buildRouteAxis(axisRide(route));
+  assert.equal(axis.closed, false, 'start and end together but the route is ridden there and back');
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const ride = axisRide(route, { noiseM: 3, wheelScale: 1.03, seed });
+    const laid = layRideOnAxis(ride, axis);
+    const wrongLeg = ride.filter((record, index) => laid.axisKm[index] != null
+      && Math.abs(laid.axisKm[index] * 1000 - record.truthM) > 60);
+    assert.equal(wrongLeg.length, 0, `seed ${seed}: ${wrongLeg.length} records on the wrong leg`);
+  }
+});
+
+test('a loop entered elsewhere, a late fix and a wandering first fix are not detours', () => {
+  const { buildRouteAxis, layRideOnAxis } = require('../route-axis');
+  const route = [[0, 0], [6000, 0], [6000, 4000], [0, 4000], [0, 0]];
+  const axis = buildRouteAxis(axisRide(route));
+  assert.equal(axis.closed, true);
+  const landmarks = Array.from({ length: 19 }, (_, index) => 500 + index * 1000);
+  const entered = axisRide(route, { startAtM: 8000, noiseM: 3, seed: 11 });
+  const laidEntered = layRideOnAxis(entered, axis);
+  assert.ok(Math.max(...landmarkErrors(entered, laidEntered, landmarks, { loopM: 20000 }).map((row) => row.error)) <= 30);
+  assert.ok(laidEntered.missedM <= 50 && laidEntered.offM === 0, `missed ${laidEntered.missedM}, off ${laidEntered.offM}`);
+  // No GPS for the first 400 m, then a fix that wanders hundreds of metres for the first km.
+  for (const options of [{ blindUntilM: 400 }, { glitchUntilM: 1000 }]) {
+    const ride = axisRide(route, { ...options, noiseM: 3, seed: 5 });
+    const laid = layRideOnAxis(ride, axis);
+    assert.equal(laid.offM, 0, JSON.stringify(options));
+    assert.ok(laid.missedM <= 60, `${JSON.stringify(options)}: missed ${laid.missedM} m`);
+  }
+});
+
+test('another road is told apart, and laying stops once the deviation passes the limit', () => {
+  const { buildRouteAxis, layRideOnAxis } = require('../route-axis');
+  const axis = buildRouteAxis(axisRide([[0, 0], [6000, 0], [6000, 4000], [0, 4000], [0, 200]]));
+  const elsewhere = axisRide([[0, 600], [6000, 600], [6000, 3400], [600, 3400], [600, 800]], { noiseM: 3 });
+  const full = layRideOnAxis(elsewhere, axis);
+  assert.ok(full.deviationM > 10000, `deviation ${full.deviationM}`);
+  const stopped = layRideOnAxis(elsewhere, axis, { maxDeviationM: 1000 });
+  assert.equal(stopped.aborted, true);
+});
