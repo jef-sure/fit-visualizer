@@ -1,7 +1,7 @@
 {
   "name": "fit-visualizer",
   "displayName": "FIT Visualizer",
-  "version": "0.30.2",
+  "version": "0.30.3",
   "description": "FIT file viewer and analyzer: charts, map, effort segments, heart-rate zones, ride history by route, and AI analysis against the goals you declare",
   "publisher": "AntonPetrusevich",
   "engines": {

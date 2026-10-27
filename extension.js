@@ -3151,7 +3151,7 @@ async function autoCalculateHeartRateProfileFromDbNow(dbPath, message) {
     const recordStride = useMeasuredPower ? 1 : 5;
     stmt = db.prepare(`
       SELECT activity_id, record_index, elapsed_s AS elapsed_time, distance_km AS distance,
-        speed_kmh AS speed, altitude_m AS altitude, power
+        speed_kmh AS speed, altitude_m / 1000.0 AS altitude, power
       FROM records
       WHERE record_index % ${recordStride} = 0
       ORDER BY activity_id, record_index

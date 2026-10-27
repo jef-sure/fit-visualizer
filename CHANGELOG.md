@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.30.3 - unreleased
+
+### Fixed
+
+- **FTP suggestion without a power meter.** With no ride carrying measured power, the profile form estimates power from speed and grade over the stored rides, but it read their altitude in metres where kilometres are expected: grades came out in the thousands of percent, nearly every estimate was discarded, and the suggested FTP was 0. On a database of 39 rides without a power meter it is now 121 W.
+
+### Changed
+
+- The package is about a tenth of its former size (1 MB instead of 10 MB): the README pictures, which the Marketplace page loads from GitHub, and the sources, maps, type files and browser builds of the dependencies are left out.
+
 ## 0.30.2 - 2026-10-20
 
 ### Added

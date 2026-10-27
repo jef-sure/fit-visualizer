@@ -9,3 +9,19 @@ promo-post*.md
 images/cover-*.png
 scripts/**
 prompt-eval.js
+# README pictures: vsce points the Marketplace page at the copies on GitHub
+images/**
+# Dependencies: only what the extension and the page load
+node_modules/leaflet/src/**
+node_modules/leaflet/dist/leaflet-src*
+node_modules/**/*.map
+node_modules/**/*.d.ts
+node_modules/**/*.d.mts
+node_modules/**/*.d.cts
+node_modules/**/*.md
+node_modules/fit-file-parser/dist/*.js
+node_modules/markdown-it/bin/**
+node_modules/markdown-it/dist/browser/**
+node_modules/markdown-it/dist/*.mjs
+node_modules/markdown-it/node_modules/argparse/**
+node_modules/markdown-it/node_modules/entities/src/**

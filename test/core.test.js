@@ -193,7 +193,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { updateActivityHeartRate, prepareGuestDatabase, saveFitToLocalDb, derivedRebuildPending, runUpgradeSteps, offerReanalysis, loadFitDataFromDb, promptHistoryRows, rereadOutdatedRides, getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { updateActivityHeartRate, prepareGuestDatabase, saveFitToLocalDb, derivedRebuildPending, runUpgradeSteps, offerReanalysis, loadFitDataFromDb, promptHistoryRows, rereadOutdatedRides, getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, autoCalculateHeartRateProfileFromDbNow, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -7521,6 +7521,34 @@ test('manual heart rate never deletes or hides the AI analysis; beside a recorde
     const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
     assert.doesNotMatch(source, /DELETE FROM activity_analysis/);
     assert.doesNotMatch(source, /hasManualHrOverrides/, 'the chat gets the ride\'s own analysis whatever the manual form holds');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('the FTP suggestion estimates power from the stored rides when none has a power meter', async () => {
+  const SQL = await initSqlJs({ locateFile: (file) => path.join(__dirname, '..', 'vendor', 'sql-wasm', file) });
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-ftp-test-'));
+  const dbPath = path.join(directory, 'test.sqlite');
+  const db = new SQL.Database();
+  ensureDatabaseSchema(db);
+  db.run(`INSERT INTO activities (id, file_path, start_time, sport, source) VALUES (1, 'climb.fit', '2026-08-25', 'cycling', 'fit')`);
+  // 45 minutes up a steady 5 % at 12 km/h, altitude stored in metres as the indexer does.
+  const speedKmh = 12;
+  for (let second = 0; second <= 2700; second += 1) {
+    const distanceKm = (second * speedKmh) / 3600;
+    db.run('INSERT INTO records (activity_id, record_index, elapsed_s, distance_km, speed_kmh, altitude_m, heart_rate) VALUES (1, ?, ?, ?, ?, ?, 140)',
+      [second, second, distanceKm, speedKmh, 100 + distanceKm * 1000 * 0.05]);
+  }
+  fs.writeFileSync(dbPath, Buffer.from(db.export()));
+  db.close();
+  try {
+    const suggestion = await loadExtensionInternalsForTest().autoCalculateHeartRateProfileFromDbNow(dbPath, {
+      sex: 'male', age: 50, restingHr: 55, riderMassKg: 75, bikeMassKg: 10,
+    });
+    assert.equal(suggestion.mmpStatus.powerSource, 'estimated');
+    // m·g·v·grade alone is 85 · 9.81 · 3.33 · 0.05 ≈ 139 W; rolling and air add a little.
+    assert.ok(suggestion.ftp >= 120 && suggestion.ftp <= 200, `FTP ${suggestion.ftp}`);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
