@@ -381,4 +381,28 @@ function layRideOnAxis(records, axis, { maxDeviationM = Infinity } = {}) {
   return { aborted: false, axisKm, offStretches, offM, missedM, deviationM: Math.max(offM, missedM) };
 }
 
-module.exports = { AXIS, buildRouteAxis, layRideOnAxis };
+// Stored with the route: the points as metres east and north of its origin, to a decimetre.
+function serializeAxis(axis) {
+  if (!axis) return null;
+  const round = (value) => Math.round(value * 10) / 10;
+  return JSON.stringify({ lat0: axis.lat0, lon0: axis.lon0, stepM: axis.stepM, closed: axis.closed, loopM: axis.loopM,
+    points: axis.points.map((point) => [round(point.x), round(point.y)]) });
+}
+
+function parseAxis(json) {
+  try {
+    const stored = JSON.parse(json);
+    if (!Array.isArray(stored?.points) || stored.points.length < 10 || !Number.isFinite(stored.lat0) || !Number.isFinite(stored.lon0)) return null;
+    return indexAxis({ lat0: stored.lat0, lon0: stored.lon0, stepM: stored.stepM, closed: Boolean(stored.closed), loopM: stored.loopM ?? null,
+      points: stored.points.map(([x, y]) => ({ x, y })) });
+  } catch {
+    return null;
+  }
+}
+
+// The same road ridden the other way.
+function reverseAxis(axis) {
+  return indexAxis({ lat0: axis.lat0, lon0: axis.lon0, stepM: axis.stepM, closed: axis.closed, loopM: axis.loopM, points: [...axis.points].reverse() });
+}
+
+module.exports = { AXIS, buildRouteAxis, layRideOnAxis, parseAxis, reverseAxis, serializeAxis };

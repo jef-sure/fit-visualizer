@@ -4077,6 +4077,22 @@ test('checkpoints sit at segment boundaries, densify long segments and match pri
   assert.deepEqual(plain.map((m) => m.km), [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]);
 });
 
+// A track's distance as its own geometry gives it: rides are laid onto a route by distance, and a
+// fixture whose labelled kilometres disagree with its shape is a broken wheel sensor.
+function alongTrack(points) {
+  let km = 0;
+  return points.map((point, index) => {
+    if (index > 0) {
+      const previous = points[index - 1];
+      const dLat = ((point.position_lat - previous.position_lat) * Math.PI) / 180;
+      const dLon = ((point.position_long - previous.position_long) * Math.PI) / 180;
+      const a = Math.sin(dLat / 2) ** 2 + Math.cos((previous.position_lat * Math.PI) / 180) * Math.cos((point.position_lat * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+      km += (2 * 6371 * Math.asin(Math.sqrt(a)));
+    }
+    return { ...point, distance: km };
+  });
+}
+
 test('ride-to-route assignment creates a route once and attaches later rides with their relation', async () => {
   const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
   const db = new SQL.Database();
@@ -4089,14 +4105,18 @@ test('ride-to-route assignment creates a route once and attaches later rides wit
       const d = i / 200;
       loop.push({ position_lat: 52 + Math.sin(d * Math.PI * 2) * 0.02, position_long: 13 + Math.cos(d * Math.PI * 2) * 0.03, distance: d * 10 });
     }
+    const assign = (activityId, track, createdAt) => {
+      const records = alongTrack(track);
+      return assignRoute(db, { activityId, signature: buildRouteSignature(records), createdAt, records });
+    };
     db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (1, ?, ?, ?, ?)', ['a', 'a', '2026-08-01T10:00:00Z', 'fit']);
     db.run('INSERT INTO activity_features (activity_id, features_version) VALUES (1, 1)');
-    const first = assignRoute(db, { activityId: 1, signature: buildRouteSignature(loop), createdAt: '2026-08-01T10:00:00Z' });
+    const first = assign(1, loop, '2026-08-01T10:00:00Z');
     assert.equal(first.rideCount, 1);
 
     db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (2, ?, ?, ?, ?)', ['b', 'b', '2026-08-02T10:00:00Z', 'fit']);
     db.run('INSERT INTO activity_features (activity_id, features_version) VALUES (2, 1)');
-    const second = assignRoute(db, { activityId: 2, signature: buildRouteSignature(loop.map((p) => ({ ...p, position_lat: p.position_lat + 0.0002 }))), createdAt: '2026-08-02T10:00:00Z' });
+    const second = assign(2, loop.map((p) => ({ ...p, position_lat: p.position_lat + 0.0002 })), '2026-08-02T10:00:00Z');
     assert.equal(second.routeId, first.routeId);
     assert.equal(second.rideCount, 2);
     assert.equal(readRoutes(db).length, 1);
@@ -4113,19 +4133,17 @@ test('ride-to-route assignment creates a route once and attaches later rides wit
       bigLoop.push({ position_lat: src.position_lat + departs, position_long: src.position_long + departs, distance: d * 33 });
     }
     db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (3, ?, ?, ?, ?)', ['c', 'c', '2026-08-03T10:00:00Z', 'fit']);
-    const big = assignRoute(db, { activityId: 3, signature: buildRouteSignature(bigLoop), createdAt: '2026-08-03T10:00:00Z' });
+    const big = assign(3, bigLoop, '2026-08-03T10:00:00Z');
     assert.notEqual(big.routeId, first.routeId, 'the longer ride forms its own route');
     assert.equal(big.relation, 'same', 'it defines that route');
-    // A short ride over part of the loop is still a partial of it.
+    // A ride over 70 % of the loop leaves 30 % of it unridden: past the limit, a route of its own.
     db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (4, ?, ?, ?, ?)', ['d', 'd', '2026-08-04T10:00:00Z', 'fit']);
-    const cutShort = loop.slice(0, 140).map((p, i) => ({ ...p, distance: (i / 200) * 10 }));
-    const short = assignRoute(db, { activityId: 4, signature: buildRouteSignature(cutShort), createdAt: '2026-08-04T10:00:00Z' });
-    assert.equal(short.relation, 'partial', 'the shorter ride stays a partial of the loop');
+    const short = assign(4, loop.slice(0, 140), '2026-08-04T10:00:00Z');
+    assert.notEqual(short.routeId, first.routeId, 'a ride over part of the loop is not the loop');
 
     // The loop ridden the other way joins the same route as reversed.
     db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (5, ?, ?, ?, ?)', ['e', 'e', '2026-08-05T10:00:00Z', 'fit']);
-    const backwards = loop.map((p, i) => ({ ...loop[loop.length - 1 - i], distance: p.distance }));
-    const opposite = assignRoute(db, { activityId: 5, signature: buildRouteSignature(backwards), createdAt: '2026-08-05T10:00:00Z' });
+    const opposite = assign(5, [...loop].reverse(), '2026-08-05T10:00:00Z');
     assert.equal(opposite.routeId, first.routeId);
     assert.equal(opposite.relation, 'reversed');
   } finally {
@@ -4146,7 +4164,8 @@ test('route names and notes survive a rebuild that re-derives the routes table',
     const tracks = { 1: ring(52, 0.02), 2: ring(52.5, 0.02), 3: ring(53, 0.02) };
     const assignAll = (order) => order.forEach((id) => {
       db.run('INSERT OR IGNORE INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)', [id, `f${id}`, `f${id}`, `2026-08-0${id}T10:00:00Z`, 'fit']);
-      assignRoute(db, { activityId: id, signature: buildRouteSignature(tracks[id]), createdAt: `2026-08-0${id}T10:00:00Z` });
+      const records = alongTrack(tracks[id]);
+      assignRoute(db, { activityId: id, signature: buildRouteSignature(records), createdAt: `2026-08-0${id}T10:00:00Z`, records });
     });
     assignAll([1, 2, 3]);
     const [first, second] = readRoutes(db);
@@ -4203,7 +4222,8 @@ test('a ride joins the closest matching route, not the first one within toleranc
     }));
     const add = (id, offsetM) => {
       db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)', [id, `f${id}`, `f${id}`, `2026-08-0${id}T10:00:00Z`, 'fit']);
-      return assignRoute(db, { activityId: id, signature: buildRouteSignature(road(offsetM)), createdAt: `2026-08-0${id}T10:00:00Z` });
+      const records = road(offsetM);
+      return assignRoute(db, { activityId: id, signature: buildRouteSignature(records), createdAt: `2026-08-0${id}T10:00:00Z`, records });
     };
     const north = add(1, 0);
     const south = add(2, 70);
@@ -4605,7 +4625,7 @@ test('route assignment is idempotent and its elevation profile is cached by memb
     const { buildRouteSignature } = require('../route-match');
     let routeId = null;
     for (let id = 1; id <= 6; id += 1) {
-      const records = syntheticAltitudeRide({ offsetM: id * 12 });
+      const records = alongTrack(syntheticAltitudeRide({ offsetM: id * 12 }));
       db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)',
         [id, `f${id}`, `f${id}`, `2026-08-0${id}T10:00:00Z`, 'fit']);
       records.forEach((record, index) => {
@@ -4613,8 +4633,8 @@ test('route assignment is idempotent and its elevation profile is cached by memb
           [id, index, record.elapsed_time, record.distance, record.altitude * 1000, record.position_lat, record.position_long]);
       });
       const signature = buildRouteSignature(records);
-      const first = assignRoute(db, { activityId: id, signature, createdAt: `2026-08-0${id}T10:00:00Z` });
-      const again = assignRoute(db, { activityId: id, signature, createdAt: `2026-08-0${id}T10:00:00Z` });
+      const first = assignRoute(db, { activityId: id, signature, createdAt: `2026-08-0${id}T10:00:00Z`, records });
+      const again = assignRoute(db, { activityId: id, signature, createdAt: `2026-08-0${id}T10:00:00Z`, records });
       assert.equal(again.routeId, first.routeId);
       routeId = first.routeId;
     }
@@ -5403,19 +5423,19 @@ test('reversed rides join the elevation consensus mirrored onto the canonical ax
     let routeId = null;
     for (let id = 1; id <= 6; id += 1) {
       const forward = id <= 3;
-      const points = Array.from({ length: 1200 }, (_, i) => {
+      const points = alongTrack(Array.from({ length: 1200 }, (_, i) => {
         const position = i / 1200;
         const canonical = forward ? position : 1 - position;
-        return { elapsed_time: i, distance: position * 20, altitude: (shape(canonical) + id * 10) / 1000,
+        return { elapsed_time: i, altitude: (shape(canonical) + id * 10) / 1000,
           position_lat: 52 + 0.01 * Math.sin(2 * Math.PI * canonical), position_long: 13 + 0.01 * (1 - Math.cos(2 * Math.PI * canonical)) };
-      });
+      }));
       db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)', [id, `f${id}`, `f${id}`, `2026-08-0${id}T10:00:00Z`, 'fit']);
       points.forEach((point, index) => {
         db.run('INSERT INTO records (activity_id, record_index, elapsed_s, distance_km, altitude_m, latitude, longitude) VALUES (?, ?, ?, ?, ?, ?, ?)',
           [id, index, point.elapsed_time, point.distance, point.altitude * 1000, point.position_lat, point.position_long]);
       });
       const signature = buildRouteSignature(forward ? points : points.map((p, i, all) => ({ ...p, position_lat: all[all.length - 1 - i].position_lat, position_long: all[all.length - 1 - i].position_long })));
-      const result = assignRoute(db, { activityId: id, signature, createdAt: `2026-08-0${id}T10:00:00Z` });
+      const result = assignRoute(db, { activityId: id, signature, createdAt: `2026-08-0${id}T10:00:00Z`, records: points });
       routeId = result.routeId;
     }
     const merged = ensureRouteElevationProfile(db, routeId);

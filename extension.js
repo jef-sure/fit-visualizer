@@ -28,7 +28,7 @@ const { classifySession, countHardEfforts, longestSustainedZ4Seconds } = require
 const { FEATURES_VERSION, athleteKey, featureCacheKey, hrProfileKey, isFeatureRowFresh, settingsKey } = require('./activity-features');
 const { computeRouteTrends } = require('./trend-metrics');
 const PRIOR_RIDES_FOR_TRENDS = 5;
-const { assignRoute, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readAssignment, readRouteCard, describeCheckpointVerdict, ensureRouteSkeleton, readSkeletonRecords, readRouteNote, setRouteName, setRouteNote, snapshotRouteLabels, restoreRouteLabels, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
+const { assignRoute, routeMatchSettings, computeCheckpoints, ensureRouteElevationProfile, ensureRouteFeatures, readRouteAssignments, readAssignment, readRouteCard, describeCheckpointVerdict, ensureRouteSkeleton, readSkeletonRecords, readRouteNote, setRouteName, setRouteNote, snapshotRouteLabels, restoreRouteLabels, summarizeCheckpoints, summarizeRoutePattern } = require('./route-store');
 const { parseAnalysisSummary, parseStoredSummary } = require('./analysis-summary');
 const { CONDITIONS, FEELINGS, PURPOSES, inferNotesPreFill, readActivityNotes, readAllActivityNotes, saveActivityNotes, readKnownGoals } = require('./activity-notes');
 const { readRiderPlan, saveRiderPlanEntry } = require('./rider-plan');
@@ -404,7 +404,22 @@ function needsDerivedFeatureRebuild(db) {
   // Rows of the current version are not proof of a rebuild: a page that needs a ride's features
   // refreshes them on the spot, one ride at a time, and that path keeps every ride on the route it
   // already had. Only the whole rebuild re-derives routes, so it is tracked on its own.
-  return stale > 0 || readDerivedVersion(db) !== FEATURES_VERSION;
+  // Routes are derived with the route-matching settings; changed ones re-derive them all. A database
+  // marked before the settings existed was derived with their defaults.
+  const routeMatch = readDerivedState(db, 'route_match') ?? routeMatchStamp({});
+  return stale > 0 || readDerivedVersion(db) !== FEATURES_VERSION || routeMatch !== routeMatchStamp();
+}
+
+function routeMatchStamp(options = getRouteMatchOptions()) {
+  return JSON.stringify(routeMatchSettings(options));
+}
+
+function readDerivedState(db, key) {
+  try {
+    return db.exec('SELECT value FROM derived_state WHERE key = ?', [key])[0]?.values?.[0]?.[0] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function readDerivedVersion(db) {
@@ -418,6 +433,7 @@ function readDerivedVersion(db) {
 
 function markDerivedVersion(db) {
   db.run("INSERT INTO derived_state (key, value) VALUES ('features_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [String(FEATURES_VERSION)]);
+  db.run("INSERT INTO derived_state (key, value) VALUES ('route_match', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [routeMatchStamp()]);
 }
 
 // Whether this database still has to be rebuilt for the installed version. Checked when a page is
@@ -681,7 +697,7 @@ function ensureFeaturesForActivity(db, activityId) {
     markDerivedVersion(db);
   }
   // The route comes first: its skeleton frames the segments.
-  const routeInfo = assignRoute(db, { activityId: row.id, signature: buildRouteSignature(records), createdAt: row.start_time });
+  const routeInfo = assignRoute(db, { activityId: row.id, signature: buildRouteSignature(records), createdAt: row.start_time, records, options: getRouteMatchOptions() });
   const routeFrame = routeFrameFor(db, routeInfo, records);
   const segments = buildActivitySegments(power.records, { sport: row.sport, powerSource: power.source, routeFrame,
     thresholds: segmentationOptions, athlete: { ftp: profile.ftp, restingHeartRate: profile.restingHeartRate,
@@ -2332,6 +2348,11 @@ function getRouteSectionOptions() {
   };
 }
 
+function getRouteMatchOptions() {
+  const config = vscode.workspace.getConfiguration('fitVisualizer');
+  return { maxDeviationPct: config.get('routeMaxDeviationPct'), maxDeviationKm: config.get('routeMaxDeviationKm') };
+}
+
 function getSegmentationOptions() {
   const config = vscode.workspace.getConfiguration('fitVisualizer.segmentation');
   const read = (key) => {
@@ -3704,7 +3725,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
       row.rider_mass_kg != null ? { restingHeartRate: profile.restingHeartRate } : profile,
     );
     const routeSignature = buildRouteSignature(records);
-    const routeInfo = assignRoute(db, { activityId: row.id, signature: routeSignature, createdAt: row.start_time });
+    const routeInfo = assignRoute(db, { activityId: row.id, signature: routeSignature, createdAt: row.start_time, records, options: getRouteMatchOptions() });
     const segments = buildActivitySegments(power.records, { sport: row.sport, powerSource: power.source,
       routeFrame: routeFrameFor(db, routeInfo, records),
       thresholds: segmentationOptions, athlete: { ftp: profile.ftp, restingHeartRate: profile.restingHeartRate,
@@ -3809,7 +3830,7 @@ function getTrainingContextFromDb(db, activityId, currentData) {
   const currentRecords = currentData?.records || currentDetail?.records || null;
   const currentRouteInfo = currentData?.routeInfo || currentDetail?.routeInfo
     || (currentRecords
-      ? assignRoute(db, { activityId: selected.id, signature: buildRouteSignature(currentRecords), createdAt: selected.start_time })
+      ? assignRoute(db, { activityId: selected.id, signature: buildRouteSignature(currentRecords), createdAt: selected.start_time, records: currentRecords, options: getRouteMatchOptions() })
       : null);
   const currentCheckpoints = currentData?.checkpoints || currentDetail?.checkpoints
     || (currentRecords ? computeCheckpoints(currentRecords, currentSegments) : []);

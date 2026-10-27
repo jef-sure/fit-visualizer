@@ -110,6 +110,19 @@
           "minimum": 0,
           "description": "Delete Copilot request logs older than this many days. Set to 0 to keep them forever."
         },
+        "fitVisualizer.routeMaxDeviationPct": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "maximum": 50,
+          "description": "A ride belongs to a route when it strays from the route by no more than this share of its length (and no more than fitVisualizer.routeMaxDeviationKm, whichever is smaller). Straying counts the larger of the distance ridden off the route and the length of the route not ridden. Changing it re-derives the routes of the database once."
+        },
+        "fitVisualizer.routeMaxDeviationKm": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "description": "A ride belongs to a route when it strays from the route by no more than this many kilometres (and no more than fitVisualizer.routeMaxDeviationPct of its length, whichever is smaller). Changing it re-derives the routes of the database once."
+        },
         "fitVisualizer.llmChatLogRetentionDays": {
           "type": "number",
           "default": 180,

@@ -1,52 +1,80 @@
 // Route storage and per-route checkpoints on top of route-match.js. No vscode, testable.
 //
-// Assignment policy: a ride joins an existing route on same/reversed/partial (its relation is
-// recorded per ride). The canonical signature is the one of the ride that created the route and is
-// not updated afterwards; a rebuild assigns rides oldest first, so that is the earliest ride.
+// Assignment policy: a ride joins an existing route when it strays from the route's axis by no more
+// than the smaller of a share of the route and a distance, either way round (its relation, same or
+// reversed, is recorded per ride). The axis and the signature are those of the ride that created
+// the route and are not updated afterwards; a rebuild assigns rides oldest first, so that is the
+// earliest ride. The signature still pairs saved names and notes with re-derived routes.
 
 const { buildRouteSignature, matchRoutes, haversineM } = require('./route-match');
+const { buildRouteAxis, layRideOnAxis, parseAxis, reverseAxis, serializeAxis } = require('./route-axis');
 const { buildAltitudeRide, computeConsensusProfile, mirrorAltitudeRide } = require('./altitude-quality');
 const { computeRouteFeatures, sectionCount, sectionSpeeds } = require('./route-features');
 const { SKELETON, buildRouteSkeleton } = require('./route-sections');
 
 const CHECKPOINT_SPACING_KM = 2; // extra marks inside a long segment
 const CHECKPOINT_MATCH_RADIUS_M = 150;
+// How far a ride of a route may stray from its axis: the smaller of a share of the route and a
+// distance (settings fitVisualizer.routeMaxDeviationPct and fitVisualizer.routeMaxDeviationKm).
+// Measured on 34 rides of one 20 km route: the same road strays by 0-3 %, a changed junction by 3 %,
+// another way in or out by 9 % and more.
+const ROUTE_MATCH_DEFAULTS = Object.freeze({ maxDeviationPct: 5, maxDeviationKm: 1 });
+// The wheel and the GPS measure the same road a few per cent apart (3-5 % on that route).
+const LENGTH_SCALE_TOLERANCE = 0.05;
 
-// Assign (or create) a route for one ride against existing canonical signatures. Idempotent:
-// a ride that already has an assignment keeps it, so repeated context builds do not recount.
-// Returns { routeId, relation, routeName, rideCount }.
-function assignRoute(db, { activityId, signature, createdAt }) {
+function routeMatchSettings(options = {}) {
+  const pick = (value, fallback) => (Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : fallback);
+  return {
+    maxDeviationPct: pick(options.maxDeviationPct, ROUTE_MATCH_DEFAULTS.maxDeviationPct),
+    maxDeviationKm: pick(options.maxDeviationKm, ROUTE_MATCH_DEFAULTS.maxDeviationKm),
+  };
+}
+
+// Assign (or create) a route for one ride. Idempotent: a ride that already has an assignment keeps
+// it, so repeated context builds do not recount. Returns { routeId, relation, routeName, rideCount }.
+//
+// Every route within the limit is a candidate, and the one the ride strays from least wins (two
+// roads 70 m apart can both be near). The difference in length, beyond what the wheel gets wrong,
+// is road one has and the other has not, so it is a floor of the deviation: a route whose floor is
+// past the limit is not laid at all, the rest are laid in order of it, and laying stops as soon as
+// the ride strays more than the limit or than the best route so far.
+function assignRoute(db, { activityId, signature, createdAt, records, options = {} }) {
   if (!signature) return { routeId: null, relation: null };
   const existing = readAssignment(db, activityId);
   if (existing) return existing;
-  // Every route is scored; the first one within tolerance is not necessarily the right one
-  // (two roads 70 m apart both fit). A full match beats a partial one, then the closer track wins.
-  let best = null;
+  const settings = routeMatchSettings(options);
+  const rideM = signature.distanceKm * 1000;
+  const candidates = [];
   for (const route of readRoutes(db)) {
-    const canonical = parseCanonical(route.canonical_signature);
-    if (!canonical) continue;
-    const match = matchRoutes(signature, canonical);
-    if (!['same', 'reversed', 'partial'].includes(match.type)) continue;
-    // A longer ride that only partly follows a shorter route is its own route: longer, with its
-    // own climbs and its own roads. Joining it to the shorter one would forever present the short
-    // route's facts as if the long ride had ridden them (and the long route would never form).
-    // Partial applies only when this ride is the shorter one - a loop cut short, a late start.
-    if (match.type === 'partial' && signature.distanceKm > canonical.distanceKm * 1.05) continue;
-    const full = match.type !== 'partial';
-    const closer = best == null || (full !== best.full ? full : match.scoreM < best.match.scoreM);
-    if (closer) best = { route, match, full };
+    const axis = routeAxis(db, route);
+    if (!axis) continue;
+    const limitM = Math.min((settings.maxDeviationPct / 100) * axis.lengthM, settings.maxDeviationKm * 1000);
+    const floorM = Math.abs(rideM - axis.lengthM) - LENGTH_SCALE_TOLERANCE * Math.max(rideM, axis.lengthM);
+    if (floorM <= limitM) candidates.push({ route, axis, limitM, floorM });
+  }
+  candidates.sort((a, b) => a.floorM - b.floorM);
+  let best = null;
+  for (const candidate of candidates) {
+    if (best && candidate.floorM >= best.laid.deviationM) break;
+    // An out-and-back fits both ways equally; the same direction is tried first and kept.
+    for (const [relation, axis] of [['same', candidate.axis], ['reversed', reverseAxis(candidate.axis)]]) {
+      const limitM = Math.min(candidate.limitM, best ? best.laid.deviationM : Infinity);
+      const laid = layRideOnAxis(records, axis, { maxDeviationM: limitM });
+      if (laid.aborted || laid.deviationM > candidate.limitM) continue;
+      if (!best || laid.deviationM < best.laid.deviationM) best = { route: candidate.route, relation, laid };
+    }
   }
   if (best) {
-    const { route, match } = best;
+    const { route, relation, laid } = best;
     db.run('INSERT OR REPLACE INTO activity_routes (activity_id, route_id, relation) VALUES (?, ?, ?)',
-      [activityId, route.id, `${match.type} (${match.detail})`]);
+      [activityId, route.id, `${relation} (${Math.round(laid.offM)} m off the route, ${Math.round(laid.missedM)} m of it not ridden)`]);
     db.run('UPDATE routes SET ride_count = ride_count + 1, first_seen = MIN(COALESCE(first_seen, ?), ?), last_seen = MAX(COALESCE(last_seen, ?), ?) WHERE id = ?',
       [createdAt, createdAt, createdAt, createdAt, route.id]);
-    return { routeId: route.id, relation: match.type, routeName: route.name, rideCount: route.ride_count + 1 };
+    return { routeId: route.id, relation, routeName: route.name, rideCount: route.ride_count + 1 };
   }
   const name = `Route ${Math.round(signature.distanceKm * 10) / 10} km`;
-  db.run('INSERT INTO routes (name, canonical_signature, ride_count, first_seen, last_seen) VALUES (?, ?, 1, ?, ?)',
-    [name, JSON.stringify(signature), createdAt, createdAt]);
+  db.run('INSERT INTO routes (name, canonical_signature, axis_json, ride_count, first_seen, last_seen) VALUES (?, ?, ?, 1, ?, ?)',
+    [name, JSON.stringify(signature), serializeAxis(buildRouteAxis(records)), createdAt, createdAt]);
   const id = db.exec('SELECT last_insert_rowid()')[0].values[0][0];
   db.run('INSERT OR REPLACE INTO activity_routes (activity_id, route_id, relation) VALUES (?, ?, ?)',
     [activityId, id, 'same (defines the route)']);
@@ -82,8 +110,20 @@ function readRouteAssignments(db) {
   }
 }
 
+// The axis of a route; one created before routes had an axis gets it from its earliest ride.
+function routeAxis(db, route) {
+  const stored = route.axis_json ? parseAxis(route.axis_json) : null;
+  if (stored) return stored;
+  const first = db.exec(`SELECT ar.activity_id FROM activity_routes ar JOIN activities a ON a.id = ar.activity_id
+    WHERE ar.route_id = ? ORDER BY datetime(a.start_time), a.id LIMIT 1`, [route.id])[0]?.values?.[0]?.[0];
+  if (first == null) return null;
+  const axis = buildRouteAxis(readSkeletonRecords(db, first));
+  if (axis) db.run('UPDATE routes SET axis_json = ? WHERE id = ?', [serializeAxis(axis), route.id]);
+  return axis;
+}
+
 function readRoutes(db) {
-  const stmt = db.prepare('SELECT id, name, canonical_signature, ride_count, first_seen, last_seen, note FROM routes ORDER BY id');
+  const stmt = db.prepare('SELECT id, name, canonical_signature, axis_json, ride_count, first_seen, last_seen, note FROM routes ORDER BY id');
   try {
     const rows = [];
     while (stmt.step()) rows.push(stmt.getAsObject());
@@ -590,6 +630,8 @@ function safeJson(text) {
 }
 
 module.exports = {
+  ROUTE_MATCH_DEFAULTS,
+  routeMatchSettings,
   CHECKPOINT_SPACING_KM,
   assignRoute,
   computeCheckpoints,
