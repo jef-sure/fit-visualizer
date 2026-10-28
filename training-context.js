@@ -222,10 +222,11 @@ function computeLoadRhythm(activities, referenceTime, currentSport) {
   const weekNow = aggregate(7)[0];
   const weekPrev = aggregate(7, true)[0];
   const monthAvg = aggregate(28)[0];
-  const acute = weekNow?.trimpActivities ? weekNow.trimpSum : null;
   const chronic = monthAvg?.trimpActivities && monthAvg.activities
     ? (monthAvg.trimpSum / chronicWeeks) : null;
-  const prevRatioLow = Boolean(weekPrev?.trimpActivities) && chronic > 0 && weekPrev.trimpSum / chronic < 0.8;
+  // A week with no ride before this one carried no load: that is what "below the usual" is for.
+  const acute = chronic > 0 ? (weekNow?.trimpSum ?? 0) : null;
+  const prevRatioLow = chronic > 0 && (weekPrev?.trimpSum ?? 0) / chronic < 0.8;
   const week = aggregate(7);
   const weekLoads = week.find((row) => row.sport === currentSport);
   const weekStart = reference - 7 * 86400000;
@@ -235,8 +236,8 @@ function computeLoadRhythm(activities, referenceTime, currentSport) {
   }) : []).map((activity) => ({
     date: localDate(activity.startTime, activity.utcOffsetS), trimp: asNumber(activity.trimp),
   })));
-  return (monotony?.monotony != null)
-    ? loadRhythm(acute, chronic, monotony.monotony, prevRatioLow) : null;
+  // Monotony needs two days with load; without it the ratio still says how the week compares.
+  return loadRhythm(acute, chronic, monotony?.monotony ?? null, prevRatioLow);
 }
 
 // Per-ride rhythm history for the card's trend strip. `loads` holds every earlier ride

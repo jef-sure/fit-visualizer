@@ -21,6 +21,10 @@ function createManualActivity(db, activity, notes = null) {
 
   const manualFilePath = `manual://${new Date().toISOString().replace(/[:.]/g, '')}-${randomUUID()}`;
   const nowIso = new Date().toISOString();
+  // The time was typed as local time: the offset of this computer's time zone at that moment is
+  // what makes the day and the hour of the activity local again (as a FIT file's own offset does).
+  const start = startTime ? new Date(startTime) : null;
+  const utcOffsetS = start && Number.isFinite(start.getTime()) ? -start.getTimezoneOffset() * 60 : null;
   const avgSpeedKmh = (Number.isFinite(distanceKm) && Number.isFinite(durationS) && durationS > 0)
     ? distanceKm / (durationS / 3600)
     : null;
@@ -52,6 +56,8 @@ function createManualActivity(db, activity, notes = null) {
     null,
     null,
     'manual',
+    utcOffsetS,
+    utcOffsetS == null ? null : 'manual',
   ];
 
   const upsertStmt = db.prepare(`
@@ -63,7 +69,8 @@ function createManualActivity(db, activity, notes = null) {
       avg_cadence, max_cadence, avg_power, max_power, normalized_power,
       training_stress_score, intensity_factor, xpower, relative_intensity_gc, bike_stress_score, decoupling_pct, hr_tss, trimp,
       total_training_effect, aerobic_training_effect, anaerobic_training_effect,
-      total_calories, record_count, lap_count, laps_json, rider_mass_kg, bike_mass_kg, source
+      total_calories, record_count, lap_count, laps_json, rider_mass_kg, bike_mass_kg, source,
+      utc_offset_s, offset_source
     ) VALUES (${upsertValues.map(() => '?').join(',')})
     ON CONFLICT(file_path) DO UPDATE SET
       file_name=excluded.file_name, imported_at=excluded.imported_at,
@@ -73,7 +80,8 @@ function createManualActivity(db, activity, notes = null) {
       total_elapsed_s=excluded.total_elapsed_s,
       avg_hr=excluded.avg_hr, max_hr=excluded.max_hr,
       avg_speed_kmh=excluded.avg_speed_kmh,
-      laps_json=excluded.laps_json
+      laps_json=excluded.laps_json,
+      utc_offset_s=excluded.utc_offset_s, offset_source=excluded.offset_source
   `);
 
   upsertStmt.run(upsertValues);

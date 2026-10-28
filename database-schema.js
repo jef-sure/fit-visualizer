@@ -55,7 +55,7 @@ function ensureDatabaseSchema(db) {
 
   db.run(`
     CREATE TABLE IF NOT EXISTS records (
-      activity_id             INTEGER NOT NULL REFERENCES activities(id),
+      activity_id             INTEGER NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
       record_index            INTEGER NOT NULL,
       timestamp               TEXT,
       elapsed_s               REAL,
@@ -78,7 +78,7 @@ function ensureDatabaseSchema(db) {
   db.run(`
     CREATE TABLE IF NOT EXISTS activity_analysis (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      activity_id   INTEGER NOT NULL UNIQUE REFERENCES activities(id),
+      activity_id   INTEGER NOT NULL UNIQUE REFERENCES activities(id) ON DELETE CASCADE,
       analysis_text TEXT NOT NULL,
       analysis_version INTEGER NOT NULL DEFAULT 1,
       created_at    TEXT,
@@ -88,7 +88,7 @@ function ensureDatabaseSchema(db) {
 
   db.run(`
     CREATE TABLE IF NOT EXISTS activity_analysis_chat (
-      activity_id   INTEGER PRIMARY KEY REFERENCES activities(id),
+      activity_id   INTEGER PRIMARY KEY REFERENCES activities(id) ON DELETE CASCADE,
       chat_json     TEXT NOT NULL,
       updated_at    TEXT
     );
@@ -124,7 +124,7 @@ function ensureDatabaseSchema(db) {
   db.run(`
     CREATE TABLE IF NOT EXISTS wheel_calibration_samples (
       id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-      activity_id         INTEGER NOT NULL REFERENCES activities(id),
+      activity_id         INTEGER NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
       computed_at         TEXT,
       ratio               REAL NOT NULL,
       trusted_distance_km REAL NOT NULL,
@@ -276,12 +276,54 @@ function ensureDatabaseSchema(db) {
   addColumnIfMissing(db, 'routes', 'skeleton_json', 'TEXT');
   addColumnIfMissing(db, 'routes', 'axis_json', 'TEXT');
   addColumnIfMissing(db, 'routes', 'axis_rides', 'INTEGER');
+  addColumnIfMissing(db, 'routes', 'variants_json', 'TEXT');
   // A saved comparison is a model answer like an analysis: it needs to say which format wrote it.
   addColumnIfMissing(db, 'activity_comparisons', 'analysis_version', 'INTEGER');
   addColumnIfMissing(db, 'activity_features', 'route_frame_json', 'TEXT');
   // Which version of the extension read the ride's file into its rows (see upgrade-steps.js).
   addColumnIfMissing(db, 'activities', 'index_version', 'INTEGER');
   migrateIndexVersionStamp(db);
+  cascadeFromActivities(db);
+  // Foreign keys hold from here on, on every connection: SQLite has them off unless asked.
+  db.run('PRAGMA foreign_keys = ON');
+}
+
+// Every row about a ride goes with the ride. Four tables were created referring to activities
+// without saying so, and with foreign keys off nothing held anyway: such a table is created again
+// from its own definition with ON DELETE CASCADE, keeping its columns and dropping rows of rides
+// that are no longer there, and the rows of the other tables that point nowhere are dropped too.
+// SQLite cannot change a constraint of an existing table.
+function cascadeFromActivities(db) {
+  const tables = ['records', 'activity_analysis', 'activity_analysis_chat', 'wheel_calibration_samples'];
+  const lacking = tables.filter((table) => (db.exec(`PRAGMA foreign_key_list(${table})`)[0]?.values || [])
+    .some((row) => row[2] === 'activities' && String(row[6]).toUpperCase() !== 'CASCADE'));
+  const orphans = (table, column, parent) => db.exec(`SELECT 1 FROM ${table} WHERE ${column} IS NOT NULL AND ${column} NOT IN (SELECT id FROM ${parent}) LIMIT 1`).length > 0;
+  const children = [['activity_features', 'activity_id', 'activities'], ['activity_notes', 'activity_id', 'activities'],
+    ['activity_routes', 'activity_id', 'activities'], ['activity_routes', 'route_id', 'routes'],
+    ['activity_comparisons', 'activity_id', 'activities'], ['activity_comparisons', 'compared_activity_id', 'activities']];
+  const strays = children.filter(([table, column, parent]) => orphans(table, column, parent));
+  if (!lacking.length && !strays.length) return;
+  db.run('PRAGMA foreign_keys = OFF');
+  db.run('BEGIN');
+  try {
+    for (const table of lacking) {
+      const sql = db.exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '${table}'`)[0].values[0][0];
+      const columns = (db.exec(`PRAGMA table_info(${table})`)[0]?.values || []).map((row) => row[1]).join(', ');
+      const rebuilt = sql.replace(/^CREATE TABLE\s+("?)\w+\1/i, `CREATE TABLE ${table}_cascade`)
+        .replace(/REFERENCES\s+activities\s*\(\s*id\s*\)(?!\s+ON\s+DELETE)/gi, 'REFERENCES activities(id) ON DELETE CASCADE');
+      db.run(rebuilt);
+      db.run(`INSERT INTO ${table}_cascade (${columns}) SELECT ${columns} FROM ${table} WHERE activity_id IN (SELECT id FROM activities)`);
+      db.run(`DROP TABLE ${table}`);
+      db.run(`ALTER TABLE ${table}_cascade RENAME TO ${table}`);
+    }
+    for (const [table, column, parent] of strays) {
+      db.run(`DELETE FROM ${table} WHERE ${column} IS NOT NULL AND ${column} NOT IN (SELECT id FROM ${parent})`);
+    }
+    db.run('COMMIT');
+  } catch (error) {
+    db.run('ROLLBACK');
+    throw error;
+  }
 }
 
 function addColumnIfMissing(db, table, column, type) {

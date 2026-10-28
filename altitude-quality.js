@@ -2,18 +2,13 @@
 //
 // The CYCPLUS barometer settles during the first minutes of a ride: loop rides all end at the
 // same true elevation while their recorded start altitudes drift by over a hundred metres. A
-// per-route consensus profile (median across offset-aligned rides) turns that into a measurable
-// settling diagnostic instead of an invisible ascent error.
+// per-route consensus profile (median across offset-aligned rides, kept by route-sections.js on
+// the route's axis) turns that into a measurable settling diagnostic instead of an invisible
+// ascent error.
 
 const { hasGpsFix, haversineM } = require('./route-match');
 
-const ELEVATION_BIN_M = 25;
-
 const ALT = Object.freeze({
-  minConsensusRides: 5,
-  minBinRides: 3,
-  minRideCoverage: 0.9,        // a ride must span this share of the median ride length
-  startRadiusM: 300,           // rides starting further from the median start are not aligned by distance
   hysteresisM: 1,              // consensus ascent ignores wiggles below this
   closedLoopM: 100,
   settlingDeltaM: 15,          // start offset (or start-vs-end difference) that counts as drift
@@ -40,7 +35,10 @@ function buildAltitudeRide(records) {
   if (list.length < 20) return null;
   const altitudes = list.map((record) => {
     const value = record.altitude == null ? NaN : Number(record.altitude);
-    return { distance: Number(record.distance), elapsed: Number(record.elapsed_time), altitude: Number.isFinite(value) ? value * 1000 : null };
+    // axis_km: the record's place on its route's axis, when the ride is laid on one.
+    const axisKm = record.axis_km == null ? null : Number(record.axis_km);
+    return { distance: Number(record.distance), elapsed: Number(record.elapsed_time), altitude: Number.isFinite(value) ? value * 1000 : null,
+      ...(Number.isFinite(axisKm) ? { axisKm } : {}) };
   });
   const gps = (record) => hasGpsFix(record?.position_lat, record?.position_long);
   const first = list.find(gps);
@@ -53,24 +51,10 @@ function buildAltitudeRide(records) {
   };
 }
 
-// Bins are fractions of each ride's own length, so a wheel-sensor distance scale error (rides of
-// the same loop differ by several percent in recorded distance) does not smear the profile.
-function binIndex(ride, point, bins) {
-  return Math.floor(((point.distance - ride.altitudes[0].distance) / ride.distanceKm) * bins);
-}
-
-function binAltitudes(ride, bins) {
-  const sums = new Array(bins).fill(0);
-  const counts = new Array(bins).fill(0);
-  for (const point of ride.altitudes) {
-    if (!Number.isFinite(point.altitude)) continue;
-    const bin = binIndex(ride, point, bins);
-    if (bin >= 0 && bin < bins) {
-      sums[bin] += point.altitude;
-      counts[bin] += 1;
-    }
-  }
-  return sums.map((sum, index) => (counts[index] ? sum / counts[index] : null));
+// The consensus is kept on the route's axis (route-sections.js), so a point is read at its place on
+// the axis; a point off the axis has none.
+function binIndex(point, profile) {
+  return point.axisKm == null ? -1 : Math.floor((point.axisKm * 1000) / profile.binM);
 }
 
 function ascentDescent(values, hysteresisM = ALT.hysteresisM) {
@@ -95,52 +79,6 @@ function ascentDescent(values, hysteresisM = ALT.hysteresisM) {
   return { ascentM: ascent, descentM: descent };
 }
 
-// Align each ride's altitude to a shared consensus by removing its own constant offset: the
-// consensus is the per-bin median, each offset the median difference to it, iterated three times.
-// Rides must share a start point (same loop start) to be comparable by distance.
-function computeConsensusProfile(rides, { binM = ELEVATION_BIN_M } = {}) {
-  const valid = (Array.isArray(rides) ? rides : []).filter((ride) => ride?.altitudes?.length > 20 && ride.distanceKm > 1);
-  if (valid.length < ALT.minConsensusRides) return null;
-
-  const referenceLengthKm = median(valid.map((ride) => ride.distanceKm));
-  const starts = valid.filter((ride) => ride.start);
-  const centre = starts.length ? { lat: median(starts.map((ride) => ride.start.lat)), lon: median(starts.map((ride) => ride.start.lon)) } : null;
-  const usable = valid.filter((ride) => ride.distanceKm >= referenceLengthKm * ALT.minRideCoverage
-    && (!centre || !ride.start || haversineM(ride.start.lat, ride.start.lon, centre.lat, centre.lon) <= ALT.startRadiusM));
-  if (usable.length < ALT.minConsensusRides) return null;
-
-  const lengthKm = median(usable.map((ride) => ride.distanceKm));
-  const bins = Math.max(2, Math.round((lengthKm * 1000) / binM));
-  const rows = usable.map((ride) => binAltitudes(ride, bins));
-  const offsets = rows.map(() => 0);
-  let consensus = null;
-  for (let pass = 0; pass < 3; pass += 1) {
-    consensus = new Array(bins).fill(null);
-    for (let bin = 0; bin < bins; bin += 1) {
-      const values = rows.map((row, index) => (Number.isFinite(row[bin]) ? row[bin] + offsets[index] : null)).filter(Number.isFinite);
-      if (values.length >= ALT.minBinRides) consensus[bin] = median(values);
-    }
-    rows.forEach((row, index) => {
-      const diffs = [];
-      for (let bin = 0; bin < bins; bin += 1) {
-        if (Number.isFinite(row[bin]) && Number.isFinite(consensus[bin])) diffs.push(consensus[bin] - row[bin]);
-      }
-      if (diffs.length > bins / 2) offsets[index] = median(diffs);
-    });
-  }
-  if (consensus.filter(Number.isFinite).length < bins * 0.5) return null;
-  const { ascentM, descentM } = ascentDescent(consensus);
-  return {
-    binM: (lengthKm * 1000) / bins,
-    lengthKm,
-    rides: usable.length,
-    consensus: consensus.map((value) => (Number.isFinite(value) ? Math.round(value * 10) / 10 : null)),
-    ascentM: Math.round(ascentM),
-    descentM: Math.round(descentM),
-  };
-}
-
-
 // Settling diagnostics for one ride against the consensus: the ride's constant offset comes from
 // its settled second half; the start is flagged when the first minutes deviate from that offset
 // and converge afterwards.
@@ -150,7 +88,7 @@ function detectAltitudeSettling(ride, profile) {
   const deviations = [];
   for (const point of ride.altitudes) {
     if (!Number.isFinite(point.altitude)) continue;
-    const bin = binIndex(ride, point, consensus.length);
+    const bin = binIndex(point, profile);
     if (bin >= 0 && bin < consensus.length && Number.isFinite(consensus[bin])) {
       deviations.push({ elapsed: point.elapsed - ride.altitudes[0].elapsed, delta: point.altitude - consensus[bin] });
     }
@@ -177,20 +115,6 @@ function detectAltitudeSettling(ride, profile) {
     settleSeconds: settleS,
     detail: `recorded altitude starts ${Math.abs(delta)} m ${delta < 0 ? 'below' : 'above'} the route consensus level${settleS >= 1200 ? ' and keeps deviating through the first 20 min' : settleS > 0 ? ` and converges after about ${Math.max(1, Math.round(settleS / 60))} min` : ''}; early ascent/descent and the first segment's grade are unreliable`,
   };
-}
-
-// A reversed ride mirrored onto the route's canonical axis for consensus building: distances flip
-// (d' = L - d). Point order and elapsed stay as recorded; only the distance axis is flipped, and
-// the result is re-sorted by distance so binning works.
-function mirrorAltitudeRide(ride) {
-  if (!ride?.altitudes?.length) return null;
-  const first = ride.altitudes[0].distance;
-  const total = ride.distanceKm;
-  const altitudes = ride.altitudes
-    .map((point) => ({ ...point, distance: first + (total - (point.distance - first)) }))
-    .sort((a, b) => a.distance - b.distance);
-  // The ride now starts where it ended: the consensus keeps rides by their start point.
-  return { ...ride, altitudes, start: ride.end ?? null, end: ride.start ?? null };
 }
 
 // Mirrors a canonical-axis elevation consensus onto the reversed direction: bin i becomes
@@ -244,12 +168,9 @@ function computeAltitudeFlags(ride) {
 
 module.exports = {
   ALT,
-  ELEVATION_BIN_M,
   ascentDescent,
   buildAltitudeRide,
   computeAltitudeFlags,
-  computeConsensusProfile,
   detectAltitudeSettling,
-  mirrorAltitudeRide,
   mirrorConsensusProfile,
 };

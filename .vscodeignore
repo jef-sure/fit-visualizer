@@ -25,3 +25,6 @@ node_modules/markdown-it/dist/browser/**
 node_modules/markdown-it/dist/*.mjs
 node_modules/markdown-it/node_modules/argparse/**
 node_modules/markdown-it/node_modules/entities/src/**
+# ... the same when npm lifts them to the top (markdown-it needs argparse only for its command line)
+node_modules/argparse/**
+node_modules/entities/src/**

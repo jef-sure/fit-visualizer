@@ -14,6 +14,13 @@
   "icon": "icon.png",
   "main": "./extension.js",
   "l10n": "./l10n",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "FIT Visualizer keeps a database and AI logs beside the rides it reads and can send ride data to the AI, so it runs only in a trusted workspace."
+    },
+    "virtualWorkspaces": false
+  },
   "contributes": {
     "customEditors": [
       {
@@ -108,7 +115,7 @@
           "type": "number",
           "default": 30,
           "minimum": 0,
-          "description": "Delete Copilot request logs older than this many days. Set to 0 to keep them forever."
+          "description": "Copilot request logs older than this many days lose their prompt, the bulky part, and keep the answer and the numbers; at three times this age they are deleted. Set to 0 to keep them forever."
         },
         "fitVisualizer.routeMaxDeviationPct": {
           "type": "number",
@@ -123,11 +130,38 @@
           "minimum": 0,
           "description": "A ride belongs to a route when it strays from the route by no more than this many kilometres (and no more than fitVisualizer.routeMaxDeviationPct of its length, whichever is smaller). Changing it re-derives the routes of the database once."
         },
+        "fitVisualizer.stopFullRestHrDrop": {
+          "type": "number",
+          "default": 15,
+          "minimum": 1,
+          "maximum": 60,
+          "description": "A stop on a route gives rest by how far the heart rate falls over it: a fall of this many beats per minute is a full rest, a smaller one counts in proportion (a few seconds at a light give none). A stop without heart rate counts as the stops of the same length on that ride do. Checkpoints compare the time in motion and list the rest beside it."
+        },
+        "fitVisualizer.extraRestS": {
+          "type": "number",
+          "default": 60,
+          "minimum": 0,
+          "description": "When a ride rested at stops this many seconds more than usual on its route (seconds weighted by the fall of heart rate), the comparison says so, and the route effort is compared with rides that rested about as much, when there are enough of them."
+        },
+        "fitVisualizer.comparisonNeighbourRides": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Rides of the same purpose taken before and after each of two compared rides of one route, to compare two points on its trend rather than two days. 0 compares the two rides alone."
+        },
+        "fitVisualizer.routeMinSharedPct": {
+          "type": "number",
+          "default": 80,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Two rides of a route are compared on the road both rode the same way: a detour, or another variant of a stretch, is left out. An earlier ride counts towards what is usual for the route as a whole (the time at a checkpoint, the route effort, the pattern of the two halves) when it shares at least this share of this ride's road."
+        },
         "fitVisualizer.llmChatLogRetentionDays": {
           "type": "number",
           "default": 180,
           "minimum": 0,
-          "description": "Delete Copilot chat and comparison logs older than this many days. Conversations are kept longer than one-off analysis logs. Set to 0 to keep them forever."
+          "description": "Copilot chat and comparison logs older than this many days lose their prompt and keep the answer and the numbers; at three times this age they are deleted. Conversations are kept longer than one-off analysis logs. Set to 0 to keep them forever."
         },
         "fitVisualizer.lmVendor": {
           "type": "string",
@@ -233,7 +267,7 @@
           "default": 0,
           "minimum": 0,
           "maximum": 5000,
-          "description": "How far from the route's road a ride may be and still count as riding it, in metres. 0 means 60 m. A ride further away on part of a stretch (a detour, an earlier variant of the route) is not compared on that stretch."
+          "description": "How far from the route's road a ride may be and still count as riding it, in metres. 0 means 30 m, as for recognising the route. A ride further away on part of a stretch (a detour, an earlier variant of the route) is not compared on that stretch."
         },
         "fitVisualizer.routeSections.minRides": {
           "type": "number",
@@ -306,7 +340,7 @@
     }
   },
   "scripts": {
-    "check": "node --check extension.js && node --check activity-summary.js && node --check activity-webview.js && node --check altitude-quality.js && node --check analysis-summary.js && node --check activity-notes.js && node --check rider-plan.js && node --check upgrade-steps.js && node --check analysis.js && node --check chart-data.js && node --check chart-geometry.js && node --check chart-overlays.js && node --check commands.js && node --check database-schema.js && node --check dynamic-localization.js && node --check fit-files.js && node --check file-paths.js && node --check heart-rate.js && node --check llm-log.js && node --check model-pricing.js && node --check route-features.js && node --check route-match.js && node --check route-store.js && node --check route-sections.js && node --check route-playback.js && node --check route-axis.js && node --check sport-profiles.js && node --check training-context.js && node --check trend-metrics.js && node --check activity-features.js && node --check ui-strings.js && node --check utils.js && node --test test/core.test.js",
+    "check": "node --check extension.js && node --check activity-summary.js && node --check activity-webview.js && node --check altitude-quality.js && node --check analysis-summary.js && node --check activity-notes.js && node --check rider-plan.js && node --check upgrade-steps.js && node --check analysis.js && node --check chart-data.js && node --check chart-geometry.js && node --check chart-overlays.js && node --check commands.js && node --check database-schema.js && node --check dynamic-localization.js && node --check fit-files.js && node --check file-paths.js && node --check heart-rate.js && node --check llm-log.js && node --check model-pricing.js && node --check route-features.js && node --check route-match.js && node --check route-store.js && node --check route-sections.js && node --check route-playback.js && node --check route-axis.js && node --check sport-profiles.js && node --check training-context.js && node --check trend-metrics.js && node --check trend-points.js && node --check activity-features.js && node --check ui-strings.js && node --check utils.js && node --check activity-session-checks.js && node --check activity-time.js && node --check chart-model.js && node --check chart-svg.js && node --check data-quality.js && node --check effort-segmentation.js && node --check glossary.js && node --check heart-rate-profiles.js && node --check manual-activity.js && node --check prompt-eval.js && node --check session-class.js && node --test test/core.test.js",
     "lint": "npm run check",
     "package": "vsce package"
   },
@@ -334,12 +368,12 @@
   "homepage": "https://github.com/jef-sure/fit-visualizer#readme",
   "type": "commonjs",
   "dependencies": {
-    "fit-file-parser": "^4.1.0",
+    "fit-file-parser": "^6.2.3",
     "leaflet": "^1.9.4",
     "markdown-it": "^15.0.2"
   },
   "devDependencies": {
     "@types/vscode": "^1.95.0",
-    "@vscode/vsce": "^3.9.2"
+    "@vscode/vsce": "^4.1.0"
   }
 }

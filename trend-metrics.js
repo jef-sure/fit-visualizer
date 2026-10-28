@@ -13,7 +13,7 @@
 //     of the last 5 prior rides of the same route and direction.
 
 const PRIOR_RIDES = 5;
-const { priorRowsNear } = require('./route-store');
+const { EXTRA_REST_S, ROUTE_MIN_SHARED_PCT, isAxisMarks, marksByKm, priorOnSharedRoad, priorRowsNear, riddenUpTo, splitTotals } = require('./route-store');
 const { haversineM } = require('./route-match');
 
 const asFinite = (value) => {
@@ -69,14 +69,15 @@ function routeEfficiency(current, priors) {
 function loadRhythm(acuteTrimp, chronicWeeklyTrimp, monotonyValue, previousWeekRatioLow = false) {
   const acute = asFinite(acuteTrimp);
   const chronic = asFinite(chronicWeeklyTrimp);
+  // Monotony is unknown for a week with fewer than two days of load; only a spike needs it.
   const monotony = asFinite(monotonyValue);
-  if (acute == null || chronic == null || !(chronic > 0) || monotony == null) return null;
+  if (acute == null || chronic == null || !(chronic > 0)) return null;
   const ratio = acute / chronic;
   const verdict = ratio >= 0.8 && ratio <= 1.3 ? 'steady'
     : ratio > 1.5 && monotony > 2 ? 'spike-monotonous'
       : ratio > 1.3 ? 'above-habit'
         : previousWeekRatioLow ? 'below-habit-weeks' : 'below-habit';
-  return { ratio: Math.round(ratio * 100) / 100, monotony: Math.round(monotony * 100) / 100, verdict };
+  return { ratio: Math.round(ratio * 100) / 100, monotony: monotony == null ? null : Math.round(monotony * 100) / 100, verdict };
 }
 
 // Indicator 3. The drop after the final climb, in bpm, against the median of priors with a drop.
@@ -95,23 +96,36 @@ function postClimbRecovery(currentDrop, priorDrops, climbPeakHr = null) {
 // The two route-dependent indicators (efficiency, recovery) as a pair. Shared by the analysis
 // prompt and the lightweight route-card path so both report the same numbers. Each priorSameRoute
 // entry carries `checkpoints` and `segments` for earlier rides of the same route and direction.
-function computeRouteTrends(currentCheckpoints, currentSegments, currentStartTime, priorSameRoute, minPriorRides = PRIOR_RIDES) {
+function computeRouteTrends(currentCheckpoints, currentSegments, currentStartTime, priorSameRoute, minPriorRides = PRIOR_RIDES, { minSharedPct = ROUTE_MIN_SHARED_PCT, extraRestS = EXTRA_REST_S } = {}) {
   const lengthKm = Math.max(0, ...(currentCheckpoints || []).map((cp) => cp.km).filter(Number.isFinite));
   const effort = (cp) => {
     const elapsed = asFinite(cp?.elapsedS);
     const hr = asFinite(cp?.cumulativeAvgHr ?? cp?.avgHr);
     return elapsed > 0 && hr > 0 ? Math.round(elapsed * hr) : null;
   };
-  const matching = (activity, mark) => priorRowsNear([activity], mark, { lengthKm })[0] || null;
+  // Marks on the route's axis are compared over the road this ride shares with each earlier one up
+  // to the mark (a detour or another variant leaves its stretch out); other marks by place.
+  const onAxis = isAxisMarks(currentCheckpoints);
+  let compared = null;
+  const asMark = (totals, km) => (totals ? { km, elapsedS: totals.timeS, cumulativeAvgHr: totals.hr, restS: totals.restS } : null);
+  const matching = (activity, mark) => (onAxis
+    ? asMark(compared ? priorOnSharedRoad(currentCheckpoints, activity?.checkpoints, mark.km, minSharedPct) : null, mark.km)
+    : priorRowsNear([activity], mark, { lengthKm })[0] || null);
   let lastMark = null;
   let efficiency = null;
-  for (const mark of [...(currentCheckpoints || [])].sort((a, b) => b.km - a.km)) {
+  for (const row of [...(currentCheckpoints || [])].sort((a, b) => b.km - a.km)) {
+    compared = onAxis ? riddenUpTo(currentCheckpoints, row.km) : null;
+    if (onAxis && !compared.length) continue;
+    const mark = onAxis ? asMark(splitTotals(marksByKm(currentCheckpoints), compared), row.km) : row;
     if (effort(mark) == null) continue;
-    const matches = priorSameRoute.map((activity) => matching(activity, mark))
+    const all = priorSameRoute.map((activity) => matching(activity, mark))
       .filter((cp) => effort(cp) != null).map((cp) => ({ ...cp, km: mark.km }));
-    if (matches.length < minPriorRides) continue;
+    if (all.length < minPriorRides) continue;
+    // Effort in motion is compared with rides that rested about as much, when there are enough.
+    const similar = onAxis && mark.restS != null ? all.filter((cp) => cp.restS != null && Math.abs(cp.restS - mark.restS) <= extraRestS) : all;
+    const matches = similar.length >= minPriorRides ? similar : all;
     const candidate = routeEfficiency(mark, matches);
-    if (candidate) { lastMark = mark; efficiency = candidate; break; }
+    if (candidate) { lastMark = mark; efficiency = onAxis ? { ...candidate, similarRest: matches === similar } : candidate; break; }
   }
   const markKm = lastMark?.km ?? null;
   const pickPrior = (checkpoints) => lastMark ? matching({ checkpoints }, lastMark) : null;

@@ -18,22 +18,21 @@
 // A ride that leaves the road for part of a stretch (roadworks, an early variant of the route) is
 // not compared on that stretch and does not count towards its usual values; the rest still does.
 
-const { haversineM, hasGpsFix } = require('./route-match');
+const { hasGpsFix } = require('./route-match');
+const { AXIS, axisKey, axisLatLon, buildRouteAxis, layRideOnAxis, medianAxis } = require('./route-axis');
+const { ascentDescent } = require('./altitude-quality');
 
 const SECTION_DEFAULTS = Object.freeze({
   minSharePct: 90,        // a slow-down is a point of the route when this share of rides has it
   minSharePctFloor: 70,   // auto-adjust never goes below this
-  toleranceM: 0,          // how far from the reference road a ride may be; 0 = 60 m
+  toleranceM: 0,          // how far from the route's axis a ride may be; 0 = the axis' own 30 m
   minRides: 5,            // fewer rides agree by coincidence too often
   autoAdjust: true,       // relax the share step by step when no slow-down reaches it
 });
 
 const SKELETON = Object.freeze({
-  version: 5,
+  version: 6,
   binM: 50,               // resolution along the road
-  roadToleranceM: 60,     // GPS noise plus the width of a road with a cycle path beside it
-  backBins: 6,            // a ride may be matched this far behind its last position (GPS jitter)
-  aheadBins: 40,          // ... and this far ahead (a gap, a short cut); never onto another leg
   dipDropPct: 20,         // slow-down: the median speed falls this far below the speed before it
   dipRisePct: 10,         // ... and picks up again by at least this much afterwards
   dipWindowBins: 10,      // "before" and "after" are looked for within 500 m
@@ -41,12 +40,26 @@ const SKELETON = Object.freeze({
   minStretchBins: 6,      // 300 m: shorter than that is the point's own braking and pulling away
   gradeThresholdPct: 2.5,
   gradeSpanBins: 4,       // grade over 200 m
-  keepRoadShare: 0.95,    // recent rides on the stored road: keep it instead of picking a new one
   keepPointSharePct: 15,  // a stored point is kept down to this far below the required share
   stickyBins: 2,          // a boundary within 100 m of the stored one stays where it was
   detourM: 150,           // this much of a stretch on another road and the ride is not compared
   pointWindowBins: 2,     // a point is timed over 250 m around it
   stoppedKmh: 3,
+  // Rest at a stop is what it did for the rider: the heart rate's fall over it. This fall is a full
+  // rest (fitVisualizer.stopFullRestHrDrop); 5 s at a light do not let it fall, 50 s do by 15-20.
+  fullRestHrDropBpm: 15,
+  // ... without heart rate, the fall a stop of that length gives this rider, else full at 50 s.
+  restFullAfterS: 50,
+  // The route's usual values are kept as counts per value, so a ride is added without reading
+  // the earlier ones again: speed to 0.5 km/h, heart rate to 1 bpm, altitude to 0.5 m.
+  speedStepKmh: 0.5,
+  hrStepBpm: 1,
+  altitudeStepM: 0.5,
+  sectionStepKmh: 0.1,
+  sectionKm: 2,           // the route's speed by direction is told in sections of about 2 km
+  minSectionShare: 0.9,   // a ride counts towards a section it rode at least this much of
+  minProfileRides: 5,     // the elevation consensus needs this many rides ...
+  minProfileBinRides: 3,  // ... and this many in each place
 });
 
 // Comparison thresholds: speed by 2%, heart rate by 4 bpm, as the checkpoint verdict used.
@@ -65,72 +78,52 @@ function cleanRecords(records) {
     && record.distance != null && Number.isFinite(Number(record.distance)));
 }
 
-// The road as one ride rode it: a point every `binM` metres along its GPS track. The length is
-// measured on the map, not taken from the device: a wheel sensor that reads a few percent long
-// would otherwise move every kilometre mark of the route.
-function referenceTrack(records, binM = SKELETON.binM) {
-  const tracked = cleanRecords(records).filter((record) => hasGpsFix(record.position_lat, record.position_long));
-  if (tracked.length < 20) return null;
-  const along = [0];
-  for (let index = 1; index < tracked.length; index += 1) {
-    const step = haversineM(Number(tracked[index - 1].position_lat), Number(tracked[index - 1].position_long),
-      Number(tracked[index].position_lat), Number(tracked[index].position_long));
-    // A jump of GPS while standing still is not road.
-    along.push(along[index - 1] + (step < 1 ? 0 : step));
-  }
-  const bins = Math.floor(along[along.length - 1] / binM);
-  if (bins < 10) return null;
-  const points = [];
-  let cursor = 0;
-  for (let bin = 0; bin < bins; bin += 1) {
-    const target = (bin + 0.5) * binM;
-    while (cursor + 1 < tracked.length && along[cursor + 1] < target) cursor += 1;
-    const a = tracked[cursor];
-    const b = tracked[Math.min(cursor + 1, tracked.length - 1)];
-    const span = along[Math.min(cursor + 1, tracked.length - 1)] - along[cursor];
-    const t = span > 0 ? Math.max(0, Math.min(1, (target - along[cursor]) / span)) : 0;
-    points.push({
-      lat: Number(a.position_lat) + (Number(b.position_lat) - Number(a.position_lat)) * t,
-      lon: Number(a.position_long) + (Number(b.position_long) - Number(a.position_long)) * t,
-    });
-  }
-  return points;
+// The bins of an axis: 50 m of its road each, round the loop when it is one.
+function axisBins(axis) {
+  const lengthM = axis?.closed && axis.loopM ? axis.loopM : axis?.lengthM;
+  return Number.isFinite(lengthM) ? Math.floor(lengthM / SKELETON.binM) : 0;
 }
 
-// One ride laid onto the reference road: per bin, the time spent there, how much of it stopped,
-// heart rate, altitude and the lowest speed. A record is matched to the nearest reference point
-// in a window around the ride's last position, so two legs of a loop that share a road are never
-// confused. Time ridden away from the road is kept, attached to the bins it bypasses, and those
-// bins are flagged: the ride's time there is real, but it was not ridden on this road.
-function layRideOnRoad(records, ref, { toleranceM = SKELETON.roadToleranceM, stops = null } = {}) {
+// One ride laid onto the route: its records placed on the axis by ridden distance and GPS
+// (route-axis.js), then per 50 m bin of the axis the time spent there, how much of it stopped,
+// heart rate, altitude and the lowest speed. Time ridden away from the road is kept, attached to
+// the bins it bypasses, and those bins are flagged: the ride's time there is real, but it was not
+// ridden on this road. Time before the ride reaches the road belongs to no bin.
+//
+// variants: the route's accepted variants in this direction (route-axis.js indexVariant). A bin
+// ridden on a variant instead of the axis' own road carries its id in `via`, and `metres` holds the
+// road the ride actually rode for that bin's 50 m of the axis.
+function layRideOnBins(records, axis, { stops = null, offRoadM = 0, variants = [] } = {}) {
   const list = cleanRecords(records);
-  const bins = ref?.length || 0;
+  const bins = axisBins(axis);
   if (list.length < 10 || bins < 10) return null;
+  const binM = SKELETON.binM;
+  const loop = Boolean(axis.closed && axis.loopM);
+  const placed = layRideOnAxis(list, axis, { offRoadM, variants });
+  const scaleOf = new Map((variants || []).map((variant) => [variant.id, variant.lengthM / Math.max(binM, Math.abs(variant.toS - variant.fromS))]));
   const make = () => new Float64Array(bins);
-  const lay = { time: make(), stopped: make(), hrSum: make(), hrTime: make(), altSum: make(), altCount: make(), speedSum: make(), speedCount: make(),
-    minKmh: new Float64Array(bins).fill(Number.POSITIVE_INFINITY), off: new Uint8Array(bins), reachedS: new Float64Array(bins).fill(NaN), matched: 0 };
-  const tolerance = toleranceM > 0 ? toleranceM : SKELETON.roadToleranceM;
-  const nearest = (record, from, to) => {
-    let best = null;
-    for (let bin = Math.max(0, from); bin <= Math.min(bins - 1, to); bin += 1) {
-      const distance = haversineM(Number(record.position_lat), Number(record.position_long), ref[bin].lat, ref[bin].lon);
-      if (!best || distance < best.distance) best = { bin, distance };
-    }
-    return best && best.distance <= tolerance ? best.bin : null;
-  };
+  const lay = { bins, binM, loop, time: make(), stopped: make(), hrSum: make(), hrTime: make(), altSum: make(), altCount: make(), speedSum: make(), speedCount: make(),
+    minKmh: new Float64Array(bins).fill(Number.POSITIVE_INFINITY), off: new Uint8Array(bins), reachedS: new Float64Array(bins).fill(NaN), matched: 0,
+    via: new Int32Array(bins).fill(-1), metres: new Float64Array(bins).fill(binM),
+    axisKm: null, startS: Number(list[0].elapsed_time), offM: placed.offM, missedM: placed.missedM };
+  // The place on the axis of every record given, in the order given (records the laying could not
+  // use - no time, no distance - have none).
+  const kept = new Set(list);
+  let next = 0;
+  lay.axisKm = (Array.isArray(records) ? records : []).map((record) => (kept.has(record) ? placed.axisKm[next++] : null));
 
   // With the ride's own stop segments at hand they decide what counts as stopped, so the page
-  // and the route table agree; without them (building the skeleton) the speed does.
+  // and the route table agree; without them (the route's usual values) the speed does.
   const stopList = Array.isArray(stops)
     ? stops.filter((stop) => Number.isFinite(stop?.startElapsed) && Number.isFinite(stop?.endElapsed)) : null;
   const inStop = (time) => stopList.some((stop) => time > stop.startElapsed && time <= stop.endElapsed);
   let cursor = null;
   let previousTime = null;
   let previousKm = null;
-  let pending = 0;        // seconds since the last matched record that had no match
+  let pending = 0;        // seconds since the last placed record that had no place
   let pendingStopped = 0;
   let pendingOff = false; // some of that time was ridden with GPS, away from the road
-  for (const record of list) {
+  list.forEach((record, index) => {
     const time = Number(record.elapsed_time);
     const dt = previousTime == null ? 0 : time - previousTime;
     previousTime = time;
@@ -141,29 +134,32 @@ function layRideOnRoad(records, ref, { toleranceM = SKELETON.roadToleranceM, sto
     const step = dt > 0 && (dt <= 30 || pausedHere) ? dt : 0;
     const kmh = record.speed == null ? null : Number(record.speed);
     const isStopped = pausedHere || (stopList ? inStop(time) : (kmh != null && kmh < SKELETON.stoppedKmh));
-    const hasFix = hasGpsFix(record.position_lat, record.position_long);
-    // The start may lie anywhere on a loop; after that the ride only moves along the road.
-    const bin = !hasFix ? null : cursor == null
-      ? (nearest(record, 0, Math.floor(bins * 0.15)) ?? nearest(record, 0, bins - 1))
-      : nearest(record, cursor - SKELETON.backBins, cursor + SKELETON.aheadBins);
-    if (bin == null) {
+    const km = placed.axisKm[index];
+    if (km == null) {
       if (cursor != null) {
         pending += step;
         if (isStopped) pendingStopped += step;
-        if (hasFix) pendingOff = true;
+        if (hasGpsFix(record.position_lat, record.position_long)) pendingOff = true;
       }
-      continue;
+      return;
     }
+    const raw = Math.floor((km * 1000) / binM);
+    const bin = loop ? ((raw % bins) + bins) % bins : Math.max(0, Math.min(bins - 1, raw));
     lay.matched += 1;
-    const span = cursor == null || bin <= cursor ? [bin] : Array.from({ length: bin - cursor }, (_, index) => cursor + 1 + index);
-    // Time since the last match belongs to the bins passed since then, in equal parts.
+    // Forward along the road (round the loop) the bins passed since the last placed record share
+    // the time since then; a step back (GPS at a stop) stays in its own bin.
+    const ahead = cursor == null ? 0 : loop ? (((bin - cursor) % bins) + bins) % bins : bin - cursor;
+    const forward = ahead > 0 && (!loop || ahead < bins / 2);
+    const span = forward ? Array.from({ length: ahead }, (_, offset) => (cursor + 1 + offset) % bins) : [bin];
     const share = (pending + step) / span.length;
     const stoppedShare = (pendingStopped + (isStopped ? step : 0)) / span.length;
-    for (const index of span) {
-      lay.time[index] += share;
-      lay.stopped[index] += stoppedShare;
-      if (pendingOff) lay.off[index] = 1;
-      if (Number.isNaN(lay.reachedS[index])) lay.reachedS[index] = time;
+    const variant = placed.via?.[index] ?? null;
+    for (const at of span) {
+      lay.time[at] += share;
+      lay.stopped[at] += stoppedShare;
+      if (pendingOff) lay.off[at] = 1;
+      if (Number.isNaN(lay.reachedS[at])) lay.reachedS[at] = time;
+      if (variant != null) { lay.via[at] = variant; lay.metres[at] = binM * (scaleOf.get(variant) || 1); }
     }
     const hr = record.heart_rate == null ? NaN : Number(record.heart_rate);
     // The first sample after an auto-pause is not the heart rate of the whole pause.
@@ -172,11 +168,11 @@ function layRideOnRoad(records, ref, { toleranceM = SKELETON.roadToleranceM, sto
     if (Number.isFinite(altitude)) { lay.altSum[bin] += altitude; lay.altCount[bin] += 1; }
     if (kmh != null && Number.isFinite(kmh) && kmh < lay.minKmh[bin]) lay.minKmh[bin] = kmh;
     if (kmh != null && Number.isFinite(kmh) && !isStopped) { lay.speedSum[bin] += kmh; lay.speedCount[bin] += 1; }
-    cursor = Math.max(cursor ?? bin, bin);
+    if (cursor == null || forward) cursor = bin;
     pending = 0;
     pendingStopped = 0;
     pendingOff = false;
-  }
+  });
   return lay.matched >= 10 ? lay : null;
 }
 
@@ -193,78 +189,187 @@ function smooth(values, radius) {
   return values.map((_, index) => median(values.slice(Math.max(0, index - radius), index + radius + 1)));
 }
 
-// The skeleton of a route from its rides (oldest first; the last ones define the current road).
-// rides: [{ records }] with elapsed_time, distance, speed (km/h), heart_rate, altitude (m),
-// position_lat, position_long. Returns null when there are too few rides.
-function buildRouteSkeleton(rides, options = {}, previous = null) {
-  const settings = { ...SECTION_DEFAULTS, ...Object.fromEntries(Object.entries(options).filter(([, value]) => value != null)) };
-  const usable = (rides || []).filter((ride) => cleanRecords(ride?.records).length >= 20);
-  if (usable.length < Math.max(2, settings.minRides)) return null;
-  const toleranceM = settings.toleranceM > 0 ? settings.toleranceM : SKELETON.roadToleranceM;
-  const binM = SKELETON.binM;
+// Counts per value, as the route keeps them: { value-step index: rides }.
+function addCount(hist, value, step) {
+  const key = Math.round(value / step);
+  hist[key] = (hist[key] || 0) + 1;
+}
 
-  // The reference is a recent ride, not the first: a route is found over several tries and the
-  // first one is the least typical. Among the last five, the one the others follow most closely.
-  const recent = usable.slice(-5);
-  const followed = (track) => recent.reduce((sum, ride) => {
-    const lay = layRideOnRoad(ride.records, track, { toleranceM });
-    return sum + (lay ? lay.time.filter((seconds, bin) => seconds > 0 && !lay.off[bin]).length / track.length : 0);
-  }, 0) / recent.length;
-  // The road is kept while recent rides still follow it: every ride's segments are cut at the
-  // skeleton's boundaries, and a new reference each time a ride is added would move them all.
-  // ... but not when the route itself has moved: if most recent rides leave the stored road
-  // somewhere for 150 m or more, they are the route now and the stored road is the old variant.
-  const strayed = (track) => recent.filter((ride) => {
-    const lay = layRideOnRoad(ride.records, track, { toleranceM });
-    if (!lay) return true;
-    let run = 0;
-    for (let bin = 0; bin < track.length; bin += 1) {
-      run = lay.off[bin] ? run + 1 : 0;
-      if (run * binM >= SKELETON.detourM) return true;
+function histMedian(hist, step, minCount = 1) {
+  const keys = Object.keys(hist || {}).map(Number).sort((a, b) => a - b);
+  const total = keys.reduce((sum, key) => sum + hist[key], 0);
+  if (!total || total < minCount) return null;
+  // The middle value, or the mean of the two middle ones.
+  const at = (rank) => {
+    let seen = 0;
+    for (const key of keys) {
+      seen += hist[key];
+      if (seen > rank) return key * step;
     }
-    return false;
-  }).length;
-  const kept = previous?.version === SKELETON.version && previous.binM === binM && Array.isArray(previous.ref)
-    && previous.ref.length >= 10 && followed(previous.ref) >= SKELETON.keepRoadShare
-    && strayed(previous.ref) * 2 < recent.length;
-  let ref = kept ? previous.ref : null;
-  let bestScore = -1;
-  for (const candidate of kept ? [] : recent) {
-    const track = referenceTrack(candidate.records, binM);
-    if (!track) continue;
-    const score = recent.reduce((sum, other) => {
-      if (other === candidate) return sum;
-      const lay = layRideOnRoad(other.records, track, { toleranceM });
-      return sum + (lay ? lay.time.filter((seconds, bin) => seconds > 0 && !lay.off[bin]).length / track.length : 0);
-    }, 0);
-    if (score > bestScore) { bestScore = score; ref = track; }
+    return keys[keys.length - 1] * step;
+  };
+  return total % 2 ? at((total - 1) / 2) : (at(total / 2 - 1) + at(total / 2)) / 2;
+}
+
+const histTotal = (hist) => Object.values(hist || {}).reduce((sum, count) => sum + count, 0);
+
+// The sections of about 2 km the route's speed by direction is told in, as bins of the axis.
+function sectionBins(bins) {
+  const lengthKm = (bins * SKELETON.binM) / 1000;
+  const count = Math.max(4, Math.round(lengthKm / SKELETON.sectionKm));
+  return Array.from({ length: count }, (_, index) => [Math.floor((index * bins) / count), Math.floor(((index + 1) * bins) / count)]);
+}
+
+// What one ride adds to its route: per bin whether it rode there on the road, its speed and heart
+// rate there, whether it slowed down there, its altitude; per section its moving speed.
+function layContribution(lay) {
+  const { bins, binM } = lay;
+  const onRoad = (bin) => lay.time[bin] > 0 && !lay.off[bin];
+  const speed = Array.from({ length: bins }, (_, bin) => (onRoad(bin) ? binSpeedKmh(lay, bin, binM) : null));
+  const window = SKELETON.dipWindowBins;
+  // This ride slowed down here: its slowest speed within 100 m is a good deal below its fastest
+  // in the 500 m before.
+  const dip = Array.from({ length: bins }, (_, bin) => {
+    if (!onRoad(bin)) return false;
+    const from = Math.max(0, bin - window);
+    const here = Math.min(...Array.from({ length: 5 }, (_, offset) => binSpeedKmh(lay, Math.max(0, Math.min(bins - 1, bin - 2 + offset)), binM) ?? Infinity));
+    const earlier = Math.max(...Array.from({ length: bin - from }, (_, offset) => binSpeedKmh(lay, from + offset, binM) ?? 0), 0);
+    return earlier > 0 && here <= earlier * (1 - SKELETON.rideDipPct / 100);
+  });
+  const hr = Array.from({ length: bins }, (_, bin) => (onRoad(bin) && lay.hrTime[bin] > 0 ? lay.hrSum[bin] / lay.hrTime[bin] : null));
+  const altitude = Array.from({ length: bins }, (_, bin) => (onRoad(bin) && lay.altCount[bin] > 0 ? lay.altSum[bin] / lay.altCount[bin] : null));
+  const sections = sectionBins(bins).map(([from, to]) => {
+    let ridden = 0;
+    let metres = 0;
+    let moving = 0;
+    for (let bin = from; bin < to; bin += 1) {
+      if (!onRoad(bin)) continue;
+      ridden += 1;
+      metres += lay.metres ? lay.metres[bin] : binM;
+      moving += lay.time[bin] - lay.stopped[bin];
+    }
+    return ridden >= (to - from) * SKELETON.minSectionShare && moving >= 30 ? metres / 1000 / (moving / 3600) : null;
+  });
+  const via = Array.from({ length: bins }, (_, bin) => (lay.via && lay.via[bin] >= 0 ? lay.via[bin] : null));
+  return { speed, dip, hr, altitude, sections, via, present: Array.from({ length: bins }, (_, bin) => onRoad(bin)) };
+}
+
+// spans: the route's variants in this direction as bins of the axis they stand for. A variant's
+// rides are kept apart on its span (via), and `option` says which way the latest ride through the
+// span took: the variant, or the axis' own road.
+function emptyDirection(bins, spans = []) {
+  return { rides: 0, speed: Array.from({ length: bins }, () => ({})), hr: Array.from({ length: bins }, () => ({})),
+    present: new Array(bins).fill(0), dips: new Array(bins).fill(0), sections: sectionBins(bins).map(() => ({})),
+    spans, via: Object.fromEntries(spans.map((span) => [span.id, { speed: {}, hr: {}, present: {} }])), option: {} };
+}
+
+function variantSpans(variants, binM, bins) {
+  return (variants || []).map((variant) => ({ id: variant.id,
+    fromBin: Math.max(0, Math.floor(Math.min(variant.fromS, variant.toS) / binM)), toBin: Math.min(bins, Math.ceil(Math.max(variant.fromS, variant.toS) / binM)) }));
+}
+
+// Everything a route keeps about its rides, per bin of its axis: added to ride by ride, never read
+// back from the records. The elevation is one for both directions, on the axis' own direction, and
+// is the axis' own road's. variants: { same, reversed, key } of the route's accepted variants.
+function createRouteAccumulator(axis, { offRoadM = 0, variants = null } = {}) {
+  const bins = axisBins(axis);
+  if (bins < 10) return null;
+  const binM = SKELETON.binM;
+  return { version: SKELETON.version, axisKey: axisKey(axis), offRoadM: offRoadM > 0 ? offRoadM : 0, variantsKey: variants?.key || '', binM, bins,
+    members: {}, altitude: { rides: 0, hist: Array.from({ length: bins }, () => ({})) },
+    same: emptyDirection(bins, variantSpans(variants?.same, binM, bins)), reversed: emptyDirection(bins, variantSpans(variants?.reversed, binM, bins)) };
+}
+
+// The elevation consensus so far, per bin of the axis.
+function accumulatedAltitude(acc, minCount = 1) {
+  return acc.altitude.hist.map((hist) => histMedian(hist, SKELETON.altitudeStepM, minCount));
+}
+
+// Adds one ride, laid on the axis in its own direction (relation 'same' or 'reversed').
+function addRideToAccumulator(acc, { activityId, relation, lay }) {
+  const direction = acc?.[relation];
+  if (!direction || !lay || lay.bins !== acc.bins) return false;
+  const ride = layContribution(lay);
+  const { bins } = acc;
+  for (let bin = 0; bin < bins; bin += 1) {
+    if (!ride.present[bin]) continue;
+    const variant = ride.via[bin] == null ? null : direction.via[ride.via[bin]];
+    if (variant) {
+      // Ridden on a variant: its own values, apart from the axis' road.
+      variant.present[bin] = (variant.present[bin] || 0) + 1;
+      if (ride.speed[bin] != null) addCount(variant.speed[bin] ??= {}, ride.speed[bin], SKELETON.speedStepKmh);
+      if (ride.hr[bin] != null) addCount(variant.hr[bin] ??= {}, ride.hr[bin], SKELETON.hrStepBpm);
+      ride.altitude[bin] = null;
+      continue;
+    }
+    direction.present[bin] += 1;
+    if (ride.dip[bin]) direction.dips[bin] += 1;
+    if (ride.speed[bin] != null) addCount(direction.speed[bin], ride.speed[bin], SKELETON.speedStepKmh);
+    if (ride.hr[bin] != null) addCount(direction.hr[bin], ride.hr[bin], SKELETON.hrStepBpm);
   }
-  if (!ref) return null;
-  const bins = ref.length;
-  const lays = usable.map((ride) => layRideOnRoad(ride.records, ref, { toleranceM })).filter(Boolean);
-  if (lays.length < Math.max(2, settings.minRides)) return null;
+  // Which way this ride took through each variant's span: the latest decides what the route card
+  // shows there.
+  for (const span of direction.spans || []) {
+    let onVariant = 0;
+    let onRoad = 0;
+    for (let bin = span.fromBin; bin < span.toBin; bin += 1) {
+      if (ride.via[bin] === span.id) onVariant += 1;
+      else if (ride.present[bin] && ride.via[bin] == null) onRoad += 1;
+    }
+    if (onVariant) direction.option[span.id] = 'variant';
+    else if (onRoad >= (span.toBin - span.fromBin) / 2) direction.option[span.id] = 'road';
+  }
+  ride.sections.forEach((kmh, index) => { if (kmh != null) addCount(direction.sections[index], kmh, SKELETON.sectionStepKmh); });
+  direction.rides += 1;
+  // Every barometer has its own offset: the ride's is the median difference from the consensus
+  // so far (the first ride sets the level), and the ride goes in without it.
+  const canonical = (bin) => (relation === 'reversed' ? bins - 1 - bin : bin);
+  const consensus = accumulatedAltitude(acc);
+  const diffs = [];
+  for (let bin = 0; bin < bins; bin += 1) {
+    const own = ride.altitude[bin];
+    const usual = consensus[canonical(bin)];
+    if (own != null && usual != null) diffs.push(own - usual);
+  }
+  const offset = acc.altitude.rides && diffs.length ? median(diffs) : 0;
+  let anyAltitude = false;
+  for (let bin = 0; bin < bins; bin += 1) {
+    if (ride.altitude[bin] == null) continue;
+    addCount(acc.altitude.hist[canonical(bin)], ride.altitude[bin] - offset, SKELETON.altitudeStepM);
+    anyAltitude = true;
+  }
+  if (anyAltitude) acc.altitude.rides += 1;
+  if (activityId != null) acc.members[activityId] = relation;
+  return true;
+}
+
+// The skeleton of a route in one direction from what its rides have added. previous: the stored
+// skeleton, whose points and boundaries stay unless clearly gone. Null when there are too few rides.
+function skeletonFromAccumulator(acc, relation, options = {}, previous = null) {
+  const settings = { ...SECTION_DEFAULTS, ...Object.fromEntries(Object.entries(options).filter(([, value]) => value != null)) };
+  const direction = acc?.[relation];
+  if (!direction || direction.rides < Math.max(2, settings.minRides)) return null;
+  const { bins, binM } = acc;
+  const kept = previous?.version === SKELETON.version && previous.axisKey === acc.axisKey && previous.bins === bins;
 
   // Median speed along the road over the rides that were on it there.
-  const onRoad = (lay, bin) => lay.time[bin] > 0 && !lay.off[bin];
-  const speed = smooth(Array.from({ length: bins }, (_, bin) =>
-    median(lays.filter((lay) => onRoad(lay, bin)).map((lay) => binSpeedKmh(lay, bin, binM)))), 1);
-
-  // Altitude: every ride's barometer has its own offset, removed against the running consensus.
-  const altitudeOf = (lay, bin) => (lay.altCount[bin] > 0 ? lay.altSum[bin] / lay.altCount[bin] : null);
-  const offsets = lays.map(() => 0);
-  let altitude = new Array(bins).fill(null);
-  for (let pass = 0; pass < 3; pass += 1) {
-    altitude = Array.from({ length: bins }, (_, bin) =>
-      median(lays.map((lay, index) => { const value = altitudeOf(lay, bin); return value == null || !onRoad(lay, bin) ? null : value - offsets[index]; })));
-    lays.forEach((lay, index) => {
-      const delta = median(Array.from({ length: bins }, (_, bin) => {
-        const value = altitudeOf(lay, bin);
-        return value == null || altitude[bin] == null ? null : value - altitude[bin];
-      }));
-      if (delta != null) offsets[index] = delta;
-    });
+  const speed = smooth(direction.speed.map((hist) => histMedian(hist, SKELETON.speedStepKmh)), 1);
+  const hrAt = direction.hr.map((hist) => histMedian(hist, SKELETON.hrStepBpm));
+  // Where the latest rides take a variant, the route as it is ridden now is the variant: its rides'
+  // speed and heart rate stand for the usual there, and the axis' slow-downs there are not the route's.
+  const usualSpeed = [...speed];
+  const usualHr = [...hrAt];
+  const inUse = (direction.spans || []).filter((span) => direction.option?.[span.id] === 'variant' && direction.via?.[span.id]);
+  for (const span of inUse) {
+    const variant = direction.via[span.id];
+    for (let bin = span.fromBin; bin < span.toBin; bin += 1) {
+      usualSpeed[bin] = histMedian(variant.speed[bin], SKELETON.speedStepKmh);
+      usualHr[bin] = histMedian(variant.hr[bin], SKELETON.hrStepBpm);
+    }
   }
-  altitude = smooth(altitude, 2);
+  const replaced = (bin) => inUse.some((span) => bin >= span.fromBin && bin < span.toBin);
+  const canonicalAltitude = accumulatedAltitude(acc);
+  const altitude = smooth(relation === 'reversed' ? [...canonicalAltitude].reverse() : canonicalAltitude, 2);
 
   // Terrain: where the road turns from flat to climb or descent and holds it for 300 m.
   const span = SKELETON.gradeSpanBins;
@@ -291,14 +396,8 @@ function buildRouteSkeleton(rides, options = {}, previous = null) {
     const after = Math.max(...speed.slice(bin + 1, to + 1).filter((value) => value != null), 0);
     if (!(before > 0) || (100 * (before - speed[bin])) / before < SKELETON.dipDropPct * ease) return null;
     if ((100 * (after - speed[bin])) / speed[bin] < SKELETON.dipRisePct * ease) return null;
-    const present = lays.filter((lay) => onRoad(lay, bin));
-    if (!present.length) return null;
-    const having = present.filter((lay) => {
-      const here = Math.min(...Array.from({ length: 5 }, (_, offset) => binSpeedKmh(lay, Math.max(0, Math.min(bins - 1, bin - 2 + offset)), binM) ?? Infinity));
-      const earlier = Math.max(...Array.from({ length: bin - from }, (_, offset) => binSpeedKmh(lay, from + offset, binM) ?? 0), 0);
-      return earlier > 0 && here <= earlier * (1 - SKELETON.rideDipPct / 100);
-    });
-    return { sharePct: (100 * having.length) / present.length, typicalMinKmh: speed[bin] };
+    if (!direction.present[bin]) return null;
+    return { sharePct: (100 * direction.dips[bin]) / direction.present[bin], typicalMinKmh: speed[bin] };
   };
   const candidates = [];
   for (const stored of storedPoints) {
@@ -321,6 +420,7 @@ function buildRouteSkeleton(rides, options = {}, previous = null) {
     const dip = dipAt(bin, 1);
     if (dip) candidates.push({ bin, stored: false, ...dip });
   }
+  for (let index = candidates.length - 1; index >= 0; index -= 1) if (replaced(candidates[index].bin)) candidates.splice(index, 1);
   candidates.sort((x, y) => x.bin - y.bin);
   const shares = [settings.minSharePct];
   if (settings.autoAdjust) for (let share = settings.minSharePct - 10; share >= settings.minSharePctFloor; share -= 10) shares.push(share);
@@ -393,44 +493,87 @@ function buildRouteSkeleton(rides, options = {}, previous = null) {
     const nearThreshold = Math.abs(Math.abs(gradePct) - SKELETON.gradeThresholdPct) <= 0.5;
     const type = stored && nearThreshold ? stored.type
       : gradePct >= SKELETON.gradeThresholdPct ? 'climb' : gradePct <= -SKELETON.gradeThresholdPct ? 'descent' : 'flat';
+    // What the route's rides do on the stretch: the usual time through each bin added up, and the
+    // usual heart rate over that time. The yardstick for telling an unusual ride from an ordinary
+    // one without asking which rides came before it.
+    let usualS = 0;
+    let usualKm = 0;
+    let hrSum = 0;
+    let hrS = 0;
+    for (let bin = fromBin; bin < toBin; bin += 1) {
+      if (!(usualSpeed[bin] > 0)) continue;
+      const seconds = (binM / 1000 / usualSpeed[bin]) * 3600;
+      usualS += seconds;
+      usualKm += binM / 1000;
+      if (usualHr[bin] != null) { hrSum += usualHr[bin] * seconds; hrS += seconds; }
+    }
     stretches.push({
       fromBin, toBin, fromKm: (fromBin * binM) / 1000, toKm: (toBin * binM) / 1000,
       type,
       gradePct: Math.round(gradePct * 10) / 10, gainM: Math.round(gainM), lossM: Math.round(lossM),
       typicalKmh: typical == null ? null : Math.round(typical * 10) / 10,
       endsAtPoint: points.some((point) => point.bin === toBin),
+      routeKmh: usualS > 0 && usualKm >= ((toBin - fromBin) * binM) / 2000 ? Math.round((usualKm / (usualS / 3600)) * 10) / 10 : null,
+      routeHr: hrS > 0 && hrS >= usualS * 0.5 ? Math.round(hrSum / hrS) : null,
     });
   }
-  // What the route's rides do on each stretch, taken over all of them: the yardstick for telling
-  // an unusual ride from an ordinary one without asking which rides came before it.
-  const draft = { binM, stretches, points: [] };
-  const all = lays.map((lay) => measureLay(lay, draft, 0).stretches);
-  stretches.forEach((stretch, index) => {
-    const rows = all.map((ride) => ride[index]).filter((row) => row && !row.absent && !row.detour);
-    const speed = median(rows.map((row) => row.speedKmh));
-    const hr = median(rows.map((row) => row.avgHr));
-    stretch.routeKmh = speed == null ? null : Math.round(speed * 10) / 10;
-    stretch.routeHr = hr == null ? null : Math.round(hr);
-  });
   return {
-    version: SKELETON.version, binM, toleranceM, sharePct, rides: lays.length,
+    version: SKELETON.version, binM, bins, axisKey: acc.axisKey, toleranceM: acc.offRoadM > 0 ? acc.offRoadM : AXIS.offRoadM, sharePct, rides: direction.rides,
     // What a ride's segments depend on: the road, where it is cut, and the terrain of each piece.
-    frameKey: `${SKELETON.version}|${bins}|${ref[0].lat.toFixed(3)},${ref[0].lon.toFixed(3)}|${stretches.map((stretch) => `${stretch.fromBin}${stretch.type[0]}`).join(',')}`,
+    frameKey: `${SKELETON.version}|${bins}|${acc.axisKey}|${stretches.map((stretch) => `${stretch.fromBin}${stretch.type[0]}`).join(',')}`,
     lengthKm: (bins * binM) / 1000,
-    ref: ref.map((point) => ({ lat: Math.round(point.lat * 1e6) / 1e6, lon: Math.round(point.lon * 1e6) / 1e6 })),
     points: points.map((point) => ({ bin: point.bin, km: (point.bin * binM) / 1000, typicalMinKmh: Math.round(point.typicalMinKmh * 10) / 10, sharePct: Math.round(point.sharePct) })),
     stretches,
   };
 }
 
-// One ride on the skeleton. Returns { stretches, points } or null when the ride cannot be laid
-// on the road at all. A stretch ridden partly elsewhere carries `detour: true`; one the ride did
-// not reach carries `absent: true`.
-function measureRideOnSkeleton(records, skeleton, { stops = null } = {}) {
-  if (!skeleton?.ref?.length) return null;
-  const lay = layRideOnRoad(records, skeleton.ref, { toleranceM: skeleton.toleranceM, stops });
-  if (!lay) return null;
-  const measured = measureLay(lay, skeleton, Number(cleanRecords(records)[0].elapsed_time));
+// The elevation consensus of a route from its accumulator, on the axis' own direction: per bin the
+// median of the offset-aligned rides that rode there, with ascent and descent.
+function profileFromAccumulator(acc) {
+  if (!acc || acc.altitude.rides < SKELETON.minProfileRides) return null;
+  const consensus = accumulatedAltitude(acc, SKELETON.minProfileBinRides);
+  if (consensus.filter((value) => value != null).length < acc.bins * 0.5) return null;
+  const { ascentM, descentM } = ascentDescent(consensus.map((value) => value ?? NaN));
+  return {
+    binM: acc.binM, lengthKm: (acc.bins * acc.binM) / 1000, rides: acc.altitude.rides,
+    consensus: consensus.map((value) => (value == null ? null : Math.round(value * 10) / 10)),
+    ascentM: Math.round(ascentM), descentM: Math.round(descentM),
+  };
+}
+
+// The route's usual moving speed per section in each direction, sections in that direction's
+// own order: [{ kmh, rides }].
+function sectionStatsFromAccumulator(acc) {
+  if (!acc) return null;
+  const of = (direction) => direction.sections.map((hist) => ({ kmh: histMedian(hist, SKELETON.sectionStepKmh), rides: histTotal(hist) }));
+  return { same: of(acc.same), reversed: of(acc.reversed) };
+}
+
+// The skeleton of a route from its rides (oldest first), all ridden in the axis' direction: the
+// whole accumulation at once, for a route not stored anywhere. Without an axis the middle line of
+// the first three rides is taken, as a habitual route has.
+function buildRouteSkeleton(rides, options = {}, previous = null, axis = null) {
+  const settings = { ...SECTION_DEFAULTS, ...Object.fromEntries(Object.entries(options).filter(([, value]) => value != null)) };
+  const usable = (rides || []).filter((ride) => cleanRecords(ride?.records).length >= 20);
+  if (usable.length < Math.max(2, settings.minRides)) return null;
+  const road = axis || medianAxis(usable.slice(0, 3).map((ride) => cleanRecords(ride.records))) || buildRouteAxis(cleanRecords(usable[0].records));
+  const acc = road ? createRouteAccumulator(road, { offRoadM: settings.toleranceM }) : null;
+  if (!acc) return null;
+  for (const ride of usable) addRideToAccumulator(acc, { relation: 'same', lay: layRideOnBins(ride.records, road, { offRoadM: settings.toleranceM }) });
+  const skeleton = skeletonFromAccumulator(acc, 'same', options, previous);
+  // Kept beside the skeleton, not stored with it: measuring a ride needs the road it is laid on.
+  if (skeleton) Object.defineProperty(skeleton, 'axis', { value: road, enumerable: false });
+  return skeleton;
+}
+
+// One ride on the skeleton, laid on the route's axis in the skeleton's direction. Returns
+// { stretches, points } or null when the ride cannot be laid on the road at all. A stretch ridden
+// partly elsewhere carries `detour: true`; one the ride did not reach carries `absent: true`.
+function measureRideOnSkeleton(records, skeleton, { stops = null, axis = skeleton?.axis, lay = null } = {}) {
+  if (!skeleton?.stretches?.length) return null;
+  const laid = lay || (axis ? layRideOnBins(records, axis, { stops, offRoadM: skeleton.toleranceM }) : null);
+  if (!laid || laid.bins !== skeleton.bins) return null;
+  const measured = measureLay(laid, skeleton, Number(cleanRecords(records)[0].elapsed_time));
   return { ...measured, character: rideCharacter(measured, skeleton) };
 }
 
@@ -444,20 +587,25 @@ function measureLay(lay, skeleton, startS) {
     let hrTime = 0;
     let offBins = 0;
     let covered = 0;
+    let metres = 0;
+    const via = new Set();
     for (let bin = stretch.fromBin; bin < stretch.toBin; bin += 1) {
       time += lay.time[bin];
       stopped += lay.stopped[bin];
       hrSum += lay.hrSum[bin];
       hrTime += lay.hrTime[bin];
+      metres += lay.metres ? lay.metres[bin] : binM;
       if (lay.off[bin]) offBins += 1;
       if (lay.time[bin] > 0) covered += 1;
+      if (lay.via && lay.via[bin] >= 0) via.add(lay.via[bin]);
     }
     const bins = stretch.toBin - stretch.fromBin;
     // Not ridden (the ride started later or ended earlier) is absent, not a detour.
     if (covered < bins * 0.9) { offRouteBefore = true; return { index, absent: true }; }
     const detour = offBins * binM >= SKELETON.detourM;
     const movingS = Math.max(1, time - stopped);
-    const lengthKm = (bins * binM) / 1000;
+    // On a variant the ride rode its road, not the axis' 50 m per bin.
+    const lengthKm = metres / 1000;
     let reachedS = null;
     for (let bin = stretch.toBin - 1; bin >= stretch.fromBin && reachedS == null; bin -= 1) {
       if (!Number.isNaN(lay.reachedS[bin])) reachedS = lay.reachedS[bin] - startS;
@@ -467,7 +615,7 @@ function measureLay(lay, skeleton, startS) {
       if (!Number.isNaN(lay.reachedS[bin])) enteredS = lay.reachedS[bin];
     }
     const row = {
-      index, detour, lengthKm, movingS, stoppedS: stopped,
+      index, detour, lengthKm, movingS, stoppedS: stopped, via: [...via].sort((a, b) => a - b).join(','),
       // Elapsed times of the ride's own clock, to find its segments that fall inside the stretch.
       startElapsed: enteredS, endElapsed: reachedS == null ? null : reachedS + startS,
       speedKmh: lengthKm / (movingS / 3600),
@@ -489,20 +637,142 @@ function measureLay(lay, skeleton, startS) {
       time += lay.time[bin];
       stopped += lay.stopped[bin];
       if (lay.minKmh[bin] < minKmh) minKmh = lay.minKmh[bin];
-      if (lay.off[bin] || !(lay.time[bin] > 0)) off = true;
+      // A point is the axis' own road's: a ride through it on a variant did not pass it.
+      if (lay.off[bin] || !(lay.time[bin] > 0) || (lay.via && lay.via[bin] >= 0)) off = true;
     }
     return off ? { index, absent: true } : { index, passS: time, stoppedS: stopped, minKmh: Number.isFinite(minKmh) ? minKmh : null };
   });
   return { stretches, points };
 }
 
+// The stops of a ride, each with what it gave as rest: records below walking speed in a row, or a
+// gap of the recording with no ground covered (an auto-pause). drop: how far the heart rate fell,
+// from the last moving record before the stop to the lowest within it and the 10 s after; weight:
+// that fall against a full rest (fullRestHrDrop), 0 to 1. A stop without heart rate weighs what a
+// stop of its length does on this ride's stops that have it, or grows to full over 50 s.
+function stopRests(records, { fullRestHrDrop = SKELETON.fullRestHrDropBpm } = {}) {
+  const list = Array.isArray(records) ? records : [];
+  const time = (index) => Number(list[index]?.elapsed_time);
+  const hr = (index) => (list[index]?.heart_rate == null ? NaN : Number(list[index].heart_rate));
+  const stops = [];
+  let start = null;
+  const close = (endIndex) => {
+    const startElapsed = start === 0 ? time(0) : time(start - 1);
+    const endElapsed = time(endIndex);
+    const durationS = endElapsed - startElapsed;
+    if (durationS > 0) stops.push({ startIndex: start, endIndex, startElapsed, endElapsed, durationS });
+    start = null;
+  };
+  for (let index = 0; index < list.length; index += 1) {
+    const speed = list[index]?.speed == null ? null : Number(list[index].speed);
+    const dt = index ? time(index) - time(index - 1) : 0;
+    const paused = dt > 30 && Number(list[index].distance) - Number(list[index - 1].distance) < 0.03;
+    if (paused) {
+      if (start != null) close(index - 1);
+      start = index;
+      close(index);
+      continue;
+    }
+    const stopped = speed != null && Number.isFinite(speed) && speed < SKELETON.stoppedKmh;
+    if (stopped && start == null) start = index;
+    else if (!stopped && start != null) close(index - 1);
+  }
+  if (start != null) close(list.length - 1);
+  for (const stop of stops) {
+    let before = NaN;
+    for (let index = stop.startIndex - 1; index >= 0 && !(before > 0); index -= 1) before = hr(index);
+    let lowest = Infinity;
+    for (let index = stop.startIndex; index < list.length && time(index) <= stop.endElapsed + 10; index += 1) {
+      if (hr(index) > 0 && hr(index) < lowest) lowest = hr(index);
+    }
+    stop.drop = before > 0 && Number.isFinite(lowest) ? Math.max(0, Math.round(before - lowest)) : null;
+  }
+  // This rider's fall per second of stop, from the stops of this ride that have heart rate.
+  const rates = stops.filter((stop) => stop.drop != null && stop.durationS >= 5 && stop.durationS <= 120).map((stop) => stop.drop / stop.durationS);
+  const rate = rates.length >= 3 ? median(rates) : null;
+  for (const stop of stops) {
+    const fall = stop.drop ?? (rate != null ? rate * stop.durationS : null);
+    stop.weight = Math.round(100 * (fall != null ? Math.min(1, fall / fullRestHrDrop) : Math.min(1, Math.max(0, stop.durationS / SKELETON.restFullAfterS)))) / 100;
+  }
+  return stops;
+}
+
+// Checkpoints of a ride on its route: a mark every 2 km of the route's axis and one at its end, the
+// same places for every ride of the route. Each mark carries the road since the previous mark: its
+// time on the clock and moving, the time stopped, heart rate. `ridden` is false when the ride did
+// not ride all of that road on the route (a detour, a start further on, an end short of it): rides
+// are compared on the stretches both of them rode.
+// records (the ones laid) give the stops: their number, the rest they gave (seconds weighted by
+// stopRests) and the largest fall of heart rate at one of them, per stretch between marks.
+function routeCheckpoints(lay, axis, { spacingKm = 2, records = null, fullRestHrDrop } = {}) {
+  if (!lay || !axis) return [];
+  const { bins, binM } = lay;
+  const stops = Array.isArray(records) && lay.axisKm ? stopRests(records, { fullRestHrDrop })
+    .map((stop) => ({ ...stop, km: lay.axisKm[stop.startIndex] ?? lay.axisKm[Math.max(0, stop.startIndex - 1)] }))
+    .filter((stop) => stop.km != null) : [];
+  const lengthKm = (bins * binM) / 1000;
+  const marks = [];
+  for (let km = spacingKm; km < lengthKm - spacingKm / 2; km += spacingKm) marks.push(km);
+  marks.push(lengthKm);
+  const round1 = (value) => Math.round(value * 10) / 10;
+  let fromBin = 0;
+  let fromKm = 0;
+  let hrSoFar = 0;
+  let hrSecondsSoFar = 0;
+  return marks.map((km) => {
+    const toBin = Math.min(bins, Math.max(fromBin + 1, Math.round((km * 1000) / binM)));
+    let time = 0;
+    let stopped = 0;
+    let hrSum = 0;
+    let hrTime = 0;
+    let covered = 0;
+    let offBins = 0;
+    let metres = 0;
+    const via = new Set();
+    for (let bin = fromBin; bin < toBin; bin += 1) {
+      time += lay.time[bin];
+      stopped += lay.stopped[bin];
+      hrSum += lay.hrSum[bin];
+      hrTime += lay.hrTime[bin];
+      metres += lay.metres ? lay.metres[bin] : binM;
+      if (lay.time[bin] > 0) covered += 1;
+      if (lay.off[bin]) offBins += 1;
+      if (lay.via && lay.via[bin] >= 0) via.add(lay.via[bin]);
+    }
+    const ridden = covered >= (toBin - fromBin) * 0.9 && offBins * binM < SKELETON.detourM;
+    const movingS = Math.max(0, time - stopped);
+    const hr = hrTime > 0 && hrTime >= movingS * (VERDICT.minHrCoveragePct / 100) ? hrSum / hrTime : null;
+    if (ridden && hr != null) { hrSoFar += hr * movingS; hrSecondsSoFar += movingS; }
+    const reached = lay.reachedS[toBin - 1];
+    const place = axisLatLon(axis, km * 1000);
+    const here = stops.filter((stop) => stop.km * 1000 >= fromBin * binM && stop.km * 1000 < toBin * binM);
+    const rest = {
+      stops: here.length,
+      restS: Math.round(here.reduce((sum, stop) => sum + stop.durationS * stop.weight, 0)),
+      stopDropBpm: here.some((stop) => stop.drop != null) ? Math.max(...here.map((stop) => stop.drop ?? 0)) : null,
+    };
+    const mark = {
+      km: round1(km), axis: true, fromKm: round1(fromKm), lat: place.lat, lon: place.lon, ridden, via: [...via].sort((a, b) => a - b).join(','),
+      splitS: ridden ? Math.round(time) : null, movingS: ridden ? Math.round(movingS) : null, stoppedS: ridden ? Math.round(stopped) : null,
+      ...(ridden ? rest : { stops: null, restS: null, stopDropBpm: null }),
+      avgHr: ridden && hr != null ? Math.round(hr) : null,
+      cumulativeAvgHr: hrSecondsSoFar > 0 ? Math.round(hrSoFar / hrSecondsSoFar) : null,
+      avgSpeedKmh: ridden && movingS > 0 ? (metres / 1000) / (movingS / 3600) : null,
+      elapsedS: Number.isFinite(reached) ? Math.round(reached - lay.startS) : null,
+    };
+    fromBin = toBin;
+    fromKm = km;
+    return mark;
+  });
+}
+
 // Where one ride enters each stretch of the skeleton, on its own clock: the boundaries its
 // segments are cut at, so that every segment lies inside one stretch and takes its terrain from
 // the road instead of from its own average grade. Stretches the ride did not reach are left out.
-function rideFrame(records, skeleton) {
-  if (!skeleton?.ref?.length) return null;
-  const lay = layRideOnRoad(records, skeleton.ref, { toleranceM: skeleton.toleranceM });
-  if (!lay) return null;
+function rideFrame(records, skeleton, { axis = skeleton?.axis, lay: given = null } = {}) {
+  if (!skeleton?.stretches?.length) return null;
+  const lay = given || (axis ? layRideOnBins(records, axis, { offRoadM: skeleton.toleranceM }) : null);
+  if (!lay || lay.bins !== skeleton.bins) return null;
   const cuts = [];
   skeleton.stretches.forEach((stretch, stretchIndex) => {
     for (let bin = stretch.fromBin; bin < stretch.toBin; bin += 1) {
@@ -529,7 +799,8 @@ function rideCharacter(measured, skeleton) {
   const hrDeltas = [];
   measured.stretches.forEach((row, index) => {
     const stretch = skeleton.stretches[index];
-    if (!row || row.absent || row.detour || stretch.type === 'descent') return;
+    // On a variant the usual values may be the axis' road's: not this road's.
+    if (!row || row.absent || row.detour || row.via || stretch.type === 'descent') return;
     if (!(stretch.routeKmh > 0) || stretch.routeHr == null || row.avgHr == null) return;
     const speedPct = 100 * (row.speedKmh / stretch.routeKmh - 1);
     const hrDelta = row.avgHr - stretch.routeHr;
@@ -575,10 +846,11 @@ function summarizeSections(skeleton, current, priors, { recent = 5 } = {}) {
   if (!skeleton || !current) return null;
   // An unusually easy earlier ride says nothing about what is usual here.
   const measured = (priors || []).filter((ride) => ride && ride.character?.kind !== 'easy');
-  const lastValid = (pick) => measured.map(pick).filter((row) => row && !row.absent && !row.detour).slice(-recent);
+  const lastValid = (pick, via = '') => measured.map(pick).filter((row) => row && !row.absent && !row.detour && (row.via || '') === via).slice(-recent);
   const stretches = skeleton.stretches.map((stretch, index) => {
     const row = current.stretches[index];
-    const rows = lastValid((ride) => ride.stretches[index]);
+    // A stretch with a variant on it is compared between the rides that took the same way.
+    const rows = lastValid((ride) => ride.stretches[index], row?.via || '');
     const hrRows = rows.filter((prior) => prior.avgHr != null);
     const reached = rows.map((prior) => prior.reachedS).filter((value) => value != null);
     const usual = rows.length ? {
@@ -606,12 +878,20 @@ function summarizeSections(skeleton, current, priors, { recent = 5 } = {}) {
 module.exports = {
   SECTION_DEFAULTS,
   SKELETON,
+  addRideToAccumulator,
+  axisBins,
   buildRouteSkeleton,
-  layRideOnRoad,
+  createRouteAccumulator,
+  layRideOnBins,
   measureRideOnSkeleton,
+  profileFromAccumulator,
   rideCharacter,
-  referenceTrack,
   rideFrame,
+  routeCheckpoints,
+  sectionBins,
+  stopRests,
+  sectionStatsFromAccumulator,
+  skeletonFromAccumulator,
   stretchVerdict,
   summarizeSections,
 };

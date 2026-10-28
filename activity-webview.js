@@ -296,7 +296,7 @@ const setupRoutePlayer = function setupRoutePlayer(map, L, track, text, mapId, e
   return { play, pause, seek, state: () => ({ t, playing, end, speed: SPEEDS[speedIndex], shown: shown.slice() }) };
 };
 
-function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null, qualityFlags = [], routeFilter = null, modelPicker = null) {
+function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId, fitData, compId, compData, hrConfig, athleteProfile, analysis, analysisChat, wheelCalibration, generatedTranslations, segments, analysisVersion, comparisons, translationJustGenerated = false, routeCard = null, qualityFlags = [], routeFilter = null, modelPicker = null, trendPoints = null) {
   const translate = (message) => generatedTranslations?.[message] || vscode.l10n.t(message);
   const ui = localizeUi(translate);
   const glossary = localizeGlossary(translate);
@@ -307,20 +307,27 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   const hasComp = compData && Array.isArray(compData.records) && compData.records.length > 0;
 
   // The route filter narrows both the activity selector and the comparison selector to rides on
-  // one route (by the route card name). Rides without a route assignment are hidden under a
-  // non-"all" filter.
-  const routeNames = [...new Set(activities.map((a) => (a.route_name ? String(a.route_name) : null)).filter(Boolean))].sort();
-  const activeRouteFilter = routeFilter && routeNames.includes(routeFilter) ? routeFilter : null;
-  const filterable = activeRouteFilter ? activities.filter((a) => String(a.route_name) === activeRouteFilter) : activities;
+  // one route, by its id: two routes can share a name ("Route 20.3 km" both), and then the number
+  // of rides tells them apart. Rides without a route assignment are hidden under a non-"all" filter.
+  const routeList = [...activities.reduce((routes, a) => {
+    if (a.route_id == null) return routes;
+    const id = Number(a.route_id);
+    const entry = routes.get(id) || { id, name: String(a.route_name || ''), rides: 0 };
+    entry.rides += 1;
+    return routes.set(id, entry);
+  }, new Map()).values()].sort((a, b) => a.name.localeCompare(b.name) || b.rides - a.rides);
+  const sharedName = (route) => routeList.filter((other) => other.name === route.name).length > 1;
+  const activeRouteFilter = routeFilter != null && routeList.some((route) => route.id === Number(routeFilter)) ? Number(routeFilter) : null;
+  const filterable = activeRouteFilter != null ? activities.filter((a) => Number(a.route_id) === activeRouteFilter) : activities;
   const routeOptions = [
     `<option value="">${escapeHtml(ui.allRoutes)}</option>`,
-    ...routeNames.map((name) => `<option value="${escapeHtml(name)}"${name === activeRouteFilter ? ' selected' : ''}>${escapeHtml(name)}</option>`),
+    ...routeList.map((route) => `<option value="${route.id}"${route.id === activeRouteFilter ? ' selected' : ''}>${escapeHtml(sharedName(route) ? `${route.name} · ${route.rides}` : route.name)}</option>`),
   ].join('');
 
   const actOptions = filterable.map((a) => {
     const label = escapeHtml(formatActivityLabel(a, ui));
     const sel = Number(a.id) === Number(selectedId) ? ' selected' : '';
-    return `<option value="${escapeHtml(String(a.id))}" data-route="${escapeHtml(String(a.route_name || ''))}"${sel}>${label}</option>`;
+    return `<option value="${escapeHtml(String(a.id))}" data-route="${escapeHtml(String(a.route_id ?? ''))}"${sel}>${label}</option>`;
   }).join('');
 
   const compOptions = [
@@ -328,7 +335,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
     ...filterable.filter((a) => Number(a.id) !== Number(selectedId)).map((a) => {
       const label = escapeHtml(formatActivityLabel(a, ui));
       const sel = Number(a.id) === Number(compId) ? ' selected' : '';
-      return `<option value="${escapeHtml(String(a.id))}" data-route="${escapeHtml(String(a.route_name || ''))}"${sel}>${label}</option>`;
+      return `<option value="${escapeHtml(String(a.id))}" data-route="${escapeHtml(String(a.route_id ?? ''))}"${sel}>${label}</option>`;
     }),
   ].join('');
 
@@ -364,7 +371,7 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
       routeSel.addEventListener('change', () => {
         api.postMessage({
           type: 'setRouteFilter',
-          routeName: routeSel.value || null,
+          routeId: routeSel.value || null,
           id: document.getElementById('actSel').value || null,
           compId: document.getElementById('compSel').value || null,
         });
@@ -375,10 +382,10 @@ function renderActivityBrowserHtml(webview, extensionUri, activities, selectedId
   `;
 
   const primaryHtml = hasData
-    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles, routeCard, qualityFlags, modelPicker, locale)
+    ? renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, false, hasComp ? compData : null, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, displayLanguage(locale), segments, analysisVersion, comparisonEntries, compId, translationJustGenerated, mapTiles, routeCard, qualityFlags, modelPicker, locale, trendPoints)
     : `<div style="padding:24px;color:var(--muted)">${escapeHtml(ui.noDataForActivity)}</div>`;
 
-  const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce);
+  const { leafletCss, leafletJs, csp } = buildWebviewAssets(webview, extensionUri, nonce, mapTiles);
 
   return `<!DOCTYPE html>
 <html lang="${escapeHtml(locale)}">
@@ -650,15 +657,17 @@ function buildTranslationPrompt(locale) {
   return `Translate the following FIT Visualizer UI string catalog into the language identified by locale "${locale}". Return only one valid JSON object: the exact English source strings must remain keys, every key must be present exactly once, placeholders such as {0} and {1} must remain unchanged, and values must be plain text without markdown, HTML, or commentary. This catalog contains application UI text and glossary definitions only; it contains no activity, location, or user data.\n\n${JSON.stringify(Object.fromEntries(translationMessages().map((message) => [message, ''])))} `;
 }
 
-function buildWebviewAssets(webview, extensionUri, nonce) {
+// The page loads its own files, and map tiles from OpenStreetMap unless they are switched off; it
+// makes no requests of its own (connect-src stays 'none').
+function buildWebviewAssets(webview, extensionUri, nonce, mapTiles = 'osm') {
   const leafletCss = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'leaflet', 'dist', 'leaflet.css')).toString();
   const leafletJs = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'leaflet', 'dist', 'leaflet.js')).toString();
+  const tiles = mapTiles === 'none' ? '' : ' https://*.tile.openstreetmap.org';
   const csp = [
     "default-src 'none'",
-    `img-src ${webview.cspSource} https: data:`,
+    `img-src ${webview.cspSource}${tiles} data:`,
     `style-src ${webview.cspSource} 'unsafe-inline'`,
     `script-src 'nonce-${nonce}'`,
-    'connect-src https:',
     `font-src ${webview.cspSource}`,
   ].join('; ');
   return { leafletCss, leafletJs, csp };
@@ -937,7 +946,7 @@ function renderRouteCard(route, ui, mapId) {
     </section>`;
 }
 
-function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm', routeCard = null, qualityFlags = [], modelPicker = null, dateLocale = null) {
+function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, nonce, isComparison, compData, athleteProfile, analysis, analysisChat, wheelCalibration, ui, glossary, shouldOfferTranslations, language, segments, analysisVersion, comparisonEntries, comparedActivityId, translationJustGenerated = false, mapTiles = 'osm', routeCard = null, qualityFlags = [], modelPicker = null, dateLocale = null, trendPoints = null) {
   const records = normalizeRecordSpeeds(Array.isArray(fitData.records) ? fitData.records : []);
   const sessions = Array.isArray(fitData.sessions) ? fitData.sessions : [];
   const compRecords = compData && Array.isArray(compData.records) ? normalizeRecordSpeeds(compData.records) : [];
@@ -1103,7 +1112,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       </div>`
     : '';
 
+  // Computed first, for the ride picked in "Compare with": the two points on the route's trend.
+  const trendPointsHtml = canCompare && trendPoints ? renderTrendPointsCard(trendPoints, ui, dateLocale) : '';
   const comparisonBlock = (comparisonEntriesSafe.length || canCompare) ? `
+      ${trendPointsHtml}
       <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
         <h3 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--muted);">${escapeHtml(ui.compareWithAI)}</h3>
         <div id="comparisonList">${comparisonListHtml || `<p id="comparisonEmpty" style="margin:0;color:var(--muted);">${escapeHtml(ui.noComparisonsYet)}</p>`}</div>
@@ -1309,7 +1321,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
       ${comparisonBlock}
       <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
         <h3 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--muted);">${escapeHtml(ui.followUpChat)}</h3>
-        <div id="analysisChatMessages" style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--vscode-editor-background);"></div>
+        <div id="analysisChatMessages" style="border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--vscode-editor-background);"></div>
         <div style="display:flex;gap:8px;margin-top:8px;align-items:flex-start;">
           <textarea id="analysisChatInput" rows="3" placeholder="${escapeHtml(ui.followUpPlaceholder)}" style="flex:1;min-height:62px;resize:vertical;border:1px solid var(--input-border);border-radius:6px;padding:8px;background:var(--input-bg);color:var(--input-fg);"></textarea>
           <button id="analysisChatSendBtn" style="padding:8px 14px;background:var(--accent);color:var(--bg);border:none;border-radius:4px;cursor:pointer;font-weight:600;">${escapeHtml(ui.send)}</button>
@@ -1454,6 +1466,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
       }
 
+      // The conversation grows with the page, without a scroll of its own: an answer is read whole.
+      // When one arrives for a question just asked, the page is scrolled to where it begins.
+      let awaitingReply = false;
       function renderChatMessages() {
         if (!analysisChatMessagesEl) return;
         if (!Array.isArray(chatMessages) || !chatMessages.length) {
@@ -1464,11 +1479,17 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           const role = entry.role === 'assistant' ? ui.coach : ui.you;
           const bg = entry.role === 'assistant' ? 'var(--vscode-editorWidget-background)' : 'var(--vscode-inputOption-activeBackground)';
           return '<div style="margin:0 0 8px 0;padding:8px;border:1px solid var(--border);border-radius:6px;background:' + bg + ';">'
-            + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px;">' + role + '</div>'
+            + '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:4px;">' + escapeHtml(role) + '</div>'
             + '<div style="line-height:1.45;">' + renderMarkdown(entry.content || '') + '</div>'
+            + (entry.pending ? '<div style="font-size:0.85rem;color:var(--muted);margin-top:4px;">' + escapeHtml(ui.chatNotSent) + '</div>' : '')
             + '</div>';
         }).join('');
-        analysisChatMessagesEl.scrollTop = analysisChatMessagesEl.scrollHeight;
+      }
+
+      function showLatestReply() {
+        const replies = analysisChatMessagesEl ? analysisChatMessagesEl.children : [];
+        const last = replies.length ? replies[replies.length - 1] : null;
+        if (last && typeof last.scrollIntoView === 'function') last.scrollIntoView({ block: 'start', behavior: 'smooth' });
       }
 
       renderChatMessages();
@@ -1484,10 +1505,12 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         const msg = event.data;
         const currentId = Number(window.currentActivityId);
         if ((msg.type === 'analysisBusy'
+          || msg.type === 'analysisQueued'
           || msg.type === 'analysisResult'
           || msg.type === 'analysisError'
           || msg.type === 'noAnalysis'
           || msg.type === 'analysisChatState'
+          || msg.type === 'analysisChatResending'
           || msg.type === 'analysisChatError')
           && Number.isFinite(currentId)
           && Number(msg.id) !== currentId) {
@@ -1500,6 +1523,10 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
         if (msg.type === 'analysisBusy') {
           setAnalyzeBusy(Boolean(msg.busy));
+        } else if (msg.type === 'analysisQueued') {
+          setAnalyzeBusy(true);
+          const progressText = document.querySelector('#analysisProgress span:last-child');
+          if (progressText) progressText.textContent = ui.analysisQueued;
         } else if (msg.type === 'analysisResult') {
           hasAnalysis = true;
           analysisOutdated = msg.version != null && msg.version < ${analysisVersion};
@@ -1525,7 +1552,22 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           renderChatMessages();
           analysisChatSendBtn.disabled = false;
           analysisChatStatus.textContent = '';
+          const last = chatMessages[chatMessages.length - 1];
+          if (awaitingReply && last && last.role === 'assistant') showLatestReply();
+          awaitingReply = false;
+        } else if (msg.type === 'analysisChatResending') {
+          awaitingReply = true;
+          analysisChatSendBtn.disabled = true;
+          analysisChatStatus.innerHTML = '<span class="spinner" aria-hidden="true" style="color:var(--accent);"></span><span style="margin-left:8px;">' + escapeHtml(ui.chatResending) + '</span>';
+          analysisChatStatus.style.color = 'var(--muted)';
         } else if (msg.type === 'analysisChatError') {
+          awaitingReply = false;
+          // The question stays in the conversation, saved and marked as not answered.
+          const last = chatMessages[chatMessages.length - 1];
+          if (last && last.role === 'user' && !last.pending) {
+            chatMessages = [...chatMessages.slice(0, -1), { ...last, pending: true }];
+            renderChatMessages();
+          }
           analysisChatSendBtn.disabled = false;
           analysisChatStatus.textContent = formatMessage(ui.error, String(msg.error || ui.chatFailed));
           analysisChatStatus.style.color = '#ff6b6b';
@@ -1834,6 +1876,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           : escapeHtml(analyzeButtonLabel());
         const progress = document.getElementById('analysisProgress');
         if (progress) progress.style.display = busy ? 'flex' : 'none';
+        const progressText = document.querySelector('#analysisProgress span:last-child');
+        if (progressText && !busy) progressText.textContent = ui.analysisProgress;
       }
 
       if (analyzeBtn) {
@@ -1856,8 +1900,12 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
         }
         const alreadyCompared = comparisons.some((entry) => entry.comparedActivityId === compareActivityId);
         compareBtn.disabled = true;
-        compareBtn.textContent = ui.comparing;
-        if (comparisonStatus) comparisonStatus.textContent = '';
+        // As the analysis shows it: a spinner on the button and a line under it while the AI works.
+        compareBtn.innerHTML = '<span class="spinner" style="color:var(--bg);border-top-color:var(--bg);"></span><span style="margin-left:8px;">' + escapeHtml(ui.comparing) + '</span>';
+        if (comparisonStatus) {
+          comparisonStatus.style.color = 'var(--muted)';
+          comparisonStatus.innerHTML = '<span class="spinner" aria-hidden="true" style="color:var(--accent);"></span><span style="margin-left:8px;">' + escapeHtml(ui.comparisonProgress) + '</span>';
+        }
         const compareModelSel = document.getElementById('compareModelSel');
           vscode.postMessage({ type: 'compareActivitiesAI', id: window.currentActivityId, compId: compareActivityId, force: alreadyCompared, modelId: compareModelSel ? compareModelSel.value : '' });
       });
@@ -1903,7 +1951,9 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           analysisChatStatus.style.color = '#ff6b6b';
           return;
         }
-        analysisChatStatus.textContent = ui.thinking;
+        awaitingReply = true;
+        // As the analysis and the comparison show it: a spinner while the AI works.
+        analysisChatStatus.innerHTML = '<span class="spinner" aria-hidden="true" style="color:var(--accent);"></span><span style="margin-left:8px;">' + escapeHtml(ui.thinking) + '</span>';
         analysisChatStatus.style.color = 'var(--muted)';
         analysisChatSendBtn.disabled = true;
         chatMessages = [...chatMessages, { role: 'user', content: text }];
@@ -1915,6 +1965,8 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           id: window.currentActivityId,
           text,
           modelId: chatModelSel ? chatModelSel.value : '',
+          // The ride picked in "Compare with": its then-and-now figures are above the conversation.
+          compId: compareActivityId,
         });
       }
 
@@ -2036,7 +2088,7 @@ function renderActivityContentHtml(webview, extensionUri, fitData, hrConfig, non
           let reason = !window.L
             ? ui.mapLibraryMissing
             : ui.noGpsPoints;
-          mapEl.innerHTML = '<div style="padding:12px;color:var(--muted)">' + reason + '</div>';
+          mapEl.innerHTML = '<div style="padding:12px;color:var(--muted)">' + escapeSegmentHtml(reason) + '</div>';
         }
       } else {
         if (gpsRouteSection) gpsRouteSection.style.display = 'none';
@@ -3026,6 +3078,58 @@ function renderStatsRow(stats, unit, isComp, ui) {
   </div>`;
 }
 
+// Two points on the trend of the route (trend-points.js), computed: no AI. Each column is the
+// chosen ride with its neighbours; a figure is the point's median with its range, and the change
+// says whether it is wider than the spread of the points themselves.
+function renderTrendPointsCard(points, ui, dateLocale) {
+  if (!points?.rows?.length) return '';
+  const decimal = (value, digits) => value.toFixed(digits).replace('.', ui.decimalSeparator);
+  const clock = (seconds) => {
+    const total = Math.round(Math.abs(seconds));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = String(total % 60).padStart(2, '0');
+    return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+  };
+  const value = (number, unit) => {
+    if (!Number.isFinite(number)) return '—';
+    if (unit === 's') return clock(number);
+    if (unit === 'km/h' || unit === 'km/h per 100 bpm') return decimal(number, 1);
+    if (unit === 'C') return decimal(number, 1);
+    if (unit === 'days') return decimal(number, Number.isInteger(number) ? 0 : 1);
+    const whole = Math.round(number);
+    return whole < 0 ? `−${-whole}` : String(whole);
+  };
+  const suffix = (unit) => (unit === 'C' ? ' °C' : '');
+  const cell = (figure, unit) => (!figure ? '—'
+    // A range of negative values reads better with an ellipsis than with a dash between minuses.
+    : (figure.n > 1 && figure.min !== figure.max ? `${value(figure.median, unit)} (${value(figure.min, unit)}${figure.min < 0 ? ' … ' : '–'}${value(figure.max, unit)})` : value(figure.median, unit)) + suffix(unit));
+  const change = (row) => (row.delta == null || row.delta === 0 ? '' : `${row.delta > 0 ? '+' : '−'}${value(Math.abs(row.delta), row.unit)}${suffix(row.unit)}`);
+  const verdict = (row) => (row.beyondSpread === true ? `<strong>${escapeHtml(ui.trendBeyond)}</strong>`
+    : row.beyondSpread === false ? `<span style="color:var(--muted)">${escapeHtml(ui.trendWithin)}</span>` : '');
+  const label = (key) => ui[`trend${key[0].toUpperCase()}${key.slice(1)}`] || key;
+  const day = (date) => {
+    const time = Date.parse(`${date}T12:00:00Z`);
+    return Number.isFinite(time) ? new Date(time).toLocaleDateString(dateLocale || undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' }) : String(date || '');
+  };
+  const pointHead = (point) => {
+    const dates = point.rides.map((ride) => ride.circumstances?.date).filter(Boolean).sort();
+    const span = point.rides.length > 1 ? formatUi(ui.trendPointRides, day(dates[0]), day(dates[dates.length - 1]), point.rides.length) : formatUi(ui.trendPointRide, day(dates[0]));
+    return point.gapDays ? `${span}, ${formatUi(ui.trendBreak, point.gapDays)}` : span;
+  };
+  const rowHtml = (row, judged = true) => `<tr><td class="cmpLabel">${escapeHtml(label(row.key))}</td><td class="cmpA">${escapeHtml(cell(row.then, row.unit))}</td><td class="cmpB">${escapeHtml(cell(row.now, row.unit))}</td><td>${escapeHtml(change(row))}</td><td>${judged ? verdict(row) : ''}</td></tr>`;
+  // What surrounded the rides is context for the figures above, not a finding of its own.
+  const circumstances = (points.circumstanceRows || []).length
+    ? `<tr><td colspan="5" style="padding-top:10px;color:var(--muted)">${escapeHtml(ui.trendCircumstancesTitle)}</td></tr>${points.circumstanceRows.map((row) => rowHtml(row, false)).join('')}` : '';
+  return `<section class="chart trendPoints"><h2>${escapeHtml(ui.trendTitle)}</h2>
+    <p style="margin:0 0 8px 0;color:var(--muted)">${escapeHtml(formatUi(ui.trendIntro, points.neighbours ?? 3, value(points.roadKm, 'km/h')))}</p>
+    ${points.twoDays ? `<p style="margin:0 0 8px 0">${escapeHtml(ui.trendTwoDays)}</p>` : ''}
+    <table class="cmpTable">
+      <thead><tr><th></th><th>${escapeHtml(ui.trendThen)}<br><span style="font-weight:400;color:var(--muted)">${escapeHtml(pointHead(points.then))}</span></th><th>${escapeHtml(ui.trendNow)}<br><span style="font-weight:400;color:var(--muted)">${escapeHtml(pointHead(points.now))}</span></th><th>${escapeHtml(ui.trendChange)}</th><th></th></tr></thead>
+      <tbody>${points.rows.map((row) => rowHtml(row)).join('')}${circumstances}</tbody>
+    </table></section>`;
+}
+
 function renderComparisonTable(a, b, aName, bName, glossary, ui) {
   const rows = [
     [ui.distanceKm, a.distanceKm.toFixed(2), b.distanceKm.toFixed(2), 'distance'],
@@ -3134,4 +3238,4 @@ function renderHeartRateZones(zoneData, ui) {
   </div>`;
 }
 
-module.exports = { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, renderMarkdown, buildTranslationPrompt, setupRoutePlayer };
+module.exports = { displayLanguage, renderActivityBrowserHtml, renderActivityContentHtml, renderMarkdown, renderTrendPointsCard, buildTranslationPrompt, setupRoutePlayer };

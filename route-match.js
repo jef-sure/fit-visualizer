@@ -100,12 +100,16 @@ function compareRouteSignatures(a, b, { reversed = false } = {}) {
 
 // A track as a polyline in local metres with the distance ridden to each vertex (km from the
 // first vertex). Signatures stored before 0.29.0 can carry (0, 0) vertices; they are dropped.
-function projectTrack(track, refLat) {
+// Both tracks of a comparison are projected around the same reference point, and a longitude is
+// taken the short way round from it: a track across ±180° (Chukotka, Fiji) does not jump by the
+// width of the Earth.
+function projectTrack(track, refLat, refLon = 0) {
   const kx = 111320 * Math.cos((refLat * Math.PI) / 180);
   const usable = (Array.isArray(track) ? track : []).filter((point) => hasGpsFix(point?.lat, point?.lon));
   if (usable.length < 2) return null;
   const firstKm = Number(usable[0].distance);
-  const vertices = usable.map((point) => ({ x: point.lon * kx, y: point.lat * 110540, km: Number(point.distance) - firstKm }));
+  const east = (lon) => ((((Number(lon) - refLon) % 360) + 540) % 360) - 180;
+  const vertices = usable.map((point) => ({ x: east(point.lon) * kx, y: point.lat * 110540, km: Number(point.distance) - firstKm }));
   return { vertices, lengthKm: vertices[vertices.length - 1].km };
 }
 
@@ -180,9 +184,11 @@ function orderedDeviationM(a, b, matrix, reversed) {
 // `scoreM` is the number to rank candidates by (lower is closer); `detail` is for people.
 function matchRoutes(a, b) {
   if (!a || !b) return { type: 'different', detail: 'insufficient GPS' };
-  const refLat = Number(b.track?.find((point) => hasGpsFix(point?.lat, point?.lon))?.lat);
-  const trackA = projectTrack(a.track, refLat);
-  const trackB = projectTrack(b.track, refLat);
+  const reference = b.track?.find((point) => hasGpsFix(point?.lat, point?.lon));
+  const refLat = Number(reference?.lat);
+  const refLon = Number(reference?.lon) || 0;
+  const trackA = projectTrack(a.track, refLat, refLon);
+  const trackB = projectTrack(b.track, refLat, refLon);
   if (!trackA || !trackB) return { type: 'different', detail: 'insufficient GPS' };
   const distRatio = Math.min(a.distanceKm, b.distanceKm) / Math.max(a.distanceKm, b.distanceKm);
   const aToB = deviationMatrix(trackA, trackB);

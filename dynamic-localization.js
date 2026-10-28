@@ -43,6 +43,11 @@ function validateTranslationBundle(bundle) {
     if (placeholders(message).join() !== placeholders(translated).join()) {
       throw new Error(`The translation for "${message}" changed its placeholders.`);
     }
+    // Plain text only: these strings are put into the page as they are, and a translation written
+    // by the AI must not bring markup with it.
+    if (/[<>]/.test(translated) && !/[<>]/.test(message)) {
+      throw new Error(`The translation for "${message}" contains markup.`);
+    }
   }
   return bundle;
 }

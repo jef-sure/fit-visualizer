@@ -10,10 +10,10 @@ const FEATURES = Object.freeze({
   minClimbGainM: 15,
   flatGradePct: 1,
   asymmetryRatio: 0.88,      // opposite directions differing by more than this on a flat section
-  movingGapS: 10,            // longer gaps between records are stops, not riding
 });
 
-const CLIMB = Object.freeze({ windowBins: 4, gradePct: 3, mergeGapBins: 3, minGainM: 15, minLengthKm: 0.2 });
+// Grade over 100 m; steep pieces up to 75 m apart are one climb.
+const CLIMB = Object.freeze({ windowM: 100, gradePct: 3, mergeGapM: 75, minGainM: 15, minLengthKm: 0.2 });
 
 function fillGaps(values) {
   const out = [...values];
@@ -33,7 +33,8 @@ function fillGaps(values) {
 function findClimbs(consensus, binKm, reversed) {
   const filled = fillGaps(reversed ? [...consensus].reverse() : consensus);
   if (filled.some((value) => !Number.isFinite(value))) return [];
-  const w = CLIMB.windowBins;
+  const w = Math.max(1, Math.round(CLIMB.windowM / (binKm * 1000)));
+  const mergeGap = Math.round(CLIMB.mergeGapM / (binKm * 1000));
   const steep = [];
   for (let i = 0; i + w < filled.length; i += 1) {
     steep.push(((filled[i + w] - filled[i]) / (w * binKm * 1000)) * 100 >= CLIMB.gradePct);
@@ -42,7 +43,7 @@ function findClimbs(consensus, binKm, reversed) {
   for (let i = 0; i < steep.length; i += 1) {
     if (!steep[i]) continue;
     const last = spans[spans.length - 1];
-    if (last && i - last.end <= CLIMB.mergeGapBins) last.end = i;
+    if (last && i - last.end <= mergeGap) last.end = i;
     else spans.push({ start: i, end: i });
   }
   return spans.map(({ start, end }) => {
@@ -63,28 +64,6 @@ const median = (values) => {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 };
 
-// Moving speed per section of a ride, sections being equal fractions of the ride's own length.
-// records: [{ elapsed_time, distance }] (distance in km, elapsed in seconds).
-function sectionSpeeds(records, sections) {
-  const list = (Array.isArray(records) ? records : [])
-    .filter((record) => Number.isFinite(Number(record?.distance)) && Number.isFinite(Number(record?.elapsed_time)));
-  if (list.length < 20 || sections < 2) return null;
-  const start = Number(list[0].distance);
-  const total = Number(list[list.length - 1].distance) - start;
-  if (!(total > 1)) return null;
-  const km = new Array(sections).fill(0);
-  const seconds = new Array(sections).fill(0);
-  for (let index = 1; index < list.length; index += 1) {
-    const dt = Number(list[index].elapsed_time) - Number(list[index - 1].elapsed_time);
-    const dd = Number(list[index].distance) - Number(list[index - 1].distance);
-    if (!(dt > 0 && dt <= FEATURES.movingGapS) || !(dd >= 0)) continue;
-    const section = Math.min(sections - 1, Math.floor(((Number(list[index].distance) - start) / total) * sections));
-    km[section] += dd;
-    seconds[section] += dt;
-  }
-  return km.map((value, index) => (seconds[index] >= 30 && value > 0 ? value / (seconds[index] / 3600) : null));
-}
-
 // profile: consensus elevation profile (canonical direction). rides: [{ relation: 'same'|'reversed', speeds: [...] }]
 // where speeds are indexed in the ride's own direction.
 function sectionCount(profile) {
@@ -92,6 +71,26 @@ function sectionCount(profile) {
 }
 
 function computeRouteFeatures(profile, rides) {
+  if (!profile?.consensus?.length || !(profile.lengthKm > 1)) return null;
+  const sections = sectionCount(profile);
+  // Speeds per direction, each in that direction's own section order.
+  const same = Array.from({ length: sections }, () => []);
+  const reversed = Array.from({ length: sections }, () => []);
+  for (const ride of rides || []) {
+    if (!Array.isArray(ride?.speeds) || ride.speeds.length !== sections) continue;
+    ride.speeds.forEach((speed, index) => {
+      if (!Number.isFinite(speed)) return;
+      if (ride.relation === 'same') same[index].push(speed);
+      else if (ride.relation === 'reversed') reversed[index].push(speed);
+    });
+  }
+  const stat = (values) => ({ kmh: median(values), rides: values.length });
+  return routeFeaturesFromStats(profile, { same: same.map(stat), reversed: reversed.map(stat) });
+}
+
+// The same from the route's usual speed per section and direction, [{ kmh, rides }] in each
+// direction's own order, as its accumulator keeps them.
+function routeFeaturesFromStats(profile, stats) {
   if (!profile?.consensus?.length || !(profile.lengthKm > 1)) return null;
   const sections = sectionCount(profile);
   const altitudeAt = (fraction) => {
@@ -118,21 +117,14 @@ function computeRouteFeatures(profile, rides) {
     });
   }
   // Speeds are stored on the canonical axis: a reversed ride's section i is canonical section n-1-i.
-  const same = rows.map(() => []);
-  const reversed = rows.map(() => []);
-  for (const ride of rides || []) {
-    if (!Array.isArray(ride?.speeds) || ride.speeds.length !== sections) continue;
-    ride.speeds.forEach((speed, index) => {
-      if (!Number.isFinite(speed)) return;
-      if (ride.relation === 'same') same[index].push(speed);
-      else if (ride.relation === 'reversed') reversed[sections - 1 - index].push(speed);
-    });
-  }
+  const usual = (row) => (row && row.kmh != null && row.rides >= FEATURES.minRidesPerDirection ? Math.round(row.kmh * 10) / 10 : null);
   rows.forEach((row, index) => {
-    row.sameKmh = same[index].length >= FEATURES.minRidesPerDirection ? Math.round(median(same[index]) * 10) / 10 : null;
-    row.sameRides = same[index].length;
-    row.reversedKmh = reversed[index].length >= FEATURES.minRidesPerDirection ? Math.round(median(reversed[index]) * 10) / 10 : null;
-    row.reversedRides = reversed[index].length;
+    const same = stats?.same?.[index];
+    const reversed = stats?.reversed?.[sections - 1 - index];
+    row.sameKmh = usual(same);
+    row.sameRides = same?.rides || 0;
+    row.reversedKmh = usual(reversed);
+    row.reversedRides = reversed?.rides || 0;
   });
   return { sections, sectionKm: Math.round(sectionKm * 10) / 10, lengthKm: Math.round(profile.lengthKm * 10) / 10,
     ascentM: profile.ascentM, descentM: profile.descentM, rows,
@@ -193,9 +185,9 @@ module.exports = {
   SECTION_KM,
   computeRouteFeatures,
   describeRouteFeatures,
+  routeFeaturesFromStats,
   sectionCount,
   findClimbs,
-  sectionSpeeds,
 };
 
 // Route-stretch breakdown of one long flat segment: the segment is cut at direction-effect

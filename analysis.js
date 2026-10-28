@@ -6,7 +6,7 @@ const { rankModelsByCost } = require('./model-pricing');
 const { describeStretches } = require('./route-features');
 const { buildDataQualityFlagBlock } = require('./data-quality');
 const { buildRouteSignature, matchRoutes, haversineM } = require('./route-match');
-const { computeCheckpoints, priorKmOnAxis } = require('./route-store');
+const { computeCheckpoints, isAxisMarks, priorKmOnAxis, sharedRoadTotals } = require('./route-store');
 const { describeSpeed, normalizeSport, profileFor, sportPromptAdditions } = require('./sport-profiles');
 const { SUMMARY_TAIL_INSTRUCTION, describeAnalysisForHistory } = require('./analysis-summary');
 const { buildInferredNotesBlock, buildSessionNotesBlock, describeNotesShort } = require('./activity-notes');
@@ -226,7 +226,10 @@ function buildRecentHistoryContext(entries, options = {}) {
 
   const detailedCount = Number(options.detailedCount) || 4;
   const detailedFrom = Math.max(0, list.length - detailedCount);
-  const rendered = list.map((entry, index) => {
+  // start: the first entry kept in the block. The HR profile date is shown where it changes, and on
+  // the first entry kept: dropping older entries must not drop the date they carried.
+  const renderFrom = (start) => list.slice(start).map((entry, offset) => {
+    const index = start + offset;
     const date = localDate(entry.startTime, entry.utcOffsetS);
     const intensity = Array.isArray(entry.zoneSeconds) && entry.zoneSeconds.some((value) => Number(value) > 0)
       ? (() => {
@@ -249,7 +252,7 @@ function buildRecentHistoryContext(entries, options = {}) {
       describeNotesShort(entry.notes),
       entry.routeId && entry.ascentM == null ? null : entry.routeId ? null : entry.elevationM != null ? `ascent ${Number(entry.elevationM).toFixed(0)} m` : null,
       ['threshold', 'vo2max/anaerobic'].includes(entry.sessionClass?.label) && entry.peak20 != null ? `peak20 ${entry.peak20} bpm` : null,
-      entry.hrProfileDate && entry.hrProfileDate !== list[index - 1]?.hrProfileDate ? `HR profile ${entry.hrProfileDate}` : null,
+      entry.hrProfileDate && (index === start || entry.hrProfileDate !== list[index - 1]?.hrProfileDate) ? `HR profile ${entry.hrProfileDate}` : null,
       entry.source && entry.source !== 'fit' ? `source ${entry.source}` : null,
       startedText(entry),
     ]);
@@ -270,11 +273,11 @@ function buildRecentHistoryContext(entries, options = {}) {
     : '';
   // Hard cap on the whole block: whole oldest entries are dropped, lines are never cut mid-way.
   const blockLength = (items) => `**Recent Activity History (earlier workouts, oldest first):**\n${summaryNote}${items.join('\n\n')}${categoryLine}`.length;
-  let renderedList = rendered;
   let omitted = 0;
+  let renderedList = renderFrom(0);
   while (renderedList.length > 1 && blockLength(renderedList) > HISTORY_CHAR_LIMIT) {
-    renderedList = renderedList.slice(1);
     omitted += 1;
+    renderedList = renderFrom(omitted);
   }
   const omittedNote = omitted ? `\n${omitted} older ride${omitted > 1 ? 's' : ''} omitted to fit the block; their facts remain in the period totals.` : '';
   return `**Recent Activity History (earlier workouts, oldest first):**\n${summaryNote}${renderedList.join('\n\n')}${omittedNote}${categoryLine}`;
@@ -405,7 +408,9 @@ function buildRouteContextBlock(routeContext) {
   return joinNonEmpty([
     `**Same-Route Context (GPS-confirmed):**\nRoute "${routeContext.routeName}" (${routeContext.relation}); ${routeContext.priorRideCount} earlier comparable rides (same direction).`,
     routeContext.routeNote ? `User note about this route (user-declared, applies to every ride on it): ${routeContext.routeNote}` : null,
-    lines ? `Checkpoint splits at this ride's segment boundaries (plus every 2 km inside long segments); prior rides are matched by place on the road, so differing segmentation does not break the comparison. Each line is one place with its own delta; quote places separately, never as a range summary. Median of up to 5 prior same-route rides:\n${lines}` : null,
+    lines ? (routeContext.checkpointsOnAxis
+      ? `Checkpoint splits at fixed places of the route: every 2 km of its road and its end, the same places for every ride. The time at a mark is this ride's time in motion from the route's start over the road it rode on the route; a stretch ridden elsewhere (a detour, another way through) is left out on both sides, and [over N km of it] says how much was compared. Stops are not in that time: they are listed after it with the rest they gave, seconds weighted by how far the heart rate fell (a few seconds at a light give none). Each line is one place with its own delta; quote places separately, never as a range summary. Median of up to 5 prior same-route rides over the same road:\n${lines}`
+      : `Checkpoint splits at this ride's segment boundaries (plus every 2 km inside long segments); prior rides are matched by place on the road, so differing segmentation does not break the comparison. Each line is one place with its own delta; quote places separately, never as a range summary. Median of up to 5 prior same-route rides:\n${lines}`) : null,
     routeContext.patternLine,
     sectioned ? null : routeContext.verdictLine,
     sectioned ? null : routeContext.climbLine,
@@ -1259,6 +1264,32 @@ function describeRouteRelation(relation) {
 // A checkpoint comparison table, only for rides on the same route: marks are aligned by rounded
 // distance so a slightly different total (wheel sensor) still matches. Returns '' when the marks
 // cannot be aligned (different routes) or there is nothing to compare.
+// Two rides of one habitual route, both laid on its axis: the route's own marks, the same places
+// for both, and at each the time in motion from the route's start over the road the two rode the
+// same way. Stops are not in that time; they are listed with the rest they gave. The finish is a
+// mark too, so the last climb is not left out.
+function buildRouteCheckpointComparisonTable(currentMarks, comparedMarks) {
+  if (!isAxisMarks(currentMarks) || !isAxisMarks(comparedMarks)) return '';
+  const rows = [];
+  const lastKm = currentMarks[currentMarks.length - 1].km;
+  let before = null;
+  for (const mark of currentMarks) {
+    if (!mark.ridden) continue;
+    const pair = sharedRoadTotals(currentMarks, comparedMarks, mark.km);
+    if (!pair || pair.km <= 0) continue;
+    const over = pair.km < mark.km - 0.05 ? ` [over ${pair.km} km of it]` : '';
+    const hr = pair.a.hr != null && pair.b.hr != null ? `, HR ${pair.a.hr} / ${pair.b.hr}` : '';
+    // Stops are said where their count changes, and at the finish.
+    const changed = !before || pair.a.stops !== before.a.stops || pair.b.stops !== before.b.stops;
+    const stops = (pair.a.stops || pair.b.stops) && (changed || mark.km === lastKm)
+      ? `; stops so far ${pair.a.stops} / ${pair.b.stops} (${formatHms(pair.a.stoppedS)} / ${formatHms(pair.b.stoppedS)} stopped, rest ${formatHms(pair.a.restS)} / ${formatHms(pair.b.restS)})` : '';
+    rows.push(`- km ${mark.km}${over}: ${formatHms(pair.a.timeS)} / ${formatHms(pair.b.timeS)}${hr}${stops}`);
+    before = pair;
+  }
+  if (rows.length < 2) return '';
+  return `**Checkpoints (This Workout / Compared Activity; the route's own marks, every 2 km of its road and its end, the same places for both rides):**\nThe time at a mark is time in motion from the route's start over the road both rides rode the same way; a stretch one of them rode another way is left out for both, and [over N km of it] says how much was compared. HR is the average over that same road. Stops are not in the time: they are listed with the rest they gave, seconds weighted by how far the heart rate fell (a few seconds at a light give none).\n${rows.join('\n')}`;
+}
+
 function buildCheckpointComparisonTable(aCheckpoints, bCheckpoints, relation = { type: 'same' }) {
   const listA = Array.isArray(aCheckpoints) ? aCheckpoints : [];
   const listB = Array.isArray(bCheckpoints) ? bCheckpoints : [];
@@ -1317,10 +1348,20 @@ function generateAnalysisChatPrompt(fitData, progressSummary, heartRateConfig, b
       : null,
     segmentContext,
     `Initial analysis (AI hypothesis to re-evaluate):\n${baseAnalysis || 'No current initial analysis is available.'}`,
+    // What the page shows between the analysis and this conversation.
+    fitData.chatComparisons?.length
+      ? `**Comparisons of this ride saved on the page (earlier AI answers, hypotheses to re-evaluate):**\n${fitData.chatComparisons.map((entry) => `- Against the ride of ${entry.label}${entry.outdated ? ' (made by an earlier version of the analysis)' : ''}:\n${String(entry.text || '').trim().split('\n').map((line) => `  ${line}`).join('\n')}`).join('\n')}`
+      : null,
+    fitData.chatComparedRide
+      ? `**The ride picked to compare with (its facts, as in the comparison table on the page; its charts are laid over this ride's):**\n${buildWorkoutFields(fitData.chatComparedRide.sessions?.[0] || {}, fitData.chatComparedRide.records).text}`
+      : null,
+    fitData.chatTrendPoints
+      ? `**Then and now on this route, against the ride picked to compare with (computed, as on the page):**\n\n${trendPointsBlocks(fitData.chatTrendPoints).join('\n\n')}`
+      : null,
     `Conversation so far:\n${safeHistory || '(no previous messages)'}`,
   ], '\n\n');
 
-  return `You are continuing a sports coaching discussion about a ${session.sport || 'sports'} activity and the athlete's evolving practice. Address the user's question rather than repeating a fixed report.
+  return `You are continuing a sports coaching discussion about a ${session.sport || 'sports'} activity and the athlete's evolving practice. Address the user's question rather than repeating a fixed report. The rider sees, above this conversation, the ride's analysis${fitData.chatComparisons?.length ? ', its saved comparisons' : ''}${fitData.chatComparedRide ? ', the ride picked to compare with' : ''}${fitData.chatTrendPoints ? ' and the then-and-now figures against it' : ''}; a question may refer to any of them.
 
 ${body}
 
@@ -1346,6 +1387,146 @@ ${responseLanguageInstruction(locale, true)}`;
 }
 
 // Directed: "This Workout" is the activity under review, "Another Compared Activity" is what it is checked against.
+// The question behind comparing two rides of one route, for this rider: has something changed
+// between then and now. The figures of the two points (trend-points.js) are computed and shown on
+// the page without the AI; what the AI is asked for is what code cannot weigh - whether the
+// differences are the rider or the circumstances of the days, across several figures and rides,
+// the rider's own notes and words, and the AI's earlier hypotheses about each ride.
+const TREND_LABELS = Object.freeze({
+  movingS: 'Time in motion over the shared road', hr: 'Heart rate on that road', flatKmh: 'Speed on the flat',
+  flatHr: 'Heart rate on the flat', flatKmhPer100Bpm: 'Speed on the flat per 100 bpm', climbS: 'Final climb, time',
+  climbHr: 'Final climb, heart rate', climbHrDrop: 'Heart rate fall in the minute after the climb',
+  halfPacePct: 'Speed in the second half of the road against the first', halfHrDelta: 'Heart rate in the second half of the road against the first',
+  weekLoadPct: 'Load of the week before, % of the usual week', daysInRow: 'Days ridden in a row before the ride',
+  daysSincePrevious: 'Days since the previous ride', temperatureC: 'Temperature (device), C', restS: 'Rest at stops (seconds weighted by the fall of HR)',
+});
+
+function trendValue(value, unit) {
+  if (!Number.isFinite(value)) return 'unknown';
+  if (unit === '%') return Number.isInteger(value) ? String(value) : value.toFixed(1);
+  if (unit === 's') return formatHms(Math.round(Math.abs(value)));
+  if (unit === 'km/h' || unit === 'km/h per 100 bpm' || unit === 'C') return value.toFixed(1);
+  if (unit === 'days') return Number.isInteger(value) ? String(value) : value.toFixed(1);
+  return String(Math.round(value));
+}
+
+function trendFigure(figure, unit) {
+  if (!figure) return 'unknown';
+  const middle = trendValue(figure.median, unit);
+  return figure.n > 1 && figure.min !== figure.max ? `${middle} [${trendValue(figure.min, unit)} to ${trendValue(figure.max, unit)}] of ${figure.n} rides` : `${middle} (${figure.n} ride${figure.n > 1 ? 's' : ''})`;
+}
+
+function trendRowLine(row) {
+  const change = row.delta == null ? '' : `; change ${row.delta > 0 ? '+' : row.delta < 0 ? '-' : ''}${trendValue(Math.abs(row.delta), row.unit)}`;
+  const spread = row.beyondSpread === true ? '; beyond the spread of the points' : row.beyondSpread === false ? '; within the spread of the points' : '';
+  const unit = row.unit === 's' || row.unit === 'C' ? '' : ` (${row.unit})`;
+  return `- ${TREND_LABELS[row.key] || row.key}${unit}: then ${trendFigure(row.then, row.unit)}; now ${trendFigure(row.now, row.unit)}${change}${spread}`;
+}
+
+// What surrounded the rides, ride by ride in date order: a point may mix the end of a long streak
+// with rides after a rest, and its median would hide it.
+function trendCircumstanceLine(row) {
+  const list = (figure) => (figure?.values?.length ? figure.values.map((value) => trendValue(value, row.unit)).join(', ') : 'unknown');
+  const unit = row.unit === 's' || row.unit === 'C' ? '' : ` (${row.unit})`;
+  return `- ${TREND_LABELS[row.key] || row.key}${unit}, ride by ride: then ${list(row.then)}; now ${list(row.now)}`;
+}
+
+// The figures the question names, only those the points have.
+function trendQuestionParts(rows) {
+  const has = (key) => rows.some((row) => row.key === key);
+  const both = (key) => rows.some((row) => row.key === key && row.then && row.now);
+  return [
+    has('movingS') ? 'the time over the shared road' : null,
+    both('flatKmhPer100Bpm') ? 'riding the flat at a given heart rate' : has('flatKmh') ? 'the speed on the flat' : null,
+    has('climbS') ? 'the final climb' : null,
+    has('climbHrDrop') ? 'the fall of heart rate after it' : null,
+    has('halfPacePct') ? 'holding the pace through the ride' : null,
+  ].filter(Boolean).join(', ');
+}
+
+function trendRideLine(ride, anchorId) {
+  const i = ride.indicators || {};
+  const c = ride.circumstances || {};
+  const notes = ride.notes ? joinNonEmpty([
+    ride.notes.rpe != null ? `RPE ${ride.notes.rpe}` : null, ride.notes.purpose ? `purpose ${ride.notes.purpose}` : null,
+    ride.notes.feeling ? `feeling ${ride.notes.feeling}` : null, ride.notes.conditions?.length ? `conditions ${ride.notes.conditions.join('/')}` : null,
+    ride.notes.note ? `note "${String(ride.notes.note).slice(0, 200)}"` : null,
+  ], '; ') : null;
+  const summary = ride.summary ? joinNonEmpty([
+    ride.summary.type ? `type ${ride.summary.type}` : null, ride.summary.finding ? `finding "${String(ride.summary.finding).slice(0, 220)}"` : null,
+    ride.summary.trend ? `trend ${ride.summary.trend}` : null,
+  ], '; ') : null;
+  const facts = joinNonEmpty([
+    Number.isFinite(i.movingS) ? `in motion ${formatHms(i.movingS)}` : 'not on the whole shared road',
+    // Heart rate over the shared road; a ride not on all of it has none there, whatever it had elsewhere.
+    Number.isFinite(i.movingS) ? (Number.isFinite(i.hr) ? `HR ${i.hr}` : 'no HR') : null,
+    Number.isFinite(i.flatKmh) ? `flat ${i.flatKmh.toFixed(1)} km/h${Number.isFinite(i.flatHr) ? ` at HR ${Math.round(i.flatHr)}` : ''}` : null,
+    Number.isFinite(i.climbS) ? `final climb ${formatHms(i.climbS)}${Number.isFinite(i.climbHr) ? ` at HR ${Math.round(i.climbHr)}` : ''}` : null,
+    Number.isFinite(i.halfPacePct) ? `second half ${i.halfPacePct >= 0 ? '+' : ''}${i.halfPacePct.toFixed(1)}% speed${Number.isFinite(i.halfHrDelta) ? `, ${i.halfHrDelta >= 0 ? '+' : ''}${Math.round(i.halfHrDelta)} bpm` : ''}` : null,
+    i.stops ? `${i.stops} stop(s), rest ${formatHms(i.restS || 0)}` : null,
+    Number.isFinite(c.weekLoadPct) ? `week before ${c.weekLoadPct}% of usual` : null,
+    Number.isFinite(c.daysInRow) ? `${c.daysInRow} day(s) in a row before` : null,
+    Number.isFinite(c.daysSincePrevious) ? `${c.daysSincePrevious} day(s) since the previous ride` : null,
+    Number.isFinite(c.hour) ? `started ${String(c.hour).padStart(2, '0')}:00 local` : null,
+    Number.isFinite(c.temperatureC) ? `${c.temperatureC.toFixed(1)} C (device)` : null,
+  ]);
+  return joinNonEmpty([
+    `- ${c.date || String(ride.startTime || '').slice(0, 10)}${ride.id === anchorId ? ' (the chosen ride)' : ''}: ${facts}.`,
+    notes ? `  Rider's notes: ${notes}.` : null,
+    ride.userWords?.length ? `  Rider's words about the ride: ${ride.userWords.map((words) => `"${words}"`).join(' ')}` : null,
+    summary ? `  Earlier AI hypothesis about this ride (not evidence): ${summary}.` : null,
+  ], '\n');
+}
+
+// The rider's plan in a comparison of two points: what each period was for, to read the
+// circumstances by (a block of daily riding, a rest after it) - not a list to check the rides
+// against, which a single ride's analysis does.
+function trendPlanBlock(fitData) {
+  const block = riderPlanBlock(fitData);
+  if (!block) return '';
+  return block.replace(/These are stated facts about what a period is for[\s\S]*$/, 'These are the rider\'s own words about what each period was for. Use them to read the circumstances of the rides (a block of daily riding, a rest after it) and the question the rider asks; do not check the rides against the plan here.');
+}
+
+// The two points as blocks of text: shared by the comparison prompt and the conversation, which
+// sees what the page shows above it.
+function trendPointsBlocks(points) {
+  const head = (point, name) => `${name}: ${point.rides.length} ride${point.rides.length > 1 ? 's' : ''} from ${point.rides[0]?.circumstances?.date} to ${point.rides.at(-1)?.circumstances?.date}${point.gapDays ? `, with a break of ${point.gapDays} days` : ''}`;
+  return [
+    `**Two points on the route "${points.routeName}" (${points.relation === 'reversed' ? 'both in its opposite direction' : 'both in its direction'}):**\n${head(points.then, 'Then')}.\n${head(points.now, 'Now')}.\nEach point is a chosen ride with up to ${points.neighbours} rides of the same purpose (${points.purpose ? `"${points.purpose}"` : 'none stated'}) before and after it. Times are in motion over the ${points.roadKm} km of road both chosen rides rode the same way.${points.twoDays ? ' One point has fewer than two rides: this is the difference of two days, not of two points.' : ''}`,
+    `**Figures of the two points (computed; median, its range and the rides behind it):**\n${points.rows.map(trendRowLine).join('\n')}`,
+    points.circumstanceRows?.length ? `**What surrounded the rides:**\n${points.circumstanceRows.map(trendCircumstanceLine).join('\n')}` : null,
+    `**The rides of the points:**\nThen:\n${points.then.rides.map((ride) => trendRideLine(ride, points.then.anchorId)).join('\n')}\nNow:\n${points.now.rides.map((ride) => trendRideLine(ride, points.now.anchorId)).join('\n')}`,
+  ].filter(Boolean);
+}
+
+function generateTrendComparisonPrompt(points, fitData, locale) {
+  const body = joinNonEmpty([...trendPointsBlocks(points), trendPlanBlock(fitData)], '\n\n');
+  const rules = [
+    'The figures and their verdicts are computed: use them, do not retell them, and never recompute them.',
+    '"Beyond the spread" means the ranges of the two points do not meet; a difference within the spread can be a day\'s difference.',
+    'Faster or lower heart rate alone is not a change of fitness. The strongest sign these data give is a change that holds across both points, beyond their spread, while the circumstances are alike; a change that comes with a different load before, a break, heat or a different purpose may be those instead.',
+    'For each circumstance that differs between the points, say which way it would move the figures: after many days in a row legs are tired and heart rate rises less; after rest and in cool air the same rider rides faster at a higher heart rate. Then say what is left that the circumstances do not explain.',
+    'A point can mix rides of different circumstances, such as the last days of a long streak and rides after a rest. Read the circumstances ride by ride, and where both points have rides of like circumstances, compare those with each other: a ride at the end of a streak now against rides deep in a streak then says more than the medians.',
+    'Name only figures that are given; one that is not in the list is not known.',
+    'A figure from fewer rides than its point has (heart rate missing on some) is weaker; say so where it decides the answer.',
+    'Where a figure is unknown in one point (no heart rate then, for example), say what that leaves open; unknown is not zero.',
+    'Earlier AI hypotheses are the same model\'s guesses about single rides, not evidence; one repeated is not corroboration. The rider\'s notes and words are the rider\'s own account.',
+    'Temperature is the device\'s and may be warmed by the sun or the body.',
+    'Do not invent circumstances: wind, sleep, illness and food are not in the data.',
+  ].map((rule) => `- ${rule}`).join('\n');
+  return `The rider compares two points on the trend of this route to ask whether something has changed between then and now. The computed figures below are already on the rider's page; your part is what they cannot say on their own: weighing them together, ride by ride, with what surrounded each ride and what the rider said about it. Say what changed (${trendQuestionParts(points.rows)}), whether it holds across each point or rests on one ride, and what the circumstances explain instead. If one fact the data cannot give would decide it, ask for it in one question.
+
+${body}
+
+${ANALYSIS_VOICE}
+
+**Evidence Rules:**
+${rules}
+
+Answer in one paragraph of 4-6 sentences, without headings or lists. Begin with the answer to the question - something changed, nothing changed, or it cannot be told from these rides - and the figures it rests on. Then what the circumstances explain of it, and what is left. Give advice only if the change itself calls for it.
+${responseLanguageInstruction(locale)}`;
+}
+
 function generateComparisonPrompt(fitData, comparedFitData, locale) {
   const session = fitData.sessions?.[0] || {};
   const comparedSession = comparedFitData.sessions?.[0] || {};
@@ -1357,12 +1538,19 @@ function generateComparisonPrompt(fitData, comparedFitData, locale) {
 
   // Route relation and (only on the same route) an aligned checkpoint table. A different route
   // means checkpoints are not compared at all.
-  const relation = matchRoutes(buildRouteSignature(fitData.records), buildRouteSignature(comparedFitData.records));
-  const sameRoute = relation.type === 'same' || relation.type === 'reversed';
-  const routeRelationLine = describeRouteRelation(relation);
-  const checkpointTable = sameRoute
-    ? buildCheckpointComparisonTable(computeCheckpoints(fitData.records, fitData.segments), computeCheckpoints(comparedFitData.records, comparedFitData.segments), relation)
-    : '';
+  // Both on one habitual route, the same way round: compared on that route's own marks (the
+  // extension lays both rides on its axis). Otherwise the two tracks are matched here.
+  const onRoute = fitData.routeComparison && isAxisMarks(fitData.routeCheckpoints) && isAxisMarks(comparedFitData.routeCheckpoints);
+  const relation = onRoute ? null : matchRoutes(buildRouteSignature(fitData.records), buildRouteSignature(comparedFitData.records));
+  const sameRoute = onRoute || relation.type === 'same' || relation.type === 'reversed';
+  const routeRelationLine = onRoute
+    ? `Route relation: both rides are on the route "${fitData.routeComparison.routeName}", ${fitData.routeComparison.relation === 'reversed' ? 'both in its opposite direction' : 'both in its direction'}.`
+    : describeRouteRelation(relation);
+  const checkpointTable = onRoute
+    ? buildRouteCheckpointComparisonTable(fitData.routeCheckpoints, comparedFitData.routeCheckpoints)
+    : sameRoute
+      ? buildCheckpointComparisonTable(computeCheckpoints(fitData.records, fitData.segments), computeCheckpoints(comparedFitData.records, comparedFitData.segments), relation)
+      : '';
 
   const dataQualityNote = (label, source) => (source === 'estimated from motion data'
     ? `**Data Quality Note (${label}):** Whole-ride power is estimated from motion and is not supplied as a reliable training-load metric. Any vpower shown for climbs is only a rough terrain-specific estimate; do not treat it as measured power.`
@@ -1454,6 +1642,8 @@ function averageTemperature(records) {
 }
 
 module.exports = {
+  buildRouteCheckpointComparisonTable,
+  generateTrendComparisonPrompt,
   buildHeartRateProfileContext,
   buildLapContext,
   buildRecentHistoryContext,

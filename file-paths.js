@@ -23,12 +23,13 @@ function normalizeFilePath(filePath, { platform = process.platform, realpath = f
 // Where a FIT file opened by hand may be saved. A file whose folder has a database belongs
 // there. Otherwise, while no database exists anywhere, its folder becomes the first one. But once
 // the rider has a database elsewhere, a stray file - a download, a friend's ride - must not start
-// a new database beside itself and take over as "the last one used": the caller asks.
+// a new database beside itself and take over as "the last one used": the caller asks. A file in
+// another folder with a database of its own (a shared folder, a copy) is shown from that one, but
+// it does not take over either: 'own-other', and the caller says so and offers the switch.
 function openedFitDatabaseRule({ ownDbPath, ownDbExists, lastDbPath, lastDbExists }) {
-  if (ownDbExists) return 'own';
-  if (!lastDbPath || !lastDbExists) return 'own';
-  if (normalizeFilePath(lastDbPath) === normalizeFilePath(ownDbPath)) return 'own';
-  return 'ask';
+  const elsewhere = lastDbPath && lastDbExists && normalizeFilePath(lastDbPath) !== normalizeFilePath(ownDbPath);
+  if (ownDbExists) return elsewhere ? 'own-other' : 'own';
+  return elsewhere ? 'ask' : 'own';
 }
 
 module.exports = { normalizeFilePath, openedFitDatabaseRule };

@@ -3,7 +3,9 @@ const MarkdownIt = require('markdown-it');
 const MODEL_PRICING_URL = 'https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing.md';
 const MODEL_PRICE_CACHE_KEY = 'fitVisualizer.modelPrices';
 
-// Bundled default-tier USD prices per 1M tokens (2026-10-02), used until a verified update is saved.
+// Bundled default-tier USD prices per 1M tokens, as of MODEL_PRICES_DATE. A downloaded table adds
+// what it has; per model the price of the newer of the two counts (mergeModelPrices).
+const MODEL_PRICES_DATE = '2026-10-02';
 const MODEL_PRICES = [
   ['GPT-5 mini', 0.25, 2.0],
   ['GPT-5.3-Codex', 1.75, 14.0],
@@ -64,12 +66,24 @@ function setModelPrices(prices) {
   currentPrices = validateModelPrices(prices);
 }
 
+// The bundled table and a downloaded one together: a model either has comes from it, and a model
+// both have takes its price from the newer of the two. A download made before this version of the
+// extension was built neither hides the models added since nor keeps their older prices.
+function mergeModelPrices(downloaded, updatedAt) {
+  const downloadedNewer = Date.parse(updatedAt) >= Date.parse(MODEL_PRICES_DATE);
+  const byKey = new Map(MODEL_PRICES.map((price) => [price.key, price]));
+  for (const price of downloaded) {
+    if (downloadedNewer || !byKey.has(price.key)) byKey.set(price.key, price);
+  }
+  return [...byKey.values()];
+}
+
 function restoreModelPriceCache(cache) {
   currentPrices = MODEL_PRICES;
   if (cache?.version !== 1 || cache.sourceUrl !== MODEL_PRICING_URL
     || !Number.isFinite(Date.parse(cache.updatedAt))) return false;
   try {
-    setModelPrices(cache.prices);
+    currentPrices = mergeModelPrices(validateModelPrices(cache.prices), cache.updatedAt);
     return true;
   } catch {
     return false;
@@ -145,7 +159,7 @@ async function updateModelPrices(storage, fetchImpl = globalThis.fetch) {
   const prices = parseModelPrices(Buffer.concat(chunks).toString('utf8'));
   const cache = { version: 1, sourceUrl: MODEL_PRICING_URL, updatedAt: new Date().toISOString(), prices };
   await storage.update(MODEL_PRICE_CACHE_KEY, cache);
-  setModelPrices(prices);
+  currentPrices = mergeModelPrices(prices, cache.updatedAt);
   return cache;
 }
 
@@ -187,6 +201,6 @@ function rankModelsByCost(models) {
 }
 
 module.exports = {
-  MODEL_PRICES, MODEL_PRICING_URL, MODEL_PRICE_CACHE_KEY, findModelPrice, normalizeModelName,
+  MODEL_PRICES, MODEL_PRICES_DATE, MODEL_PRICING_URL, MODEL_PRICE_CACHE_KEY, findModelPrice, normalizeModelName,
   parseModelPrices, rankModelsByCost, restoreModelPriceCache, setModelPrices, updateModelPrices,
 };

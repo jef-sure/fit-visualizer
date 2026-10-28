@@ -9,15 +9,16 @@ const CONDITION_VALUES = Object.freeze(['headwind', 'tailwind', 'rain', 'heat', 
 const FALLBACK_CHARS = 400;
 const SESSION_TYPES = Object.freeze(['recovery', 'endurance', 'tempo', 'threshold', 'vo2max/anaerobic', 'mixed', 'unstructured', 'undetermined']);
 
-// Stems of the response languages seen in practice; unknown wording is kept as written.
+// Stems of the response languages seen in practice; unknown wording is kept as written. A mixed
+// session names its parts ("mixed (endurance + tempo)"), so mixed is looked for before them.
 const TYPE_STEMS = Object.freeze([
   [/неструктур|unstructured|свободн/, 'unstructured'],
   [/неопредел|undetermined|indeterminate/, 'undetermined'],
+  [/смешан|mixed/, 'mixed'],
   [/восстанов|recovery/, 'recovery'],
   [/выносливост|endurance|aerobic base/, 'endurance'],
   [/пороговая|пороговый|пороговое|порогов|threshold/, 'threshold'],
   [/vo2|анаэроб|anaerobic/, 'vo2max/anaerobic'],
-  [/смешан|mixed/, 'mixed'],
   [/темпо|tempo/, 'tempo'],
 ]);
 

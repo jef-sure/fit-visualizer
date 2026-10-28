@@ -86,6 +86,28 @@ test('model price update persists validated prices and restores them after resta
   }
 });
 
+test('downloaded prices add to the bundled table, and per model the newer of the two counts', () => {
+  const { MODEL_PRICES_DATE } = require('../model-pricing');
+  const downloaded = [{ name: 'GPT-6 Luna', inputPrice: 9, outputPrice: 9 }, { name: 'Brand New Model', inputPrice: 1, outputPrice: 2 }];
+  const bundledLuna = findModelPrice({ id: 'gpt-6-luna' });
+  try {
+    // Downloaded before this version was built: the bundled price stands, the new model is added,
+    // and models only the bundled table knows are still priced.
+    const before = new Date(Date.parse(MODEL_PRICES_DATE) - 86400000).toISOString();
+    assert.equal(restoreModelPriceCache({ version: 1, sourceUrl: MODEL_PRICING_URL, updatedAt: before, prices: downloaded }), true);
+    assert.equal(findModelPrice({ id: 'gpt-6-luna' }).inputPrice, bundledLuna.inputPrice);
+    assert.equal(findModelPrice({ name: 'Brand New Model' }).outputPrice, 2);
+    assert.ok(findModelPrice({ name: 'Claude Opus 5.5' }), 'a model the download lacks keeps its bundled price');
+    // Downloaded later: its price is the current one.
+    const after = new Date(Date.parse(MODEL_PRICES_DATE) + 86400000).toISOString();
+    restoreModelPriceCache({ version: 1, sourceUrl: MODEL_PRICING_URL, updatedAt: after, prices: downloaded });
+    assert.equal(findModelPrice({ id: 'gpt-6-luna' }).inputPrice, 9);
+    assert.ok(findModelPrice({ name: 'Claude Opus 5.5' }));
+  } finally {
+    setModelPrices(MODEL_PRICES);
+  }
+});
+
 test('model price update preserves previous prices on network, format and storage failures', async () => {
   let writes = 0;
   const storage = { update: async () => { writes += 1; } };
@@ -195,7 +217,7 @@ function loadExtensionInternalsForTest(vscodeOverrides = {}, fitFileOverrides = 
     loaded.filename = modulePath;
     loaded.paths = Module._nodeModulePaths(path.dirname(modulePath));
     loaded._compile(fs.readFileSync(modulePath, 'utf8')
-      + '\nmodule.exports.__test = { updateActivityHeartRate, prepareGuestDatabase, saveFitToLocalDb, derivedRebuildPending, runUpgradeSteps, offerReanalysis, loadFitDataFromDb, promptHistoryRows, rereadOutdatedRides, getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, autoCalculateHeartRateProfileFromDbNow, withShortenedHistory, buildSessionClassForActivity, logLlmRequest, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; } };', modulePath);
+      + '\nmodule.exports.__test = { updateActivityHeartRate, prepareGuestDatabase, saveFitToLocalDb, derivedRebuildPending, runUpgradeSteps, offerReanalysis, loadFitDataFromDb, promptHistoryRows, rereadOutdatedRides, getTrainingContextFromDb, getProfileHeartRateConfig, prepareAnalysisData, indexFitUris, reanalyzeOutdatedActivities, reanalyzeSelectedActivities, needsDerivedFeatureRebuild, enqueueLlmTask, enqueueDatabaseTask, getTrendsForCard, getRouteCard, updateRoute, updateActivityNotes, generateActivityAnalysis, pendingAnalyses, analysisTaskKey, setAnalysisRunner: (runner) => { runActivityAnalysis = runner; }, awaitDerivedFeatureRebuild, getModelPickerData, autoCalculateHeartRateProfileFromDbNow, withShortenedHistory, buildSessionClassForActivity, logLlmRequest, setPendingRebuildForTest: (promise) => { pendingDerivedRebuild = promise; }, setContext: (context) => { extensionContextRef = context; }, appendActivityChatTurn, resendPendingChatTurn, getAnalysisChatFromDb, subscribeToAnalyses, openDatabase, getSqlJs, routeFilterId };', modulePath);
     return loaded.exports.__test;
   } finally {
     Module._load = originalLoad;
@@ -603,7 +625,7 @@ test('dates are shown and typed in the order of the interface language and sent 
   // The page is handed a display name of the language as well ("Russian"); that name is not a
   // locale and silently gave the system format, month first, in a Russian interface.
   const source = fs.readFileSync(path.join(__dirname, '..', 'activity-webview.js'), 'utf8');
-  assert.match(source, /displayLanguage\(locale\), segments, [^)]*modelPicker, locale\)/, 'the locale code is passed alongside the display name');
+  assert.match(source, /displayLanguage\(locale\), segments, [^)]*modelPicker, locale[,)]/, 'the locale code is passed alongside the display name');
   assert.match(american, /effectiveDate: readDate\('[^']*HrEffectiveDate'\)/);
   assert.match(american, /effectiveDate: readDate\('[^']*RiderPlanDate'\)/);
   assert.match(american, /const dateParts = \[\{"field":"month"\},\{"literal":"\/"\},\{"field":"day"\},\{"literal":"\/"\},\{"field":"year"\}\];/);
@@ -1579,7 +1601,7 @@ test('bulk re-analysis runs one Copilot request at a time', () => {
   assert.match(loop, /await generateActivityAnalysis\(dbPath, target\.id, true\);/);
   assert.doesNotMatch(loop, /Promise\.(all|allSettled|race)/);
   // Analyses started from the webview must not interleave with a bulk run: sql.js rewrites the whole file.
-  assert.match(source, /const task = enqueueLlmTask\(\(\) => runActivityAnalysis\(dbPath, activityId, force, modelOverride\)\)/);
+  assert.match(source, /enqueueLlmTask\(\(\) => runActivityAnalysis\(dbPath, activityId, force, modelOverride\)\)/);
   assert.match(source, /async function appendActivityChatTurn[\s\S]*?return enqueueLlmTask\(async \(\) => \{/);
 });
 
@@ -2336,6 +2358,7 @@ test('generated translation bundles must exactly match the UI and glossary catal
   assert.equal(validateTranslationBundle(bundle), bundle);
   assert.throws(() => validateTranslationBundle({}), /exactly the current UI string catalog/);
   assert.throws(() => validateTranslationBundle({ ...bundle, 'Error: {0}': 'Ошибка' }), /changed its placeholders/);
+  assert.throws(() => validateTranslationBundle({ ...bundle, Coach: 'Тренер<img src=x onerror=alert(1)>' }), /contains markup/);
   assert.equal(parseGeneratedBundle(`\`\`\`json\n${JSON.stringify(bundle)}\n\`\`\``)['Activity'], 'Активность');
 });
 
@@ -4194,8 +4217,8 @@ test('route names and notes survive a rebuild that re-derives the routes table',
   }
 });
 
-test('a mirrored altitude ride starts where the original ended', () => {
-  const { buildAltitudeRide, mirrorAltitudeRide } = require('../altitude-quality');
+test('an altitude ride starts at its first real fix', () => {
+  const { buildAltitudeRide } = require('../altitude-quality');
   const records = Array.from({ length: 60 }, (_, i) => ({
     elapsed_time: i * 10, distance: i * 0.1, altitude: (100 + i) / 1000,
     // No fix for the first records: null and 0/0 are not a start point.
@@ -4203,10 +4226,31 @@ test('a mirrored altitude ride starts where the original ended', () => {
   }));
   const ride = buildAltitudeRide(records);
   assert.ok(Math.abs(ride.start.lat - 52.003) < 1e-9, 'the first real fix is the start');
-  const mirrored = mirrorAltitudeRide(ride);
-  assert.deepEqual(mirrored.start, ride.end);
-  assert.deepEqual(mirrored.end, ride.start);
-  assert.ok(mirrored.altitudes[0].altitude > mirrored.altitudes.at(-1).altitude, 'the profile is reversed too');
+  assert.ok(Math.abs(ride.end.lat - 52.059) < 1e-9);
+});
+
+test('history cut to fit its block keeps the HR profile date on the first ride it keeps', () => {
+  const { buildRecentHistoryContext } = require('../analysis');
+  const entries = Array.from({ length: 12 }, (_, i) => ({
+    activityId: i + 1, startTime: `2026-08-${String(i + 1).padStart(2, '0')}T08:00:00Z`, sport: 'cycling', distanceKm: 20, durationS: 3600,
+    hrProfileDate: '2026-07-01', analysisText: 'A long earlier analysis. '.repeat(40),
+  }));
+  const text = buildRecentHistoryContext(entries, { detailedCount: 12 });
+  assert.match(text, /older rides? omitted/, 'the block was cut');
+  const firstKept = text.split('\n').find((line) => /^2026-08-\d\d:/.test(line));
+  assert.match(firstKept, /HR profile 2026-07-01/);
+});
+
+test('a route across the 180th meridian is still the same route', () => {
+  const { buildRouteSignature, matchRoutes } = require('../route-match');
+  // 20 km east along 65° N from 179.8° E to 179.8° W.
+  const kx = 111320 * Math.cos((65 * Math.PI) / 180);
+  const ride = (offsetM) => Array.from({ length: 801 }, (_, i) => {
+    const lon = 179.8 + (i * 25) / kx;
+    return { elapsed_time: i * 3, distance: (i * 25) / 1000, position_lat: 65 + offsetM / 110540, position_long: lon > 180 ? lon - 360 : lon };
+  });
+  const match = matchRoutes(buildRouteSignature(ride(5)), buildRouteSignature(ride(0)));
+  assert.equal(match.type, 'same', JSON.stringify(match));
 });
 
 test('a ride joins the closest matching route, not the first one within tolerance', async () => {
@@ -4576,27 +4620,48 @@ function syntheticAltitudeRide({ offsetM = 0, drift = null, dropFirstS = 0, seco
   return records;
 }
 
+// An elevation consensus as a route keeps it: every ride laid on the axis of the first one (a ride
+// marked reversed on it turned round) and added to the route's accumulator. These records carry
+// altitude in km, as the extension reads them; the route's rides are read in metres.
+function axisProfile(rides) {
+  const { buildRouteAxis, reverseAxis } = require('../route-axis');
+  const { addRideToAccumulator, createRouteAccumulator, layRideOnBins, profileFromAccumulator } = require('../route-sections');
+  const metres = (records) => records.map((record) => ({ ...record, altitude: record.altitude == null ? null : record.altitude * 1000 }));
+  const axis = buildRouteAxis(rides[0].records);
+  const acc = createRouteAccumulator(axis);
+  rides.forEach((ride, index) => {
+    const relation = ride.reversed ? 'reversed' : 'same';
+    addRideToAccumulator(acc, { activityId: index + 1, relation, lay: layRideOnBins(metres(ride.records), relation === 'reversed' ? reverseAxis(axis) : axis) });
+  });
+  return { axis, profile: profileFromAccumulator(acc) };
+}
+
+// A ride as altitude settling reads it: every record at its place on the route's axis.
+function altitudeRideOnAxis(records, axis) {
+  const { buildAltitudeRide } = require('../altitude-quality');
+  const { layRideOnBins } = require('../route-sections');
+  const lay = layRideOnBins(records, axis);
+  return buildAltitudeRide(records.map((record, index) => ({ ...record, axis_km: lay.axisKm[index] })));
+}
+
 test('consensus elevation aligns constant per-ride offsets and reports the route ascent', () => {
-  const { buildAltitudeRide, computeConsensusProfile } = require('../altitude-quality');
   const offsets = [0, 40, -25, 80, -60, 15];
-  const rides = offsets.map((offsetM) => buildAltitudeRide(syntheticAltitudeRide({ offsetM })));
-  const profile = computeConsensusProfile(rides);
+  const { profile } = axisProfile(offsets.map((offsetM) => ({ records: syntheticAltitudeRide({ offsetM }) })));
   assert.equal(profile.rides, 6);
   assert.ok(Math.abs(profile.ascentM - 60) <= 6, `ascent ${profile.ascentM}`);
   assert.ok(Math.abs(profile.descentM - 60) <= 6, `descent ${profile.descentM}`);
-  assert.equal(computeConsensusProfile(rides.slice(0, 4)), null, 'fewer than five rides give no consensus');
+  assert.equal(axisProfile(offsets.slice(0, 4).map((offsetM) => ({ records: syntheticAltitudeRide({ offsetM }) }))).profile, null, 'fewer than five rides give no consensus');
 });
 
 test('altitude settling is detected against the consensus and not for a pure constant offset', () => {
-  const { buildAltitudeRide, computeConsensusProfile, detectAltitudeSettling } = require('../altitude-quality');
-  const rides = [0, 10, -10, 20, -20, 5].map((offsetM) => buildAltitudeRide(syntheticAltitudeRide({ offsetM })));
-  const profile = computeConsensusProfile(rides);
-  const drifting = buildAltitudeRide(syntheticAltitudeRide({ offsetM: 30, drift: { amplitudeM: -100, seconds: 180 } }));
+  const { detectAltitudeSettling } = require('../altitude-quality');
+  const { axis, profile } = axisProfile([0, 10, -10, 20, -20, 5].map((offsetM) => ({ records: syntheticAltitudeRide({ offsetM }) })));
+  const drifting = altitudeRideOnAxis(syntheticAltitudeRide({ offsetM: 30, drift: { amplitudeM: -100, seconds: 180 } }), axis);
   const settling = detectAltitudeSettling(drifting, profile);
   assert.ok(settling, 'start drift detected');
   assert.ok(settling.startDeltaM < -50);
   assert.ok(settling.settleSeconds >= 60 && settling.settleSeconds <= 240, `settles after ${settling.settleSeconds}s`);
-  assert.equal(detectAltitudeSettling(buildAltitudeRide(syntheticAltitudeRide({ offsetM: 90 })), profile), null);
+  assert.equal(detectAltitudeSettling(altitudeRideOnAxis(syntheticAltitudeRide({ offsetM: 90 }), axis), profile), null);
 });
 
 test('altitude flags cover a missing start, interior gaps and closed-loop settling', () => {
@@ -4644,8 +4709,11 @@ test('route assignment is idempotent and its elevation profile is cached by memb
 
     const profile = ensureRouteElevationProfile(db, routeId);
     assert.equal(profile.rides, 6);
-    const stored = JSON.parse(db.exec('SELECT elevation_profile_json FROM routes')[0].values[0][0]);
-    assert.equal(stored.members, 6);
+    assert.ok(Math.abs(profile.ascentM - 60) <= 8, `the barometer offsets are removed: ascent ${profile.ascentM}`);
+    // Every ride is added once; asking again reads nothing back.
+    const stored = JSON.parse(db.exec('SELECT skeleton_json FROM routes')[0].values[0][0]);
+    assert.equal(Object.keys(stored.accumulator.members).length, 6);
+    db.run('DELETE FROM records');
     assert.deepEqual(ensureRouteElevationProfile(db, routeId), profile);
   } finally {
     db.close();
@@ -4762,6 +4830,8 @@ test('summary types are normalized across languages and older history entries ar
   const { normalizeSessionType, parseAnalysisSummary, describeAnalysisForHistory } = require('../analysis-summary');
   assert.equal(normalizeSessionType('Пороговая'), 'threshold');
   assert.equal(normalizeSessionType('темповая'), 'tempo');
+  assert.equal(normalizeSessionType('mixed (endurance + tempo)'), 'mixed', 'a mixed session names its parts');
+  assert.equal(normalizeSessionType('смешанная: выносливость и темп'), 'mixed');
   assert.equal(normalizeSessionType('выносливость'), 'endurance');
   assert.equal(normalizeSessionType('смешанная'), 'mixed');
   assert.equal(normalizeSessionType('неопределённая'), 'undetermined');
@@ -5056,6 +5126,44 @@ test('analysis deduplicates pending requests but allows retry after success or f
   assert.equal((await internals.generateActivityAnalysis('/tmp/test.sqlite', 1, true)).text, 'Retry succeeded');
 });
 
+test('an analysis reaches every open page of its ride, and another model waits for the one running', async () => {
+  const internals = loadExtensionInternalsForTest();
+  const seen = { a: [], b: [], other: [] };
+  const off = [
+    internals.subscribeToAnalyses('/tmp/test.sqlite', (message) => seen.a.push(message)),
+    internals.subscribeToAnalyses('/tmp/test.sqlite', (message) => seen.b.push(message)),
+    internals.subscribeToAnalyses('/tmp/other.sqlite', (message) => seen.other.push(message)),
+  ];
+  const runs = [];
+  const releases = [];
+  internals.setAnalysisRunner(async (dbPath, activityId, force, model) => {
+    runs.push(model);
+    return new Promise((resolve) => { releases.push(() => resolve({ text: `by ${model || 'default'}`, modelId: model || 'default' })); });
+  });
+  try {
+    // A batch analyses the ride; a page asks for the same with another model.
+    const batch = internals.generateActivityAnalysis('/tmp/test.sqlite', 7, true);
+    const page = internals.generateActivityAnalysis('/tmp/test.sqlite', 7, true, 'gpt-6-sol');
+    const same = internals.generateActivityAnalysis('/tmp/test.sqlite', 7, true, 'gpt-6-sol');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(runs, [null], 'the other model waits');
+    assert.ok(seen.a.some((message) => message.type === 'analysisQueued' && message.id === 7));
+    releases[0]();
+    assert.equal((await batch).text, 'by default');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(runs, [null, 'gpt-6-sol'], 'then runs its own request');
+    releases[1]();
+    assert.equal((await page).text, 'by gpt-6-sol');
+    assert.equal((await same).text, 'by gpt-6-sol', 'the same model joins the queued request');
+    for (const messages of [seen.a, seen.b]) {
+      assert.deepEqual(messages.filter((message) => message.type === 'analysisResult').map((message) => message.analysis), ['by default', 'by gpt-6-sol']);
+    }
+    assert.deepEqual(seen.other, [], 'pages of another database hear nothing');
+  } finally {
+    off.forEach((unsubscribe) => unsubscribe());
+  }
+});
+
 test('history rendering omits missing values and analysis requests host busy state after loading', () => {
   const { renderActivityContentHtml } = loadActivityWebviewForTest();
   const route = { routeId: 1, name: 'Loop', rideCount: 6, relation: 'same', trends: {
@@ -5111,23 +5219,10 @@ test('route notes are stored per route and rendered with the pattern in the prom
   assert.match(prompt, /property of the route, not a finding of the day and not an open question/);
 });
 
-function loopRideRecords(speedAt, reversed = false, lengthKm = 20) {
-  const records = [];
-  let distance = 0;
-  let elapsed = 0;
-  while (distance < lengthKm) {
-    const fraction = distance / lengthKm;
-    const canonical = reversed ? 1 - fraction : fraction;
-    records.push({ elapsed_time: elapsed, distance });
-    elapsed += 10;
-    distance += (speedAt(canonical) * 10) / 3600;
-  }
-  records.push({ elapsed_time: elapsed, distance: lengthKm });
-  return records;
-}
-
 test('route features derive climbs, per-direction speeds and flat-ground direction effects', () => {
-  const { computeRouteFeatures, describeRouteFeatures, findClimbs, sectionCount, sectionSpeeds } = require('../route-features');
+  const { computeRouteFeatures, describeRouteFeatures, findClimbs, sectionCount } = require('../route-features');
+  // A ride's speed in each of the ten sections, in its own direction of travel.
+  const sectionsAt = (speedAt, reversed = false) => Array.from({ length: 10 }, (_, index) => speedAt(reversed ? 1 - (index + 0.5) / 10 : (index + 0.5) / 10));
   const bins = 800;
   const consensus = Array.from({ length: bins }, (_, i) => (i < bins - 24 ? 100 : 100 + ((i - (bins - 24)) / 24) * 35));
   const profile = { consensus, lengthKm: 20, ascentM: 35, descentM: 0 };
@@ -5142,8 +5237,8 @@ test('route features derive climbs, per-direction speeds and flat-ground directi
   const speedAt = (position) => (position >= 0.2 && position < 0.5 ? 28 : position >= 0.5 && position < 0.8 ? 23 : 25);
   const rides = [];
   for (let i = 0; i < 4; i += 1) {
-    rides.push({ relation: 'same', speeds: sectionSpeeds(loopRideRecords(speedAt), 10) });
-    rides.push({ relation: 'reversed', speeds: sectionSpeeds(loopRideRecords(speedAt, true), 10) });
+    rides.push({ relation: 'same', speeds: sectionsAt(speedAt) });
+    rides.push({ relation: 'reversed', speeds: sectionsAt(speedAt, true) });
   }
   const features = computeRouteFeatures(profile, rides);
   assert.equal(features.rows.length, 10);
@@ -5158,8 +5253,8 @@ test('route features derive climbs, per-direction speeds and flat-ground directi
   // Now the opposite direction rides the same stretch slowly: a direction effect.
   const windy = [];
   for (let i = 0; i < 4; i += 1) {
-    windy.push({ relation: 'same', speeds: sectionSpeeds(loopRideRecords(speedAt), 10) });
-    windy.push({ relation: 'reversed', speeds: sectionSpeeds(loopRideRecords((position) => (position >= 0.2 && position < 0.5 ? 21 : 25), true), 10) });
+    windy.push({ relation: 'same', speeds: sectionsAt(speedAt) });
+    windy.push({ relation: 'reversed', speeds: sectionsAt((position) => (position >= 0.2 && position < 0.5 ? 21 : 25), true) });
   }
   const effect = describeRouteFeatures(computeRouteFeatures(profile, windy), 'same');
   assert.equal(effect.asymmetric.length, 1);
@@ -5170,7 +5265,6 @@ test('route features derive climbs, per-direction speeds and flat-ground directi
   assert.ok(opposite.asymmetric[0].ownKmh < opposite.asymmetric[0].otherKmh);
 
   assert.equal(computeRouteFeatures({ consensus: [], lengthKm: 20 }, []), null);
-  assert.equal(sectionSpeeds([{ elapsed_time: 0, distance: 0 }], 10), null);
 });
 
 test('route profile block lists climbs and direction effects, and is cached per member count', async () => {
@@ -5376,39 +5470,27 @@ test('a device that wrote no ascent figure is not shown as a disagreeing source'
 });
 
 test('reversed rides join the elevation consensus mirrored onto the canonical axis', async () => {
-  const { buildAltitudeRide, computeConsensusProfile, detectAltitudeSettling, mirrorConsensusProfile } = require('../altitude-quality');
+  const { detectAltitudeSettling, mirrorConsensusProfile } = require('../altitude-quality');
+  const { reverseAxis } = require('../route-axis');
   // A hill in the middle of the route: high at 50 % of the distance on the canonical axis.
   const shape = (position) => 100 + 60 * Math.sin(Math.PI * position);
-  const rideOnAxis = (offsetM, driftM = 0) => buildAltitudeRide(Array.from({ length: 1200 }, (_, i) => {
+  const loopRecords = (altitudeAt, backwards = false) => alongTrack(Array.from({ length: 1200 }, (_, i) => {
     const position = i / 1200;
-    const distance = position * 20;
-    const drift = driftM ? driftM * Math.max(0, 1 - i / 180) : 0;
-    return { elapsed_time: i, distance, altitude: (shape(position) + offsetM + drift) / 1000,
-      position_lat: 52 + 0.01 * Math.sin(2 * Math.PI * position), position_long: 13 + 0.01 * (1 - Math.cos(2 * Math.PI * position)) };
+    const canonical = backwards ? 1 - position : position;
+    return { elapsed_time: i, altitude: altitudeAt(i, canonical) / 1000,
+      position_lat: 52 + 0.01 * Math.sin(2 * Math.PI * canonical), position_long: 13 + 0.01 * (1 - Math.cos(2 * Math.PI * canonical)) };
   }));
-  const rides = [0, 20, -20, 40, -40, 10].map((offset) => rideOnAxis(offset));
-  const profile = computeConsensusProfile(rides);
+  const rides = [0, 20, -20, 40, -40, 10].map((offset) => ({ records: loopRecords((i, canonical) => shape(canonical) + offset) }));
+  const { axis, profile } = axisProfile(rides);
   assert.ok(Math.abs(profile.ascentM - 60) <= 6);
 
-  // The same loop ridden backwards: distances flip, so the un-mirrored ride would disagree with
-  // the consensus while the mirrored one follows it exactly (up to its constant offset).
-  const reversedRide = (() => {
-    const points = Array.from({ length: 1200 }, (_, i) => {
-      const position = i / 1200;
-      return { elapsed_time: i, distance: position * 20, altitude: shape(1 - position) / 1000,
-        position_lat: 52 + 0.01 * Math.sin(2 * Math.PI * (1 - position)), position_long: 13 + 0.01 * (1 - Math.cos(2 * Math.PI * (1 - position))) };
-    });
-    return buildAltitudeRide(points);
-  })();
-  // For a reversed ride the consensus itself is mirrored, so the ride's first minutes stay first.
+  // The same loop ridden backwards is laid on the axis turned round; the consensus is mirrored for
+  // it, so the ride's first minutes stay first.
+  const backwardsAxis = reverseAxis(axis);
   const mirroredProfile = mirrorConsensusProfile(profile);
+  const reversedRide = altitudeRideOnAxis(loopRecords((i, canonical) => shape(canonical), true), backwardsAxis);
   assert.equal(detectAltitudeSettling(reversedRide, mirroredProfile), null, 'a clean reversed ride is not flagged');
-  const driftingReversed = buildAltitudeRide(Array.from({ length: 1200 }, (_, i) => {
-    const position = i / 1200;
-    const drift = -90 * Math.max(0, 1 - i / 150);
-    return { elapsed_time: i, distance: position * 20, altitude: (shape(1 - position) + 30 + drift) / 1000,
-      position_lat: 52 + 0.01 * Math.sin(2 * Math.PI * (1 - position)), position_long: 13 + 0.01 * (1 - Math.cos(2 * Math.PI * (1 - position))) };
-  }));
+  const driftingReversed = altitudeRideOnAxis(loopRecords((i, canonical) => shape(canonical) + 30 - 90 * Math.max(0, 1 - i / 150), true), backwardsAxis);
   const caught = detectAltitudeSettling(driftingReversed, mirroredProfile);
   assert.ok(caught, 'reversed drift is detected');
   assert.ok(caught.startDeltaM < -50);
@@ -5861,6 +5943,21 @@ test('log retention compresses past-retention files and deletes only past 3x ret
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('a file with several sessions is one activity: distance and time of all of them', () => {
+  const { buildSummary, wholeSession } = require('../activity-summary');
+  const sessions = [
+    { start_time: '2026-08-01T09:00:00.000Z', sport: 'cycling', total_distance: 30, total_timer_time: 3600, total_elapsed_time: 3700, max_hr: 160 },
+    { start_time: '2026-08-01T10:05:00.000Z', sport: 'running', total_distance: 8, total_timer_time: 2400, total_elapsed_time: 2400, max_hr: 172 },
+  ];
+  const whole = wholeSession(sessions);
+  assert.equal(whole.total_distance, 38);
+  assert.equal(whole.total_timer_time, 6000);
+  assert.equal(whole.max_hr, 172);
+  assert.equal(whole.start_time, '2026-08-01T09:00:00.000Z');
+  assert.equal(buildSummary([], sessions).distanceKm, 38);
+  assert.deepEqual(wholeSession([sessions[0]]), sessions[0]);
+});
+
 test('manual activity writes session notes', async () => {
   const SQL = await initSqlJs({
     locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm'),
@@ -5880,6 +5977,10 @@ test('manual activity writes session notes', async () => {
 
     const row = db.exec(`SELECT rpe, purpose, feeling, conditions_json, note FROM activity_notes WHERE activity_id = ${activityId}`)[0].values[0];
     assert.deepEqual(row, [7, 'commute', 'tired', JSON.stringify(['headwind']), 'into the wind']);
+    // Typed as local time: the computer's offset at that moment makes its day and hour local again.
+    const [offset, source] = db.exec(`SELECT utc_offset_s, offset_source FROM activities WHERE id = ${activityId}`)[0].values[0];
+    assert.equal(offset, -new Date('2026-09-01T12:00:00.000Z').getTimezoneOffset() * 60);
+    assert.equal(source, 'manual');
 
     // An all-empty notes object writes nothing.
     const secondId = createManualActivity(db, {
@@ -5977,9 +6078,11 @@ test('period block reports RPE against load when notes are present (E3)', () => 
 test('activity list filters by route and persists the selected route (D3)', () => {
   const { renderActivityBrowserHtml } = loadActivityWebviewForTest();
   const activities = [
-    { id: 1, file_name: 'a.fit', start_time: '2026-09-01T10:00:00Z', sport: 'cycling', total_distance_km: 20, total_timer_s: 3600, route_name: 'Loop' },
-    { id: 2, file_name: 'b.fit', start_time: '2026-09-02T10:00:00Z', sport: 'cycling', total_distance_km: 21, total_timer_s: 3600, route_name: 'Loop' },
-    { id: 3, file_name: 'c.fit', start_time: '2026-09-03T10:00:00Z', sport: 'cycling', total_distance_km: 22, total_timer_s: 3600, route_name: null },
+    { id: 1, file_name: 'a.fit', start_time: '2026-09-01T10:00:00Z', sport: 'cycling', total_distance_km: 20, total_timer_s: 3600, route_id: 5, route_name: 'Loop' },
+    { id: 2, file_name: 'b.fit', start_time: '2026-09-02T10:00:00Z', sport: 'cycling', total_distance_km: 21, total_timer_s: 3600, route_id: 5, route_name: 'Loop' },
+    { id: 3, file_name: 'c.fit', start_time: '2026-09-03T10:00:00Z', sport: 'cycling', total_distance_km: 22, total_timer_s: 3600, route_id: null, route_name: null },
+    // Another route with the same automatic name.
+    { id: 4, file_name: 'd.fit', start_time: '2026-09-04T10:00:00Z', sport: 'cycling', total_distance_km: 20, total_timer_s: 3600, route_id: 6, route_name: 'Loop' },
   ];
   const webview = { asWebviewUri: (uri) => ({ toString: () => uri.toString() }), cspSource: 'test-csp' };
   const extensionUri = { fsPath: '/tmp' };
@@ -5989,13 +6092,25 @@ test('activity list filters by route and persists the selected route (D3)', () =
   const html = render(null);
   assert.match(html, /id="routeSel"/);
   assert.match(html, /All routes/);
-  assert.match(html, /<option value="Loop"/);
+  assert.match(html, /<option value="5">Loop · 2<\/option>/, 'two routes of one name are told apart by their rides');
+  assert.match(html, /<option value="6">Loop · 1<\/option>/);
   // With a filter, only rides on that route remain in the activity selector.
-  const filtered = render('Loop');
-  assert.match(filtered, /<option value="1" data-route="Loop" selected>/);
-  assert.match(filtered, /<option value="2" data-route="Loop"/);
+  const filtered = render(5);
+  assert.match(filtered, /<option value="1" data-route="5" selected>/);
+  assert.match(filtered, /<option value="2" data-route="5"/);
   assert.doesNotMatch(filtered, /<option value="3"/); // the unrouted ride is filtered out
+  assert.doesNotMatch(filtered, /<option value="4"/, 'the other route of the same name is not merged in');
   assert.match(filtered, /setRouteFilter/);
+});
+
+test('the saved route filter finds its route by id, and by name after a rebuild gives routes new ids', () => {
+  const { routeFilterId } = loadExtensionInternalsForTest();
+  const list = (pairs) => pairs.map(([id, name]) => ({ route_id: id, route_name: name }));
+  assert.equal(routeFilterId({ id: 5, name: 'Loop' }, list([[5, 'Loop'], [6, 'Loop']])), 5);
+  assert.equal(routeFilterId({ id: 5, name: 'Loop' }, list([[7, 'Loop'], [8, 'Hills']])), 7, 'rebuilt: the one route of that name');
+  assert.equal(routeFilterId({ id: 5, name: 'Loop' }, list([[5, 'Hills'], [7, 'Loop']])), 7, 'an id now of another route does not count');
+  assert.equal(routeFilterId('Loop', list([[7, 'Loop'], [8, 'Loop']])), null, 'a name two routes share says nothing');
+  assert.equal(routeFilterId(null, list([[7, 'Loop']])), null);
 });
 
 test('the route section shows facts and the name/note form, not checkpoint tables or a climb chart', () => {
@@ -6025,6 +6140,8 @@ test('sport profiles map FIT sports and format pace per profile (C6)', () => {
   const { normalizeSport, profileFor, describeSpeed, formatPace, sportPromptAdditions } = require('../sport-profiles');
   assert.equal(normalizeSport('cycling'), 'cycling');
   assert.equal(normalizeSport('mountain_biking'), 'cycling');
+  assert.equal(normalizeSport('e_biking'), 'cycling');
+  assert.equal(normalizeSport('motorcycling'), 'other', 'a motorcycle is not a bike ride');
   assert.equal(normalizeSport('running'), 'running');
   assert.equal(normalizeSport('trail_running'), 'running');
   assert.equal(normalizeSport('hiking'), 'hiking');
@@ -6222,10 +6339,24 @@ test('a one-off model from the page overrides the pinned model without changing 
   assert.match(source, /modelId: modelOverride \|\| getAnalysisModelId\(\),/);
   // The analyze handler passes the dropdown choice through and never writes the configuration.
   const handler = source.slice(source.indexOf("msg.type === 'analyzeActivity'"), source.indexOf("msg.type === 'analysisChatTurn'"));
-  assert.match(handler, /generateActivityAnalysis\(dbPath, requestedActivityId, msg\.force, chosenModel\)/);
+  assert.match(handler, /generateActivityAnalysis\(dbPath, Number\(msg\.id\), msg\.force, chosenModel\)/);
   assert.doesNotMatch(handler, /\.update\(/);
   // Batch re-analysis keeps using the default (no override).
   assert.match(source, /await generateActivityAnalysis\(dbPath, target\.id, true\);/);
+});
+
+test('the page allows only its own files and the map tiles, and its nonce is random', () => {
+  const { renderActivityBrowserHtml } = loadActivityWebviewForTest();
+  const webview = { asWebviewUri: (uri) => ({ toString: () => uri.toString() }), cspSource: 'vscode-resource:' };
+  const html = renderActivityBrowserHtml(webview, { fsPath: '/tmp' }, [], null, null, null, null, {}, {}, null, [], null, {}, null, 28, [], false, null, [], null);
+  const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)[1];
+  assert.match(csp, /img-src vscode-resource: https:\/\/\*\.tile\.openstreetmap\.org data:/);
+  assert.doesNotMatch(csp, /connect-src/);
+  assert.doesNotMatch(csp, /https: /, 'no blanket https');
+  const { createNonce } = require('../utils');
+  const nonces = new Set(Array.from({ length: 50 }, createNonce));
+  assert.equal(nonces.size, 50);
+  assert.ok([...nonces].every((nonce) => /^[A-Za-z0-9+/]{24}$/.test(nonce)));
 });
 
 test('every script block of the generated activity page parses', () => {
@@ -6378,6 +6509,16 @@ test('the usual week is averaged over the days that carry load, and needs two we
   const rhythm = computeLoadRhythm(steady, reference, 'cycling');
   assert.ok(Math.abs(rhythm.ratio - 1) < 0.06, `ratio ${rhythm.ratio}`);
   assert.notEqual(rhythm.verdict, 'spike-monotonous');
+  // A week with one ride, or none, after three usual ones: below the usual, though its monotony
+  // (which needs two days of load) is unknown.
+  const oneRide = steady.filter((activity) => new Date(reference) - new Date(activity.startTime) > 7 * 86400000 || activity === steady[3]);
+  const quiet = computeLoadRhythm(oneRide, reference, 'cycling');
+  assert.equal(quiet.verdict, 'below-habit');
+  assert.equal(quiet.monotony, null);
+  assert.ok(quiet.ratio < 0.3, `ratio ${quiet.ratio}`);
+  const none = computeLoadRhythm(steady.filter((activity) => new Date(reference) - new Date(activity.startTime) > 7 * 86400000), reference, 'cycling');
+  assert.equal(none.ratio, 0);
+  assert.equal(none.verdict, 'below-habit');
 });
 
 test('the trends block describes which way a number moved without calling it good or healthy', () => {
@@ -6425,12 +6566,13 @@ function skeletonRide({ flatKmh = 30, climbKmh = 12, hr = [130, 135, 150], junct
 }
 
 test('the route skeleton finds the slow-down every ride shares and the change of terrain', () => {
-  const { buildRouteSkeleton, SKELETON } = require('../route-sections');
+  const { buildRouteSkeleton } = require('../route-sections');
+  const { AXIS } = require('../route-axis');
   // Rides differ in speed and barometer offset; all brake at km 2.
   const rides = Array.from({ length: 8 }, (_, i) => skeletonRide({ flatKmh: 28 + i, climbKmh: 11 + (i % 3), altitudeOffset: i * 7 }));
   const skeleton = buildRouteSkeleton(rides);
   assert.equal(skeleton.rides, 8);
-  assert.equal(skeleton.toleranceM, SKELETON.roadToleranceM);
+  assert.equal(skeleton.toleranceM, AXIS.offRoadM, 'off the road is what the axis says it is');
   assert.equal(skeleton.points.length, 1);
   assert.ok(Math.abs(skeleton.points[0].km - 2) <= 0.1, `point at km ${skeleton.points[0].km}`);
   assert.equal(skeleton.points[0].sharePct, 100);
@@ -6591,7 +6733,8 @@ test('the route skeleton is cached per direction and rebuilt when a ride joins',
     const stored = JSON.parse(db.exec('SELECT skeleton_json FROM routes WHERE id = 1')[0].values[0][0]);
     assert.deepEqual(stored.same.skeleton, skeleton);
     // Served from the cache while nothing changed; rebuilt when a ride joins or a setting changes.
-    db.run("UPDATE routes SET skeleton_json = replace(skeleton_json, '\"rides\":5', '\"rides\":555')");
+    stored.same.skeleton.rides = 555;
+    db.run('UPDATE routes SET skeleton_json = ? WHERE id = 1', [JSON.stringify(stored)]);
     assert.equal(ensureRouteSkeleton(db, 1, 'same').rides, 555);
     add(6);
     assert.equal(ensureRouteSkeleton(db, 1, 'same').rides, 6);
@@ -6869,7 +7012,9 @@ test('a FIT file opened from elsewhere does not start a database or take over as
   const stray = '/downloads/.fit-visualizer/fit-data.sqlite';
   // The file's own folder has a database: it belongs there.
   assert.equal(openedFitDatabaseRule({ ownDbPath: home, ownDbExists: true, lastDbPath: home, lastDbExists: true }), 'own');
-  assert.equal(openedFitDatabaseRule({ ownDbPath: stray, ownDbExists: true, lastDbPath: home, lastDbExists: true }), 'own');
+  // ... and a folder with a database of its own beside the rider's is shown from it, without
+  // taking over as the database the commands use.
+  assert.equal(openedFitDatabaseRule({ ownDbPath: stray, ownDbExists: true, lastDbPath: home, lastDbExists: true }), 'own-other');
   // No database anywhere yet: the first file opened starts one in its folder.
   assert.equal(openedFitDatabaseRule({ ownDbPath: stray, ownDbExists: false, lastDbPath: null, lastDbExists: false }), 'own');
   assert.equal(openedFitDatabaseRule({ ownDbPath: stray, ownDbExists: false, lastDbPath: home, lastDbExists: false }), 'own');
@@ -6880,7 +7025,7 @@ test('a FIT file opened from elsewhere does not start a database or take over as
   // Viewing only goes to a database that is emptied first and never remembered.
   assert.match(source, /await fs\.rm\(dbPath, \{ force: true \}\);/);
   assert.match(source, /if \(remember\) await rememberDatabasePath\(dbPath\);/);
-  assert.match(source, /choice === startHere \? \{ dbPath: ownDbPath, remember: true \} : \{ dbPath: await prepareGuestDatabase\(filePath\), remember: false \}/);
+  assert.match(source, /choice === startHere \? \{ dbPath: ownDbPath, remember: true \} : \{ dbPath: await prepareGuestDatabase\(filePath\), remember: false, guest: true \}/);
 });
 
 test('each file opened for viewing only has its own database, and a new database is not rebuilt as if after an update', async () => {
@@ -7523,6 +7668,127 @@ test('the activity page puts the player on the map only when the ride has a rout
   assert.doesNotMatch(noRoute, /fitMapPlayer|fitRoutePlayers\['fitMap'\] = /);
 });
 
+test('every row about a ride goes with it: old tables get the cascade, rows of missing rides are dropped', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    // A database of an earlier version: references without ON DELETE, and rows of a ride (99)
+    // removed while foreign keys were off.
+    db.run(`CREATE TABLE activities (id INTEGER PRIMARY KEY AUTOINCREMENT, file_path TEXT NOT NULL UNIQUE)`);
+    db.run(`CREATE TABLE records (activity_id INTEGER NOT NULL REFERENCES activities(id), record_index INTEGER NOT NULL, elapsed_s REAL, PRIMARY KEY (activity_id, record_index))`);
+    db.run(`CREATE TABLE activity_analysis (id INTEGER PRIMARY KEY AUTOINCREMENT, activity_id INTEGER NOT NULL UNIQUE REFERENCES activities(id), analysis_text TEXT NOT NULL)`);
+    db.run(`ALTER TABLE activity_analysis ADD COLUMN model_id TEXT`);
+    db.run("INSERT INTO activities (id, file_path) VALUES (1, 'a.fit'), (2, 'b.fit')");
+    db.run('INSERT INTO records (activity_id, record_index, elapsed_s) VALUES (1, 0, 0), (1, 1, 1), (2, 0, 0), (99, 0, 0)');
+    db.run("INSERT INTO activity_analysis (activity_id, analysis_text, model_id) VALUES (1, 'one', 'm1'), (99, 'gone', 'm9')");
+    ensureDatabaseSchema(db);
+    const rows = (sql) => db.exec(sql)[0]?.values || [];
+    assert.deepEqual(rows('SELECT activity_id, record_index FROM records ORDER BY 1, 2'), [[1, 0], [1, 1], [2, 0]]);
+    assert.deepEqual(rows('SELECT activity_id, analysis_text, model_id FROM activity_analysis'), [[1, 'one', 'm1']], 'columns added later are kept');
+    assert.equal(rows('PRAGMA foreign_keys')[0][0], 1);
+    db.run("INSERT INTO activity_notes (activity_id, note) VALUES (1, 'windy')");
+    db.run('DELETE FROM activities WHERE id = 1');
+    assert.deepEqual(rows('SELECT activity_id FROM records'), [[2]]);
+    assert.deepEqual(rows('SELECT COUNT(*) FROM activity_analysis'), [[0]]);
+    assert.deepEqual(rows('SELECT COUNT(*) FROM activity_notes'), [[0]]);
+    assert.throws(() => db.run('INSERT INTO records (activity_id, record_index) VALUES (42, 0)'), /FOREIGN KEY/);
+  } finally {
+    db.close();
+  }
+});
+
+test('an opened database holds a lock beside it: another window waits, this one shares it', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-db-lock-'));
+  const dbPath = path.join(directory, 'fit-data.sqlite');
+  const lockPath = `${dbPath}.lock`;
+  const internals = loadExtensionInternalsForTest();
+  try {
+    const SQL = await internals.getSqlJs();
+    const first = await internals.openDatabase(SQL, path.join(directory, 'missing', 'fit-data.sqlite'));
+    first.close();
+    fs.writeFileSync(dbPath, Buffer.from(new SQL.Database().export()));
+    // Nested openings in this window share the lock; it goes with the last close.
+    const outer = await internals.openDatabase(SQL, dbPath);
+    const inner = await internals.openDatabase(SQL, dbPath);
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, 'utf8')).pid, process.pid);
+    inner.close();
+    assert.ok(fs.existsSync(lockPath));
+    outer.close();
+    assert.ok(!fs.existsSync(lockPath));
+    // Another window (a live process) holds it: the opening waits until it is gone.
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() }));
+    let opened = false;
+    const waiting = internals.openDatabase(SQL, dbPath).then((db) => { opened = true; return db; });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(opened, false, 'it waits for the other window');
+    fs.rmSync(lockPath);
+    (await waiting).close();
+    // A lock left by a window that is gone is not waited for.
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 2 ** 22 + 12345, startedAt: new Date().toISOString() }));
+    (await internals.openDatabase(SQL, dbPath)).close();
+    assert.ok(!fs.existsSync(lockPath));
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a question the AI failed to answer stays in the conversation and goes again when it opens', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-chat-pending-'));
+  const dbPath = path.join(directory, 'fit-data.sqlite');
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const seed = new SQL.Database();
+  ensureDatabaseSchema(seed);
+  seed.run("INSERT INTO activities (id, file_path, start_time, sport, total_timer_s, total_distance_km, avg_hr) VALUES (1, 'ride.fit', '2026-08-20T08:00:00.000Z', 'cycling', 600, 4, 140)");
+  for (let t = 0; t < 600; t += 1) seed.run('INSERT INTO records (activity_id, record_index, elapsed_s, distance_km, speed_kmh, heart_rate) VALUES (1, ?, ?, ?, 24, 140)', [t, t, (24 * t) / 3600]);
+  fs.writeFileSync(dbPath, Buffer.from(seed.export()));
+  seed.close();
+  let answer = null;
+  const internals = loadExtensionInternalsForTest({
+    env: { language: 'en' },
+    lm: { selectChatModels: async () => [{ id: 'gpt-6-luna', name: 'GPT-6 Luna', sendRequest: async () => {
+      if (!answer) throw new Error('model unavailable');
+      return { text: asyncChunks([answer]) };
+    } }] },
+    LanguageModelChatMessage: { User: (content) => ({ role: 'user', content }) },
+  });
+  try {
+    await assert.rejects(internals.appendActivityChatTurn(dbPath, 1, 'Why was km 3 slow?'), /model unavailable/);
+    const saved = await internals.getAnalysisChatFromDb(dbPath, 1);
+    assert.deepEqual(saved.map((entry) => [entry.role, entry.content, entry.pending ?? false]), [['user', 'Why was km 3 slow?', true]]);
+    answer = 'A headwind on the open stretch.';
+    const answered = await internals.resendPendingChatTurn(dbPath, 1);
+    assert.deepEqual(answered.map((entry) => [entry.role, entry.content, entry.pending ?? false]),
+      [['user', 'Why was km 3 slow?', false], ['assistant', 'A headwind on the open stretch.', false]]);
+    assert.equal(await internals.resendPendingChatTurn(dbPath, 1), null, 'nothing is left to send');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('rides beyond the 40 latest keep their zones and peaks in the history', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    // 43 rides a day apart: the 40 latest before the current one are read in full, the two oldest
+    // from the cache. Those two held 185 bpm, the others 140.
+    for (let id = 1; id <= 43; id += 1) {
+      const start = new Date(Date.UTC(2026, 6, 1 + id, 8)).toISOString();
+      db.run('INSERT INTO activities (id, file_path, start_time, sport, total_timer_s, total_distance_km, avg_hr) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, `r${id}.fit`, start, 'cycling', 300, 2, id <= 2 ? 185 : 140]);
+      const insert = db.prepare('INSERT INTO records (activity_id, record_index, elapsed_s, distance_km, speed_kmh, heart_rate) VALUES (?, ?, ?, ?, ?, ?)');
+      for (let t = 0; t < 300; t += 1) insert.run([id, t, t, (25 * t) / 3600, 25, id <= 2 ? 185 : 140]);
+      insert.free();
+    }
+    db.run("INSERT INTO heart_rate_profiles (effective_date, max_hr, zone2_start, zone3_start, zone4_start, zone5_start) VALUES ('2026-01-01', 190, 120, 140, 160, 175)");
+    const context = loadExtensionInternalsForTest().getTrainingContextFromDb(db, 43, { segments: [] });
+    const minute = context.peakHeartRates.find((row) => row.seconds === 60);
+    assert.equal(minute.best90?.bpm, 185, 'the oldest rides are read from the cache with their peaks');
+  } finally {
+    db.close();
+  }
+});
+
 test('manual heart rate never deletes or hides the AI analysis; beside a recorded series it is not reported', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-manual-hr-'));
   const dbPath = path.join(directory, 'fit-data.sqlite');
@@ -7702,6 +7968,28 @@ test('a channel the database stores as null is missing, not zero', () => {
   assert.ok(!codes.includes('TEMP_DEVICE_HOT'), 'a missing temperature is not 0 C');
 });
 
+test('segment averages are over time: a smart recording does not lean to where samples crowd', () => {
+  // 4 minutes at 37 km/h written every 4 s, then one minute of corners at 25 km/h written every second.
+  const records = [];
+  let t = 0;
+  let km = 0;
+  for (let i = 0; i < 60; i += 1) { records.push({ elapsed_time: t, speed: 37, heart_rate: 150, distance: km }); t += 4; km += 37 * 4 / 3600; }
+  for (let i = 0; i < 60; i += 1) { records.push({ elapsed_time: t, speed: 25, heart_rate: 150, distance: km }); t += 1; km += 25 / 3600; }
+  const segments = buildActivitySegments(records, {}).filter((row) => row.type !== 'stopped');
+  assert.equal(segments.length, 1, JSON.stringify(segments.map((row) => row.avgSpeedKmh)));
+  assert.ok(Math.abs(segments[0].avgSpeedKmh - 34.5) <= 0.5, `average ${segments[0].avgSpeedKmh} km/h (the plain mean of samples is 31)`);
+});
+
+test('zone labels agree with how a whole-number pulse is counted when thresholds are fractional', () => {
+  // Maximum 193: thresholds at 60, 70, 80, 90 % are 115.8, 135.1, 154.4, 173.7.
+  const records = [135, 136].map((heart_rate, index) => ({ elapsed_time: index * 60, heart_rate }));
+  const zones = computeHeartRateZones([...records, { elapsed_time: 120, heart_rate: 136 }], 193);
+  const below = zones.zones.find((zone) => /^\d+-135 bpm$/.test(zone.range));
+  const from = zones.zones.find((zone) => /^136-/.test(zone.range));
+  assert.ok(below && from, zones.zones.map((zone) => zone.range).join(', '));
+  assert.ok(below.seconds > 0, '135 bpm is counted in the zone that ends at 135');
+});
+
 test('an easy ride below the zone floor is covered by heart rate and gets a class', () => {
   const { buildSessionClassForActivity } = loadExtensionInternalsForTest();
   const records = Array.from({ length: 3601 }, (_, t) => ({ elapsed_time: t, heart_rate: 112, speed: 22 }));
@@ -7714,9 +8002,306 @@ test('an easy ride below the zone floor is covered by heart rate and gets a clas
   assert.ok(Math.abs(zones.recordedSeconds - 3600) <= 1, String(zones.recordedSeconds));
 });
 
+// A ride at a steady speed along a line of positions (each [lat, lon]), braking where slowAt says;
+// one record every `stepM` metres, distance from the track itself.
+function rideAlong(points, { kmh = 25, slowAt = () => false, slowKmh = 10, hr = 140 } = {}) {
+  let t = 0;
+  return alongTrack(points.map(([lat, lon], index) => {
+    const slow = slowAt(index / (points.length - 1));
+    const record = { elapsed_time: t, speed: slow ? slowKmh : kmh, heart_rate: hr, altitude: 100, position_lat: lat, position_long: lon };
+    t += 2.4 / ((slow ? slowKmh : kmh) / 3.6);
+    return record;
+  }));
+}
+
+// A loop of about 5.8 km, one point every 2.4 m, from a start a share of the way round.
+function loopPoints(startShare = 0) {
+  return Array.from({ length: 2401 }, (_, i) => {
+    const share = (startShare + i / 2400) % 1;
+    return [52 + 0.01 * Math.sin(2 * Math.PI * share), 13 + 0.01 * (1 - Math.cos(2 * Math.PI * share))];
+  });
+}
+
+test('a loop ridden from another start is laid on its route all the way round', () => {
+  const { buildRouteSkeleton, measureRideOnSkeleton, layRideOnBins, routeCheckpoints } = require('../route-sections');
+  // Every ride brakes a quarter of the way round from the route's start.
+  const brake = (startShare) => (fraction) => Math.abs(((startShare + fraction) % 1) - 0.25) < 0.01;
+  const skeleton = buildRouteSkeleton(Array.from({ length: 6 }, (_, i) => ({ records: rideAlong(loopPoints(0), { kmh: 24 + i, slowAt: brake(0) }) })));
+  assert.ok(skeleton.axis.closed, 'the route is a loop');
+  assert.equal(skeleton.points.length, 1);
+  assert.ok(Math.abs(skeleton.points[0].km / skeleton.lengthKm - 0.25) < 0.02, `the slow-down is a quarter of the way round: km ${skeleton.points[0].km}`);
+
+  // Started halfway round: the ride still rides every stretch, and its checkpoints add up to it.
+  const records = rideAlong(loopPoints(0.5), { slowAt: brake(0.5) });
+  const measured = measureRideOnSkeleton(records, skeleton);
+  assert.ok(measured.stretches.every((row) => !row.absent && !row.detour), JSON.stringify(measured.stretches.map((row) => [row.index, row.absent, row.detour])));
+  const marks = routeCheckpoints(layRideOnBins(records, skeleton.axis), skeleton.axis);
+  assert.ok(marks.every((mark) => mark.ridden), 'every stretch between marks is ridden');
+  const total = marks.reduce((sum, mark) => sum + mark.splitS, 0);
+  assert.ok(Math.abs(total - records.at(-1).elapsed_time) <= 10, `${total} s of ${records.at(-1).elapsed_time}`);
+});
+
+test('an out-and-back is laid leg by leg, never on the other leg', () => {
+  const { buildRouteSkeleton, measureRideOnSkeleton } = require('../route-sections');
+  // 3 km out along one side of a road and back along the other, 4 m apart; a slow-down at 1 km out.
+  const lonPerMetre = 1 / (111320 * Math.cos((52 * Math.PI) / 180));
+  const points = [
+    ...Array.from({ length: 1251 }, (_, i) => [52, 13 + i * 2.4 * lonPerMetre]),
+    ...Array.from({ length: 1251 }, (_, i) => [52 + 4 / 110540, 13 + (3000 - i * 2.4) * lonPerMetre]),
+  ];
+  const slowAt = (fraction) => Math.abs(fraction - 1 / 6) < 0.01;
+  const skeleton = buildRouteSkeleton(Array.from({ length: 6 }, (_, i) => ({ records: rideAlong(points, { kmh: 24 + i, slowAt }) })));
+  assert.ok(!skeleton.axis.closed, 'an out-and-back is no loop');
+  assert.ok(Math.abs(skeleton.lengthKm - 6) < 0.1, `the axis runs out and back: ${skeleton.lengthKm} km`);
+  assert.ok(skeleton.stretches.every((stretch) => stretch.typicalKmh < 30 && stretch.routeKmh < 30), JSON.stringify(skeleton.stretches.map((stretch) => stretch.typicalKmh)));
+  assert.equal(skeleton.points.length, 1);
+  assert.ok(Math.abs(skeleton.points[0].km - 1) < 0.1, `the slow-down is on the way out: km ${skeleton.points[0].km}`);
+  const measured = measureRideOnSkeleton(rideAlong(points, { slowAt }), skeleton);
+  assert.ok(measured.stretches.every((row) => !row.absent && !row.detour && row.speedKmh < 30));
+});
+
+test('checkpoints on the route axis are compared over the stretches both rides rode', () => {
+  const { buildRouteAxis } = require('../route-axis');
+  const { layRideOnBins, routeCheckpoints } = require('../route-sections');
+  const { summarizeCheckpoints, describeCheckpointVerdict } = require('../route-store');
+  const lonPerMetre = 1 / (111320 * Math.cos((52 * Math.PI) / 180));
+  const line = Array.from({ length: 4168 }, (_, i) => [52, 13 + i * 2.4 * lonPerMetre]); // 10 km
+  const axis = buildRouteAxis(rideAlong(line));
+  const marksOf = (records) => routeCheckpoints(layRideOnBins(records, axis), axis);
+  const priors = [24, 25, 26].map((kmh) => ({ checkpoints: marksOf(rideAlong(line, { kmh })) }));
+  assert.deepEqual(priors[0].checkpoints.map((mark) => mark.km), [2, 4, 6, 8, 10]);
+
+  // This ride takes a way 200 m to the side between km 2.5 and 3.5.
+  const detour = line.map(([lat, lon], i) => (i * 2.4 >= 2500 && i * 2.4 < 3500 ? [lat + 200 / 110540, lon] : [lat, lon]));
+  const current = marksOf(rideAlong(detour, { kmh: 25 }));
+  assert.equal(current.find((mark) => mark.km === 4).ridden, false, 'the stretch with the detour is not compared');
+  const summary = summarizeCheckpoints(current, priors);
+  const at6 = summary.find((mark) => mark.km === 6);
+  assert.equal(at6.comparedKm, 4, 'km 0-2 and 4-6');
+  assert.equal(at6.priorRides, 3);
+  assert.ok(Math.abs(at6.elapsedS - at6.priorMedianS) <= 2, `${at6.elapsedS} s against ${at6.priorMedianS} s: the same speed as the median ride`);
+  assert.match(describeCheckpointVerdict(summary), /at km 10 \(over the 8 km of it ridden on the route's road\) \(time in motion\): similar time/);
+  // A prior ride with the same detour has nothing to say on the stretches it did not ride.
+  const withDetour = summarizeCheckpoints(marksOf(rideAlong(line, { kmh: 25 })), [{ checkpoints: current }]);
+  assert.equal(withDetour.find((mark) => mark.km === 4).priorRides, 0);
+  assert.equal(withDetour.find((mark) => mark.km === 2).priorRides, 1);
+});
+
+test('a detour ridden three times becomes a variant of the route, compared between the rides that take it', async () => {
+  const SQL = await initSqlJs({ locateFile: () => path.join(__dirname, '..', 'vendor', 'sql-wasm', 'sql-wasm.wasm') });
+  const db = new SQL.Database();
+  try {
+    ensureDatabaseSchema(db);
+    const { assignRoute, layRideOnRoute, readAssignment, summarizeCheckpoints } = require('../route-store');
+    const { routeCheckpoints } = require('../route-sections');
+    const { buildRouteSignature } = require('../route-match');
+    // 10 km east; the other way between km 3 and 3.3 runs 60 m north of the road (420 m of it).
+    const lonPerMetre = 1 / (111320 * Math.cos((52 * Math.PI) / 180));
+    const at = (x, y = 0) => [52 + y / 110540, 13 + x * lonPerMetre];
+    const straight = Array.from({ length: 4168 }, (_, i) => at(i * 2.4));
+    const otherWay = [
+      ...Array.from({ length: 1250 }, (_, i) => at(i * 2.4)),
+      ...Array.from({ length: 25 }, (_, i) => at(3000, i * 2.4)),
+      ...Array.from({ length: 125 }, (_, i) => at(3000 + i * 2.4, 60)),
+      ...Array.from({ length: 25 }, (_, i) => at(3300, 60 - i * 2.4)),
+      ...Array.from({ length: 2792 }, (_, i) => at(3300 + i * 2.4)),
+    ];
+    const rides = [];
+    const add = (points, kmh) => {
+      const id = rides.length + 1;
+      const records = rideAlong(points, { kmh });
+      const startTime = `2026-08-${String(id).padStart(2, '0')}T10:00:00Z`;
+      db.run('INSERT INTO activities (id, file_path, file_name, start_time, source) VALUES (?, ?, ?, ?, ?)', [id, `f${id}`, `f${id}`, startTime, 'fit']);
+      const insert = db.prepare('INSERT INTO records (activity_id, record_index, elapsed_s, distance_km, speed_kmh, heart_rate, altitude_m, latitude, longitude) VALUES (?,?,?,?,?,?,?,?,?)');
+      records.forEach((record, index) => insert.run([id, index, record.elapsed_time, record.distance, record.speed, record.heart_rate, record.altitude, record.position_lat, record.position_long]));
+      insert.free();
+      const route = assignRoute(db, { activityId: id, signature: buildRouteSignature(records), createdAt: startTime, records });
+      rides.push({ id, records, route });
+      return route;
+    };
+    const variantsOf = () => JSON.parse(db.exec('SELECT variants_json FROM routes WHERE id = 1')[0].values[0][0] || '{"list":[]}').list;
+    [24, 25, 26].forEach((kmh) => add(straight, kmh));
+    add(otherWay, 25);
+    add(otherWay, 26);
+    assert.equal(variantsOf().length, 1, 'one candidate');
+    assert.equal(variantsOf()[0].rides.length, 2, 'not yet a variant');
+    assert.match(readAssignment(db, 5).relationDetail, /^same \([1-9]\d\d m off the route/);
+    add(otherWay, 24);
+    const [variant] = variantsOf();
+    assert.equal(variant.rides.length, 3, 'a variant from its third ride');
+    assert.ok(Math.abs(variant.fromS - 3000) < 60 && Math.abs(variant.toS - 3300) < 60, `${variant.fromS}-${variant.toS}`);
+
+    // The next ride that way rides the route: nothing of it is off.
+    add(otherWay, 25);
+    assert.match(readAssignment(db, 7).relationDetail, /^same \(0 m off the route, \d+ m of it not ridden, 1 of its variants\)/);
+    const laid = layRideOnRoute(db, 1, 'same', rides[6].records);
+    const viaBins = [...laid.lay.via].map((id, bin) => (id === variant.id ? bin : null)).filter((bin) => bin != null);
+    assert.ok(viaBins.length >= 5 && viaBins[0] * 50 >= 2950 && (viaBins.at(-1) + 1) * 50 <= 3350, `bins ${viaBins[0]}-${viaBins.at(-1)}`);
+    assert.ok(laid.lay.metres[viaBins[2]] > 50, 'the variant is longer than the road it stands for');
+
+    // Checkpoints: the stretch with the variant is compared only with rides that took it too.
+    const marks = (ride) => {
+      const placed = layRideOnRoute(db, 1, 'same', ride.records);
+      return routeCheckpoints(placed.lay, placed.axis);
+    };
+    const current = marks(rides[6]);
+    assert.equal(current.find((mark) => mark.km === 4).via, String(variant.id));
+    const priors = rides.slice(0, 6).map((ride) => ({ checkpoints: marks(ride) }));
+    const end = summarizeCheckpoints(current, priors).at(-1);
+    assert.equal(end.comparedKm, 10);
+    assert.equal(end.priorRides, 6, 'the road straight on shares 8 of the 10 km: 80 %');
+    assert.equal(summarizeCheckpoints(current, priors, { minSharedPct: 90 }).at(-1).priorRides, 3, 'at 90 % only the rides that took the variant');
+  } finally {
+    db.close();
+  }
+});
+
+// A ride of a 6 km route for the trend points: three stretches between marks ridden in motion at
+// the given time each, a flat segment and the final climb, heart rate and purpose.
+function trendRide(id, day, { stretchS = 300, hr = 140, flatKmh = 25, climbS = 280, purpose = null, temperatureC = 20 } = {}) {
+  const checkpoints = [2, 4, 6].map((km) => ({ km, fromKm: km - 2, axis: true, ridden: true, via: '', splitS: stretchS, movingS: stretchS, stoppedS: 0, stops: 0, restS: 0, avgHr: hr }));
+  const segments = [
+    { type: 'flat', durationS: 600, distanceKm: (flatKmh * 600) / 3600, avgHr: hr, stretchIndex: 0 },
+    { type: 'climb', durationS: climbS, distanceKm: 0.6, avgHr: hr + 10, stretchIndex: 1 },
+  ];
+  return { id, startTime: `2026-${day}T18:00:00Z`, purpose, checkpoints, segments, decouplingPct: null,
+    circumstances: { date: `2026-${day}`, temperatureC, daysInRow: 1, daysSincePrevious: 1, weekLoadPct: 100 } };
+}
+
+test('two points on a route trend: a ride with its neighbours of the same purpose, compared against their spread', () => {
+  const { buildTrendPoints, pointRides } = require('../trend-points');
+  // July: rides 1-5 at 300 s a stretch; August: rides 10-15 at 270 s. Ride 3 and 12 state "tempo".
+  const july = [1, 2, 3, 4, 5].map((n) => trendRide(n, `07-${String(19 + n).padStart(2, '0')}`, { stretchS: 298 + n, flatKmh: 23, climbS: 370 + n, purpose: n === 3 ? 'tempo' : null }));
+  const august = [10, 11, 12, 13, 14, 15].map((n) => trendRide(n, `08-${String(n + 6).padStart(2, '0')}`, { stretchS: 268 + (n % 3), flatKmh: 25.7, climbS: 280 + (n % 3), purpose: n === 12 ? 'tempo' : null }));
+  const rides = [...july, ...august];
+  // A stated purpose is not mixed with none stated, nor with another one.
+  assert.deepEqual(pointRides(rides, 2, { neighbours: 3 }).map((ride) => ride.id), [1, 2, 4, 5, 10]);
+  assert.deepEqual(pointRides(rides, 3, { neighbours: 3 }).map((ride) => ride.id), [3, 12]);
+
+  const points = buildTrendPoints(rides, 13, 2, { finalClimbStretch: 1 });
+  assert.equal(points.currentIsLater, true);
+  assert.equal(points.roadKm, 6);
+  assert.deepEqual(points.then.rides.map((ride) => ride.id), [1, 2, 4, 5], 'ride 10 is nearer the August ride and goes there');
+  assert.deepEqual(points.now.rides.map((ride) => ride.id), [10, 11, 13, 14, 15]);
+  const row = (key) => points.rows.find((entry) => entry.key === key);
+  assert.equal(row('movingS').beyondSpread, true);
+  assert.ok(row('movingS').delta < -80, `time in motion ${row('movingS').delta} s`);
+  assert.equal(row('climbS').beyondSpread, true);
+  assert.equal(row('hr').beyondSpread, false, 'the same heart rate is within the spread');
+  assert.ok(!points.rows.some((entry) => entry.key === 'climbHrDrop'), 'a figure neither point has is left out');
+  assert.equal(points.twoDays, false);
+
+  // A point of one ride is a day, not a point.
+  const alone = buildTrendPoints(rides, 12, 3, { finalClimbStretch: 1 });
+  assert.equal(alone.then.rides.length, 1);
+  assert.equal(alone.twoDays, true, 'two tempo rides, one in each point: two days');
+  assert.equal(buildTrendPoints(rides, 13, 2, { neighbours: 0 }).twoDays, true);
+
+  // A stretch the other ride took another way is left out of the road for both points.
+  const variant = rides.map((ride) => (ride.id >= 10 ? { ...ride, checkpoints: ride.checkpoints.map((mark) => (mark.km === 4 ? { ...mark, via: '1' } : mark)) } : ride));
+  assert.equal(buildTrendPoints(variant, 13, 2, { finalClimbStretch: 1 }).roadKm, 4);
+});
+
+test('the AI is asked whether something changed between the two points, from the figures it is not to retell', () => {
+  const { buildTrendPoints } = require('../trend-points');
+  const { generateTrendComparisonPrompt } = require('../analysis');
+  const { renderTrendPointsCard } = loadActivityWebviewForTest();
+  const rides = [1, 2, 3, 10, 11, 12].map((n) => trendRide(n, n < 10 ? `07-2${n}` : `08-1${n - 10}`, { stretchS: n < 10 ? 300 + n : 270 + n - 10, hr: n < 10 ? null : 140 }));
+  rides[4].userWords = ['legs felt fresh today'];
+  rides[4].summary = { type: 'tempo', finding: 'faster on the flat', trend: 'improving' };
+  const points = { ...buildTrendPoints(rides, 11, 2, { finalClimbStretch: 1 }), routeName: 'Loop', relation: 'same', neighbours: 3 };
+  const prompt = generateTrendComparisonPrompt(points, { sessions: [{}], riderPlan: null }, 'en');
+  assert.match(prompt, /whether something has changed between then and now/);
+  assert.match(prompt, /Time in motion over the shared road: then 00:15:\d\d \[00:15:\d\d to 00:15:\d\d\] of 3 rides; now 00:13:\d\d .*beyond the spread/);
+  assert.match(prompt, /Begin with the answer to the question/);
+  assert.match(prompt, /which way it would move the figures/);
+  assert.match(prompt, /Days ridden in a row before the ride \(days\), ride by ride: then 1, 1, 1; now 1, 1, 1/);
+  assert.doesNotMatch(prompt, /the fall of heart rate after it/, 'a figure the points do not have is not asked about');
+  assert.match(prompt, /one paragraph of 4-6 sentences/);
+  assert.match(prompt, /Heart rate on that road \(bpm\): then unknown/);
+  assert.match(prompt, /Rider's words about the ride: "legs felt fresh today"/);
+  assert.match(prompt, /Earlier AI hypothesis about this ride \(not evidence\): type tempo/);
+  assert.match(prompt, /do not retell them/);
+  assert.doesNotMatch(prompt, /segment by segment|actionable/);
+  // The conversation under the comparisons knows them: the saved answers and these figures.
+  const chat = generateAnalysisChatPrompt({ sessions: [{ sport: 'cycling' }], records: [], segments: [],
+    chatComparisons: [{ label: '2026-07-21, 20.4 km', text: 'Something changed: faster at a higher heart rate.', outdated: false }], chatTrendPoints: points,
+    chatComparedRide: { sessions: [{ sport: 'cycling', start_time: '2026-07-21T16:00:00Z', total_distance: 20.4, total_timer_time: 2700 }], records: [] } },
+  {}, {}, 'Initial analysis text', [], 'Why do you think I rode harder?', 'en');
+  assert.match(chat, /the rider sees, above this conversation, the ride's analysis, its saved comparisons, the ride picked to compare with and the then-and-now figures against it/i);
+  assert.match(chat, /The ride picked to compare with \(its facts, as in the comparison table on the page[^\n]*\n- Sport: cycling\n- Date: 2026-07-21/);
+  assert.match(chat, /Against the ride of 2026-07-21, 20\.4 km:\n  Something changed: faster at a higher heart rate\./);
+  assert.match(chat, /Then and now on this route, against the ride picked to compare with[\s\S]*Time in motion over the shared road: then/);
+  const html = renderTrendPointsCard(points, UI_STRINGS, 'en');
+  assert.match(html, /Then and now on this route/);
+  assert.match(html, /<tr><td class="cmpLabel">Time in motion<\/td>.*?<strong>beyond the spread<\/strong><\/td><\/tr>/, 'the first row has its verdict too');
+});
+
+test('two rides of a route are compared on its own marks, in motion, to the finish, with the stops beside', () => {
+  const { buildRouteCheckpointComparisonTable } = require('../analysis');
+  const mark = (km, movingS, extra = {}) => ({ km, fromKm: km - 2 < 0 ? 0 : km - 2, axis: true, ridden: true, via: '', splitS: movingS, movingS, stoppedS: 0, stops: 0, restS: 0, avgHr: 140, ...extra });
+  const current = [mark(2, 280), mark(4, 330, { splitS: 378, stoppedS: 48, stops: 1, restS: 48 }), mark(6, 300), { ...mark(6.6, 220), fromKm: 6 }];
+  const compared = [mark(2, 270), mark(4, 320), mark(6, 300), { ...mark(6.6, 230), fromKm: 6 }];
+  const table = buildRouteCheckpointComparisonTable(current, compared);
+  assert.match(table, /time in motion/);
+  assert.match(table, /- km 4: 00:10:10 \/ 00:09:50, HR 140 \/ 140; stops so far 1 \/ 0 \(00:00:48 \/ 00:00:00 stopped/);
+  assert.doesNotMatch(table.split('\n').find((line) => line.startsWith('- km 6:')), /stops/, 'said where it happened');
+  assert.match(table, /- km 6\.6: 00:18:50 \/ 00:18:40.*stops so far 1 \/ 0/, 'the finish is a mark, with the stops');
+  // A stretch one ride took another way is left out for both.
+  const other = compared.map((row) => (row.km === 4 ? { ...row, via: '1' } : row));
+  assert.match(buildRouteCheckpointComparisonTable(current, other), /- km 6 \[over 4 km of it\]: 00:09:40 \/ 00:09:30/);
+});
+
+test('a stop gives rest by the fall of heart rate: 50 s at a light is rest, 5 s is nothing, and the time compared is in motion', () => {
+  const { buildRouteAxis } = require('../route-axis');
+  const { layRideOnBins, routeCheckpoints, stopRests } = require('../route-sections');
+  const { summarizeCheckpoints, describeCheckpointVerdict } = require('../route-store');
+  const lonPerMetre = 1 / (111320 * Math.cos((52 * Math.PI) / 180));
+  const line = Array.from({ length: 4168 }, (_, i) => [52, 13 + i * 2.4 * lonPerMetre]); // 10 km
+  const axis = buildRouteAxis(rideAlong(line));
+  // At km 3 a 5 s stop (no time for the pulse to fall), at km 5 a 50 s one (150 down to 132).
+  const withStops = () => {
+    const records = [];
+    const plain = rideAlong(line);
+    const step = plain[1].elapsed_time;
+    let t = 0;
+    plain.forEach((record, index) => {
+      const metres = index * 2.4;
+      const stopFor = Math.abs(metres - 3000) < 1.2 ? 5 : Math.abs(metres - 5000) < 1.2 ? 50 : 0;
+      records.push({ ...record, elapsed_time: t, heart_rate: 150 });
+      for (let second = 1; second <= stopFor; second += 1) {
+        records.push({ ...record, elapsed_time: t + second, speed: 0, heart_rate: stopFor === 5 ? 150 : Math.round(150 - (18 * second) / stopFor) });
+      }
+      t += stopFor + step;
+    });
+    return records;
+  };
+  const records = withStops();
+  const stops = stopRests(records);
+  assert.equal(stops.length, 2);
+  assert.equal(stops[0].weight, 0, 'five seconds give no rest');
+  assert.equal(stops[1].drop, 18);
+  assert.equal(stops[1].weight, 1, 'a fall of 15 bpm or more is a full rest');
+  // Without heart rate, a stop weighs by its length.
+  assert.equal(stopRests(records.map((record) => ({ ...record, heart_rate: null })))[1].weight, 1);
+
+  const marksOf = (rideRecords) => routeCheckpoints(layRideOnBins(rideRecords, axis), axis, { records: rideRecords });
+  const current = marksOf(records);
+  const at6 = current.find((mark) => mark.km === 6);
+  assert.equal(at6.stops, 1);
+  assert.ok(Math.abs(at6.restS - 50) <= 2, `rest ${at6.restS} s`);
+  assert.ok(at6.splitS - at6.movingS >= 48, 'the stop is not riding');
+  const priors = [0, 1, 2].map(() => ({ checkpoints: marksOf(rideAlong(line)) }));
+  const summary = summarizeCheckpoints(current, priors);
+  assert.ok(Math.abs(summary.at(-1).elapsedS - summary.at(-1).priorMedianS) <= 3, 'in motion the ride was as fast as the others');
+  assert.match(describeCheckpointVerdict(summary, { extraRestS: 30 }), /similar time .* More rest at stops than usual \(5\ds against 0s/);
+  assert.doesNotMatch(describeCheckpointVerdict(summary, { extraRestS: 60 }), /More rest/);
+});
+
 test('the first sample after an auto-pause does not stand for the heart rate of the whole pause', () => {
   const { computeCheckpoints } = require('../route-store');
-  const { layRideOnRoad, referenceTrack } = require('../route-sections');
+  const { layRideOnBins } = require('../route-sections');
+  const { buildRouteAxis } = require('../route-axis');
   // 15 km at 30 km/h and 150 bpm; at km 7 a 10-minute auto-pause, resumed at 90 bpm.
   const records = straightGpsRecords(1800, 30).map((record, index) => ({ ...record,
     elapsed_time: record.elapsed_time + (index >= 840 ? 600 : 0), heart_rate: index === 840 ? 90 : 150 }));
@@ -7726,7 +8311,7 @@ test('the first sample after an auto-pause does not stand for the heart rate of 
     assert.equal(mark.avgHr, 150, `km ${mark.km}`);
     assert.equal(mark.cumulativeAvgHr, 150, `km ${mark.km}`);
   }
-  const lay = layRideOnRoad(records, referenceTrack(straightGpsRecords(1800, 30), 50), { toleranceM: 30 });
+  const lay = layRideOnBins(records, buildRouteAxis(straightGpsRecords(1800, 30)));
   const binHr = Array.from(lay.hrSum, (sum, bin) => (lay.hrTime[bin] > 0 ? sum / lay.hrTime[bin] : null)).filter((hr) => hr != null);
   assert.ok(binHr.every((hr) => Math.abs(hr - 150) < 0.5), `lowest bin HR ${Math.min(...binHr)}`);
 });
@@ -7955,6 +8540,27 @@ test('a loop entered elsewhere, a late fix and a wandering first fix are not det
     assert.equal(laid.offM, 0, JSON.stringify(options));
     assert.ok(laid.missedM <= 60, `${JSON.stringify(options)}: missed ${laid.missedM} m`);
   }
+});
+
+test('a start where GPS still finds itself is laid by the wheel; a way in that GPS and wheel agree on is not', () => {
+  const { buildRouteAxis, layRideOnAxis } = require('../route-axis');
+  const route = [[0, 0], [6000, 0], [6000, 4000], [0, 4000], [0, 300]];
+  const axis = buildRouteAxis(axisRide(route));
+  // For the first 800 m the fix sits 40-70 m to the side and zigzags: a GPS path a third longer
+  // than the wheel's, close enough to the road for its 200 m windows to look plausible.
+  const settling = axisRide(route, { noiseM: 3, seed: 9 }).map((record, second) => {
+    if (second * (25 / 3.6) >= 800) return record;
+    return { ...record, position_lat: record.position_lat + (55 + 15 * Math.sin(second / 2)) / 110540,
+      position_long: record.position_long + (25 * Math.sin(second / 1.5)) / (111320 * Math.cos((52 * Math.PI) / 180)) };
+  });
+  const laid = layRideOnAxis(settling, axis);
+  assert.equal(laid.offM, 0, 'the wandering start is not ridden off the route');
+  assert.ok(laid.missedM <= 60, `missed ${laid.missedM} m`);
+  assert.ok(Math.abs(laid.axisKm[20] * 1000 - 20 * (25 / 3.6)) <= 60, 'the start is placed on the road by the wheel');
+  // A real way in: the first kilometre on a road 100 m to the side, joining the route at km 1.
+  const wayIn = axisRide([[0, 100], [1000, 100], [1000, 0], [6000, 0], [6000, 4000], [0, 4000], [0, 300]], { noiseM: 3, seed: 9 });
+  const laidIn = layRideOnAxis(wayIn, axis);
+  assert.ok(laidIn.offM >= 900, `the way in is off the route: ${laidIn.offM} m`);
 });
 
 test('another road is told apart, and laying stops once the deviation passes the limit', () => {

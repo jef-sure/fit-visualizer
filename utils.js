@@ -4,8 +4,9 @@ function safeJson(value) {
   return JSON.stringify(value).replace(/</g, '\\u003c');
 }
 
+// The nonce that lets the page's own scripts run: from the system's random source, not Math.random.
 function createNonce() {
-  return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  return require('node:crypto').randomBytes(18).toString('base64');
 }
 
 function roundTo(value, digits) {
@@ -1176,7 +1177,25 @@ function summarizeSegmentRange(records, range, shared, options) {
     }
   }
 
-  const avgSpeedKmh = speeds.length ? average(speeds) : Number.NaN;
+  // Averages over time, not over samples: a device recording "smart" writes a sample when
+  // something changes, so samples crowd where the speed varies (corners, a sprint) and are sparse on
+  // a long steady stretch, and their plain mean leans to the changes (33 km/h for a 37 km/h run).
+  const sampleSeconds = sampleDurations(records.slice(startIndex, endIndex + 1).map((record) => ({ t: asNumber(record.elapsed_time) })));
+  const timeMean = (pick) => {
+    let sum = 0;
+    let seconds = 0;
+    sampleSeconds.forEach((duration, offset) => {
+      const value = pick(records[startIndex + offset] || {});
+      if (value == null || !Number.isFinite(value) || !(duration > 0)) return;
+      sum += value * duration;
+      seconds += duration;
+    });
+    return seconds > 0 ? sum / seconds : Number.NaN;
+  };
+  // A segment of one sample has no time to weigh by: its value is the value.
+  const meanOver = (pick, values) => { const mean = timeMean(pick); return Number.isFinite(mean) ? mean : average(values); };
+  const positiveOf = (field) => (record) => { const value = asNumber(record[field]); return Number.isFinite(value) && value > 0 ? value : null; };
+  const avgSpeedKmh = speeds.length ? meanOver((record) => asNumber(record.speed), speeds) : Number.NaN;
   const speedSpread = speeds.length > 1 && avgSpeedKmh > 0
     ? Math.sqrt(average(speeds.map((value) => (value - avgSpeedKmh) ** 2))) / avgSpeedKmh
     : 0;
@@ -1198,7 +1217,7 @@ function summarizeSegmentRange(records, range, shared, options) {
   const distanceKm = Number.isFinite(startDistanceKm) && Number.isFinite(endDistanceKm)
     ? Math.max(0, endDistanceKm - startDistanceKm)
     : Number.NaN;
-  const durations = sampleDurations(records.slice(startIndex, endIndex + 1).map((record) => ({ t: asNumber(record.elapsed_time) })));
+  const durations = sampleSeconds;
   const coveredSeconds = (predicate) => durations.reduce((sum, seconds, offset) =>
     sum + (predicate(records[startIndex + offset], startIndex + offset) ? seconds : 0), 0);
   const totalSeconds = durations.reduce((sum, seconds) => sum + seconds, 0);
@@ -1244,9 +1263,9 @@ function summarizeSegmentRange(records, range, shared, options) {
     distanceKm: Number.isFinite(distanceKm) ? roundTo(distanceKm, 1) : null,
     startDistanceKm: Number.isFinite(startDistanceKm) ? roundTo(startDistanceKm, 1) : null,
     avgSpeedKmh: moving && Number.isFinite(avgSpeedKmh) ? roundTo(avgSpeedKmh, 1) : null,
-    avgHr: heartRates.length ? roundTo(average(heartRates), 0) : null,
-    avgPower: moving && powers.length ? roundTo(average(powers), 0) : null,
-    avgCadence: cadences.length ? roundTo(average(cadences), 0) : null,
+    avgHr: heartRates.length ? roundTo(meanOver(positiveOf('heart_rate'), heartRates), 0) : null,
+    avgPower: moving && powers.length ? roundTo(meanOver((record) => { const value = asNumber(record.power); return Number.isFinite(value) && value >= 0 ? value : null; }, powers), 0) : null,
+    avgCadence: cadences.length ? roundTo(meanOver(positiveOf('cadence'), cadences), 0) : null,
     tempStart: tempStart != null ? roundTo(tempStart, 0) : null,
     tempEnd: tempEnd != null ? roundTo(tempEnd, 0) : null,
     hasHeartRate: heartRates.length > 0,

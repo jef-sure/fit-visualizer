@@ -24,6 +24,9 @@ const AXIS = Object.freeze({
   gpsDisagreement: 0.15,  // ... differing by more than this share: the positions are not trusted there
   closedLoopM: 150,       // a route whose ends are this close is a loop
   cellM: 50,              // spatial index cell
+  startSlackM: 150,       // an axis begins where its rides' GPS first held, up to this far from where they set off
+  variantEndM: 150,       // a detour is a known variant when it leaves and rejoins within this of it ...
+  variantShare: 0.9,      // ... and this share of its fixes lies on the variant's road
 });
 
 function projector(lat0, lon0) {
@@ -214,8 +217,14 @@ function untrustedPositions(positions, ridden) {
 // One ride laid onto an axis. Returns, per record, its place on the axis in km (null off the road
 // or before the ride reaches it), the stretches ridden off the road, the metres ridden off it and
 // the metres of the axis not ridden; deviationM is the larger of the two. With maxDeviationM the
-// laying stops as soon as either exceeds it (aborted: true): the ride is not this route.
-function layRideOnAxis(records, axis, { maxDeviationM = Infinity } = {}) {
+// laying stops as soon as either exceeds it (aborted: true): the ride is not this route. offRoadM
+// is how far from the axis a fix is off it (the route sections setting; route identity keeps 30 m).
+//
+// variants: the route's known variants of a stretch (indexVariant), laid in this axis' direction. A
+// detour that follows one is ridden on the route after all: its records are placed along the
+// stretch it stands for, in proportion, and `via` tells which variant each record rode.
+function layRideOnAxis(records, axis, { maxDeviationM = Infinity, offRoadM = AXIS.offRoadM, variants = [] } = {}) {
+  const roadM = offRoadM > 0 ? offRoadM : AXIS.offRoadM;
   const list = Array.isArray(records) ? records : [];
   const positions = list.map((record) => (hasGpsFix(record?.position_lat, record?.position_long) ? axis.project(record.position_lat, record.position_long) : null));
   const ridden = riddenMetres(list, positions);
@@ -274,18 +283,44 @@ function layRideOnAxis(records, axis, { maxDeviationM = Infinity } = {}) {
       const skipped = along(left.leftS, firstS);
       if (skipped > 0 && !loop) missedSoFarM += skipped;
     } else {
+      // Off the road before reaching it, with a GPS path the wheel contradicts, and reaching it
+      // where the wheel says the ride may have been riding along it from the start (no further on
+      // than ridden, no nearer than the wheel's error and the axis' own late beginning allow): the
+      // GPS was still finding itself, as on a start from a slope, not a way in from elsewhere. The
+      // wheel is the one to trust there. A way in that GPS and wheel agree on stays a way in.
+      const fromStartM = ridden[firstIndex] - startM;
+      let settling = false;
+      if (firstOffM != null && firstS <= fromStartM + AXIS.minOffRunM && firstS >= fromStartM * (1 - AXIS.gpsDisagreement) - AXIS.startSlackM) {
+        let gpsM = 0;
+        let last = null;
+        for (let i = 0; i <= firstIndex; i += 1) {
+          if (!(ridden[i] >= firstOffM) || !positions[i]) continue;
+          if (last) gpsM += distance(last, positions[i]);
+          last = positions[i];
+        }
+        const wheelM = ridden[firstIndex] - firstOffM;
+        settling = wheelM > 0 && Math.abs(gpsM - wheelM) / wheelM > AXIS.gpsDisagreement;
+      }
       // Ridden with GPS before reaching the road: a lead-in from elsewhere.
-      const leadInM = firstOffM == null ? 0 : ridden[firstIndex] - firstOffM;
+      const leadInM = firstOffM == null || settling ? 0 : ridden[firstIndex] - firstOffM;
       if (leadInM >= AXIS.minOffRunM) {
         offM += leadInM;
         offStretches.push({ fromIndex: list.findIndex((_, i) => ridden[i] >= firstOffM), toIndex: firstIndex - 1, rideM: leadInM, leftAtKm: null, rejoinedAtKm: firstS / 1000 });
       }
       // Ridden before the first fix that could be placed (no GPS yet, or one that wandered):
       // along the road, as far back as the distance reaches.
-      const blindM = firstOffM == null ? ridden[firstIndex] - startM : 0;
+      const blindM = firstOffM == null || settling ? fromStartM : 0;
       const headFrom = loop ? firstS - Math.min(blindM, loop) : Math.max(0, firstS - blindM);
       cover(headFrom, firstS);
       if (!loop) missedSoFarM += headFrom;
+      // ... and those records are placed there by the wheel: GPS is the late one at a start.
+      if (blindM > 0) {
+        for (let i = 0; i < firstIndex; i += 1) {
+          if (!Number.isFinite(ridden[i])) continue;
+          const back = firstS - (ridden[firstIndex] - ridden[i]);
+          if (loop || back >= 0) axisKm[i] = (loop ? wrap(back) : back) / 1000;
+        }
+      }
     }
     let previous = firstS;
     for (const [i, place] of rejoin.places) {
@@ -315,7 +350,7 @@ function layRideOnAxis(records, axis, { maxDeviationM = Infinity } = {}) {
         continue;
       }
       const windowM = AXIS.windowM + AXIS.scaleTolerance * (d - anchorM);
-      const near = nearbyOnAxis(axis, fix, AXIS.offRoadM).filter((place) => Math.abs(along(expected, place.s)) <= windowM);
+      const near = nearbyOnAxis(axis, fix, roadM).filter((place) => Math.abs(along(expected, place.s)) <= windowM);
       const best = nearestToExpected(near, expected, along, reachedS);
       if (best) {
         if (along(s, best.s) > 0) cover(s, best.s);
@@ -347,7 +382,7 @@ function layRideOnAxis(records, axis, { maxDeviationM = Infinity } = {}) {
       const [atIndex, atS] = rejoin.places[rejoin.places.length - 1];
       const expected = atS + (d - ridden[atIndex]);
       const windowM = AXIS.windowM + AXIS.scaleTolerance * (d - ridden[atIndex]);
-      const near = nearbyOnAxis(axis, fix, AXIS.offRoadM).filter((place) => Math.abs(along(expected, place.s)) <= windowM);
+      const near = nearbyOnAxis(axis, fix, roadM).filter((place) => Math.abs(along(expected, place.s)) <= windowM);
       const best = nearestToExpected(near, expected, along, rejoin.reachedS);
       if (best) {
         rejoin.places.push([index, best.s]);
@@ -361,7 +396,7 @@ function layRideOnAxis(records, axis, { maxDeviationM = Infinity } = {}) {
       rejoin = null;
     }
     const expectedHere = left ? left.leftS + (d - left.leftAnchorM) : d - startM;
-    const candidates = nearbyOnAxis(axis, fix, AXIS.offRoadM)
+    const candidates = nearbyOnAxis(axis, fix, roadM)
       .filter((place) => !left || loop || place.s >= left.leftS - AXIS.rejoinBackM);
     if (!candidates.length) {
       if (!left && firstOffM == null) firstOffM = d;
@@ -383,10 +418,70 @@ function layRideOnAxis(records, axis, { maxDeviationM = Infinity } = {}) {
     // Ridden on after the last fix (the GPS gave up near the end): along the road.
     cover(s, clampOpen(s + (ridden[lastIndex] - anchorM)));
   }
+  // Detours along a known variant of the route are not off it.
+  const via = new Array(list.length).fill(null);
+  const variantStretches = [];
+  for (const stretch of [...offStretches]) {
+    if (stretch.leftAtKm == null || stretch.rejoinedAtKm == null) continue;
+    const fromS = stretch.leftAtKm * 1000;
+    const toS = stretch.rejoinedAtKm * 1000;
+    const fixes = [];
+    for (let i = stretch.fromIndex; i <= stretch.toIndex; i += 1) if (usable(i)) fixes.push(positions[i]);
+    const variant = variants.find((candidate) => Math.abs(along(candidate.fromS, fromS)) <= AXIS.variantEndM
+      && Math.abs(along(candidate.toS, toS)) <= AXIS.variantEndM && followsLine(candidate.line, fixes, roadM));
+    if (!variant) continue;
+    offStretches.splice(offStretches.indexOf(stretch), 1);
+    offM -= stretch.rideM;
+    const span = along(variant.fromS, variant.toS);
+    const startRide = ridden[stretch.fromIndex];
+    const rideSpan = Math.max(1, ridden[stretch.toIndex] - startRide);
+    for (let i = stretch.fromIndex; i <= stretch.toIndex; i += 1) {
+      if (!Number.isFinite(ridden[i])) continue;
+      const place = variant.fromS + span * Math.max(0, Math.min(1, (ridden[i] - startRide) / rideSpan));
+      axisKm[i] = (loop ? wrap(place) : place) / 1000;
+      via[i] = variant.id;
+    }
+    cover(variant.fromS, variant.toS);
+    variantStretches.push({ id: variant.id, fromIndex: stretch.fromIndex, toIndex: stretch.toIndex, rideM: stretch.rideM });
+  }
   let missedBins = 0;
   for (let bin = 0; bin < bins; bin += 1) if (!covered[bin]) missedBins += 1;
   const missedM = missedBins * axis.stepM;
-  return { aborted: false, axisKm, offStretches, offM, missedM, deviationM: Math.max(offM, missedM) };
+  return { aborted: false, axisKm, via, offStretches, variantStretches, offM, missedM, deviationM: Math.max(offM, missedM) };
+}
+
+// Whether a ride's fixes follow a line (an indexed axis): this share of them within offRoadM of it.
+function followsLine(line, fixes, offRoadM) {
+  if (!line || fixes.length < 5) return false;
+  const on = fixes.filter((fix) => nearbyOnAxis(line, fix, offRoadM).length).length;
+  return on >= fixes.length * AXIS.variantShare;
+}
+
+// A detour of a ride on the route as a variant of the stretch it stands for: where it leaves and
+// rejoins the axis, and its road as a line every stepM metres in the axis' frame. stretch: one of
+// layRideOnAxis' off-road stretches of these records, with both ends on the axis.
+function variantOfDetour(records, axis, stretch) {
+  if (stretch?.leftAtKm == null || stretch.rejoinedAtKm == null) return null;
+  const line = [];
+  for (let i = stretch.fromIndex; i <= stretch.toIndex; i += 1) {
+    const record = records[i];
+    if (hasGpsFix(record?.position_lat, record?.position_long)) line.push(axis.project(record.position_lat, record.position_long));
+  }
+  const road = axisFromTrack(axis.lat0, axis.lon0, line, axis.stepM);
+  if (!road) return null;
+  return { fromS: stretch.leftAtKm * 1000, toS: stretch.rejoinedAtKm * 1000, lengthM: road.lengthM, points: road.points };
+}
+
+// A variant ready for laying: its road indexed for finding fixes near it.
+function indexVariant(variant) {
+  if (!Array.isArray(variant?.points) || variant.points.length < 2) return null;
+  const points = variant.points.map((point) => (Array.isArray(point) ? { x: point[0], y: point[1] } : point));
+  return { ...variant, points, line: indexAxis({ lat0: 0, lon0: 0, stepM: AXIS.stepM, points, closed: false, loopM: null }) };
+}
+
+// A variant of the axis as seen from the axis turned round (the same transform both ways).
+function flipVariant(variant, axis) {
+  return { ...variant, fromS: axis.lengthM - variant.toS, toS: axis.lengthM - variant.fromS, points: [...variant.points].reverse() };
 }
 
 // The axis of a habitual route: the middle line of its first rides. The ride the others stray from
@@ -461,4 +556,27 @@ function reverseAxis(axis) {
   return indexAxis({ lat0: axis.lat0, lon0: axis.lon0, stepM: axis.stepM, closed: axis.closed, loopM: axis.loopM, points: [...axis.points].reverse() });
 }
 
-module.exports = { AXIS, buildRouteAxis, layRideOnAxis, medianAxis, parseAxis, reverseAxis, serializeAxis };
+// The place sM metres along the axis, as latitude and longitude.
+function axisLatLon(axis, sM) {
+  const last = axis.points.length - 1;
+  const at = Math.max(0, Math.min(last, sM / axis.stepM));
+  const from = Math.min(last - 1, Math.floor(at));
+  const t = at - from;
+  const a = axis.points[from];
+  const b = axis.points[from + 1];
+  const x = a.x + (b.x - a.x) * t;
+  const y = a.y + (b.y - a.y) * t;
+  return { lat: axis.lat0 + y / 110540, lon: axis.lon0 + x / (111320 * Math.cos((axis.lat0 * Math.PI) / 180)) };
+}
+
+// What identifies an axis for what was laid on it: a changed axis lays every ride again.
+function axisKey(axis) {
+  if (!axis?.points?.length) return null;
+  let hash = 2166136261;
+  for (let index = 0; index < axis.points.length; index += 10) {
+    for (const value of [Math.round(axis.points[index].x), Math.round(axis.points[index].y)]) hash = Math.imul(hash ^ (value & 0xffff), 16777619) >>> 0;
+  }
+  return `${axis.lat0.toFixed(5)},${axis.lon0.toFixed(5)}|${axis.points.length}|${hash.toString(36)}|${axis.closed ? 'loop' : 'line'}`;
+}
+
+module.exports = { AXIS, axisKey, axisLatLon, buildRouteAxis, flipVariant, followsLine, indexVariant, layRideOnAxis, medianAxis, parseAxis, reverseAxis, serializeAxis, variantOfDetour };

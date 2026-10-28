@@ -49,8 +49,10 @@ function computeHeartRateZones(records, maxHeartRate, customThresholds, options 
   }
 
   const zones = HEART_RATE_ZONES.map((zone, index) => {
-    const lowerBpm = index === 0 ? zoneFloorBpm : Math.round(thresholds[index - 1]);
-    const upperBpm = index < thresholds.length ? Math.round(thresholds[index]) - 1 : Math.round(maxHeartRate);
+    // A pulse is counted in a zone from its threshold on (heartRate >= threshold), and a pulse is a
+    // whole number: with a threshold of 135.1 the zone starts at 136, and 135 is the zone below.
+    const lowerBpm = index === 0 ? zoneFloorBpm : Math.ceil(thresholds[index - 1]);
+    const upperBpm = index < thresholds.length ? Math.ceil(thresholds[index]) - 1 : Math.round(maxHeartRate);
     const seconds = zoneSeconds[index];
 
     return {

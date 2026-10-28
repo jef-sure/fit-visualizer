@@ -15,10 +15,13 @@ const PROFILES = Object.freeze({
   other: { speedUnit: 'kmh', cadenceUnit: 'rpm', usesPower: false, movingLabel: 'speed', terrain: true },
 });
 
-// FIT `sport` values (case-insensitive substrings) to a profile key. Order matters: hiking before
+// FIT `sport` values (case-insensitive substrings) to a profile key. Order matters: motor before
+// cycling, hiking before
 // running so a hike with a "trail" sub-sport stays a hike, walking last because "hike" also
 // appears in its pattern. Sub-sport is only a hint; the sport string dominates.
 const SPORT_KEYWORDS = Object.freeze([
+  // A motorcycle (FIT "motorcycling") is not a bike ride: no effort to read in its speed.
+  ['other', /motor/i],
   ['cycling', /cycl|bik|mtb|mountain.?bike/i],
   ['swimming', /swim|pool|open.?water/i],
   ['hiking', /hik|mountaineer|trek|backpack/i],
